@@ -1,0 +1,61 @@
+{
+  "case_id": "C-val",
+  "beta": 0.5,
+  "lc_over_w": 6.0,
+  "family": "contraction",
+  "w_um": 200.0,
+  "l_in_over_w": 4.0,
+  "l_out_over_w": 8.0,
+  "u_mean_mm_s": 0.1,
+  "rho": 997.05,
+  "mu": 0.0008902,
+  "nu": 8.928e-07,
+  "note": "验证集",
+  "geometry": {
+    "W_um": 200.0,
+    "beta": 0.5,
+    "L_in_over_W": 4.0,
+    "L_c_over_W": 6.0,
+    "L_out_over_W": 8.0,
+    "total_length_over_W": 18.0
+  },
+  "fluid": {
+    "rho": 997.05,
+    "mu": 0.0008902,
+    "nu": 8.928e-07
+  },
+  "flow": {
+    "u_mean_mm_s": 0.1,
+    "Re": 0.022400584138395865
+  },
+  "field_source": "freefem_stokes_cfd",
+  "warning": "",
+  "cfd": {
+    "solver": "FreeFEM++",
+    "equation": "dimensionless steady Stokes",
+    "raw_export": "C-val_raw.csv",
+    "script": "C-val_stokes.edp"
+  },
+  "grid": {
+    "nx": 241,
+    "ny": 121,
+    "boundary_samples": 101
+  },
+  "sampling": {
+    "sample_rates": [
+      0.01,
+      0.05,
+      0.1,
+      0.15
+    ],
+    "default_noise_rates": [
+      0.01,
+      0.03,
+      0.05
+    ],
+    "seed": 42
+  },
+  "runtime_guard": {
+    "max_retries": 1
+  }
+}

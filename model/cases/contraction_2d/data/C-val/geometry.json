@@ -1,0 +1,14 @@
+{
+  "case_id": "C-val",
+  "family": "contraction",
+  "geometry": {
+    "kind": "smooth_contraction",
+    "W_star": 1.0,
+    "beta": 0.5,
+    "L_in_over_W": 4.0,
+    "L_c_over_W": 6.0,
+    "L_out_over_W": 8.0,
+    "total_length_over_W": 18.0
+  },
+  "field_source": "freefem_stokes_cfd"
+}

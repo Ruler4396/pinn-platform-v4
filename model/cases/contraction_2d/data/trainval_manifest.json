@@ -1,0 +1,76 @@
+{
+  "generated_at_utc": "2026-03-30T04:28:05.334077+00:00",
+  "mode": "serial_low_impact",
+  "field_source": "freefem_stokes_cfd",
+  "boundary_samples": 101,
+  "seed": 42,
+  "max_retries": 1,
+  "cases": [
+    {
+      "case_id": "C-train-1",
+      "beta": 0.85,
+      "lc_over_w": 4.0,
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 2339,
+      "raw_rows": 2339,
+      "data_dir": "/root/dev/pinn_v3/cases/contraction_2d/data/C-train-1",
+      "cfd_dir": "/root/dev/pinn_v3/cases/contraction_2d/cfd/C-train-1"
+    },
+    {
+      "case_id": "C-train-2",
+      "beta": 0.7,
+      "lc_over_w": 4.0,
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 2113,
+      "raw_rows": 2113,
+      "data_dir": "/root/dev/pinn_v3/cases/contraction_2d/data/C-train-2",
+      "cfd_dir": "/root/dev/pinn_v3/cases/contraction_2d/cfd/C-train-2"
+    },
+    {
+      "case_id": "C-train-3",
+      "beta": 0.5,
+      "lc_over_w": 4.0,
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 1843,
+      "raw_rows": 1843,
+      "data_dir": "/root/dev/pinn_v3/cases/contraction_2d/data/C-train-3",
+      "cfd_dir": "/root/dev/pinn_v3/cases/contraction_2d/cfd/C-train-3"
+    },
+    {
+      "case_id": "C-train-4",
+      "beta": 0.85,
+      "lc_over_w": 6.0,
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 2176,
+      "raw_rows": 2176,
+      "data_dir": "/root/dev/pinn_v3/cases/contraction_2d/data/C-train-4",
+      "cfd_dir": "/root/dev/pinn_v3/cases/contraction_2d/cfd/C-train-4"
+    },
+    {
+      "case_id": "C-train-5",
+      "beta": 0.7,
+      "lc_over_w": 6.0,
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 1914,
+      "raw_rows": 1914,
+      "data_dir": "/root/dev/pinn_v3/cases/contraction_2d/data/C-train-5",
+      "cfd_dir": "/root/dev/pinn_v3/cases/contraction_2d/cfd/C-train-5"
+    },
+    {
+      "case_id": "C-val",
+      "beta": 0.5,
+      "lc_over_w": 6.0,
+      "role": "validation",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 1689,
+      "raw_rows": 1689,
+      "data_dir": "/root/dev/pinn_v3/cases/contraction_2d/data/C-val",
+      "cfd_dir": "/root/dev/pinn_v3/cases/contraction_2d/cfd/C-val"
+    }
+  ]
+}

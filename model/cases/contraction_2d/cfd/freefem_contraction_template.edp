@@ -1,0 +1,23 @@
+// contraction_2d FreeFEM++ template (placeholder)
+//
+// Purpose:
+// - Reserve the formal CFD truth generation entry for contraction_2d.
+// - Current pinn_v3 data pipeline uses synthetic smoke data only for geometry/sampling validation.
+// - Replace this template with the formal Stokes / low-Re Navier-Stokes solve before thesis experiments.
+//
+// Suggested external parameters:
+//   beta   = throat width ratio
+//   Lin    = inlet length over W
+//   Lc     = contraction length over W
+//   Lout   = outlet length over W
+//   Umean  = inlet mean velocity
+//
+// Export targets:
+//   - dense field samples
+//   - boundary tag samples
+//   - optional mesh diagnostics
+//
+// TODO:
+//   1. Implement smooth wall geometry matching docs/THESIS_EXPERIMENT_DESIGN.md
+//   2. Add inlet parabola / wall no-slip / outlet pressure BC
+//   3. Export CSV aligned with docs/DATASET_SPEC.md

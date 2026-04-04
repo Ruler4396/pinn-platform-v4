@@ -1,0 +1,6 @@
+case_id,base_case_id,rc_over_w,theta_deg,inlet_profile_name,role,field_source,dense_rows,raw_rows,data_dir,cfd_dir
+B-base,B-base,6.0,90.0,parabolic,training,freefem_stokes_cfd,10493,10493,/root/dev/pinn_v3/cases/bend_2d/data/B-base,/root/dev/pinn_v3/cases/bend_2d/cfd/B-base
+B-train-1,B-train-1,6.0,90.0,parabolic,training,freefem_stokes_cfd,10493,10493,/root/dev/pinn_v3/cases/bend_2d/data/B-train-1,/root/dev/pinn_v3/cases/bend_2d/cfd/B-train-1
+B-train-2,B-train-2,5.0,90.0,parabolic,training,freefem_stokes_cfd,9672,9672,/root/dev/pinn_v3/cases/bend_2d/data/B-train-2,/root/dev/pinn_v3/cases/bend_2d/cfd/B-train-2
+B-train-3,B-train-3,4.0,90.0,parabolic,training,freefem_stokes_cfd,9126,9126,/root/dev/pinn_v3/cases/bend_2d/data/B-train-3,/root/dev/pinn_v3/cases/bend_2d/cfd/B-train-3
+B-val,B-val,3.5,90.0,parabolic,validation,freefem_stokes_cfd,8385,8385,/root/dev/pinn_v3/cases/bend_2d/data/B-val,/root/dev/pinn_v3/cases/bend_2d/cfd/B-val

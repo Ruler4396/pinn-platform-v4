@@ -1,0 +1,73 @@
+{
+  "generated_at_utc": "2026-03-31T16:23:18.937778+00:00",
+  "mode": "manifest_refresh_no_cfd_rerun",
+  "field_source": "freefem_stokes_cfd",
+  "inlet_profile": "parabolic",
+  "cases": [
+    {
+      "case_id": "B-base",
+      "base_case_id": "B-base",
+      "rc_over_w": 6.0,
+      "theta_deg": 90.0,
+      "inlet_profile_name": "parabolic",
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 10493,
+      "raw_rows": 10493,
+      "data_dir": "/root/dev/pinn_v3/cases/bend_2d/data/B-base",
+      "cfd_dir": "/root/dev/pinn_v3/cases/bend_2d/cfd/B-base"
+    },
+    {
+      "case_id": "B-train-1",
+      "base_case_id": "B-train-1",
+      "rc_over_w": 6.0,
+      "theta_deg": 90.0,
+      "inlet_profile_name": "parabolic",
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 10493,
+      "raw_rows": 10493,
+      "data_dir": "/root/dev/pinn_v3/cases/bend_2d/data/B-train-1",
+      "cfd_dir": "/root/dev/pinn_v3/cases/bend_2d/cfd/B-train-1"
+    },
+    {
+      "case_id": "B-train-2",
+      "base_case_id": "B-train-2",
+      "rc_over_w": 5.0,
+      "theta_deg": 90.0,
+      "inlet_profile_name": "parabolic",
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 9672,
+      "raw_rows": 9672,
+      "data_dir": "/root/dev/pinn_v3/cases/bend_2d/data/B-train-2",
+      "cfd_dir": "/root/dev/pinn_v3/cases/bend_2d/cfd/B-train-2"
+    },
+    {
+      "case_id": "B-train-3",
+      "base_case_id": "B-train-3",
+      "rc_over_w": 4.0,
+      "theta_deg": 90.0,
+      "inlet_profile_name": "parabolic",
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 9126,
+      "raw_rows": 9126,
+      "data_dir": "/root/dev/pinn_v3/cases/bend_2d/data/B-train-3",
+      "cfd_dir": "/root/dev/pinn_v3/cases/bend_2d/cfd/B-train-3"
+    },
+    {
+      "case_id": "B-val",
+      "base_case_id": "B-val",
+      "rc_over_w": 3.5,
+      "theta_deg": 90.0,
+      "inlet_profile_name": "parabolic",
+      "role": "validation",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 8385,
+      "raw_rows": 8385,
+      "data_dir": "/root/dev/pinn_v3/cases/bend_2d/data/B-val",
+      "cfd_dir": "/root/dev/pinn_v3/cases/bend_2d/cfd/B-val"
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "case_id": "B-train-2__ip_blunted",
+  "rc_over_w": 5.0,
+  "theta_deg": 90.0,
+  "family": "bend",
+  "w_um": 200.0,
+  "l_in_over_w": 4.0,
+  "l_out_over_w": 6.0,
+  "u_mean_mm_s": 0.1,
+  "rho": 997.05,
+  "mu": 0.0008902,
+  "nu": 8.928e-07,
+  "inlet_profile_name": "blunted",
+  "note": "低-中曲率训练 + inlet_profile=blunted",
+  "geometry": {
+    "W_um": 200.0,
+    "L_in_over_W": 4.0,
+    "R_c_over_W": 5.0,
+    "theta_deg": 90.0,
+    "arc_length_over_W": 7.853981633974483,
+    "L_out_over_W": 6.0,
+    "total_centerline_length_over_W": 17.853981633974485
+  },
+  "fluid": {
+    "rho": 997.05,
+    "mu": 0.0008902,
+    "nu": 8.928e-07
+  },
+  "flow": {
+    "u_mean_mm_s": 0.1,
+    "Re": 0.022400584138395865
+  },
+  "inlet_profile": {
+    "name": "blunted",
+    "description": "symmetric blunted quartic profile with flatter core"
+  },
+  "base_case_id": "B-train-2",
+  "field_source": "freefem_stokes_cfd",
+  "warning": "",
+  "cfd": {
+    "solver": "FreeFEM++",
+    "equation": "dimensionless steady Stokes",
+    "raw_export": "B-train-2__ip_blunted_raw.csv",
+    "script": "B-train-2__ip_blunted_stokes.edp"
+  },
+  "grid": {
+    "nx": 241,
+    "ny": 241,
+    "boundary_samples": 101
+  },
+  "sampling": {
+    "sample_rates": [
+      0.01,
+      0.05,
+      0.1,
+      0.15
+    ],
+    "default_noise_rates": [
+      0.01,
+      0.03,
+      0.05
+    ],
+    "seed": 42
+  },
+  "runtime_guard": {
+    "max_retries": 1
+  }
+}

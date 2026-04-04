@@ -1,0 +1,17 @@
+web/node_modules/
+web/dist/
+web/backups/
+web/.env
+web/*.tsbuildinfo
+
+api/__pycache__/
+*.py[cod]
+
+model/__pycache__/
+model/scripts/__pycache__/
+model/src/__pycache__/
+model/results/*
+!model/results/
+!model/results/README.md
+
+.DS_Store

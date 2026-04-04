@@ -1,0 +1,137 @@
+// Auto-generated bend_2d Stokes solve for B-test-1
+// Dimensionless geometry and fields (star variables)
+// Inlet average velocity = 1, outlet pressure = 0
+
+real W = 1.0;
+real halfW = 0.5;
+real Lin = 4;
+real Lout = 6;
+real Rc = 3;
+real turnAngle = 1.57079632679;
+real ang0 = -pi/2.0;
+real ang1 = ang0 + turnAngle;
+real xC = Lin;
+real yC = Rc;
+real Ri = Rc - halfW;
+real Ro = Rc + halfW;
+real xArcEnd = xC + Rc*cos(ang1);
+real yArcEnd = yC + Rc*sin(ang1);
+real txOut = cos(turnAngle);
+real tyOut = sin(turnAngle);
+real nxOut = -sin(turnAngle);
+real nyOut = cos(turnAngle);
+
+int labIn = 1;
+int labOut = 2;
+int labWall = 3;
+
+func real uIn(real eta) {
+  return 1.5 * (1.0 - (2.0*eta)*(2.0*eta));
+}
+
+border inletBottomWall(t=0, 1) {
+  x = Lin * t;
+  y = -halfW;
+  label = labWall;
+}
+
+border outerArc(t=0, 1) {
+  real ang = ang0 + (ang1 - ang0) * t;
+  x = xC + Ro*cos(ang);
+  y = yC + Ro*sin(ang);
+  label = labWall;
+}
+
+border outletRightWall(t=0, 1) {
+  real xi = Lout * t;
+  x = xArcEnd + xi*txOut - halfW*nxOut;
+  y = yArcEnd + xi*tyOut - halfW*nyOut;
+  label = labWall;
+}
+
+border outletEdge(t=0, 1) {
+  real eta = -halfW + W * t;
+  x = xArcEnd + Lout*txOut + eta*nxOut;
+  y = yArcEnd + Lout*tyOut + eta*nyOut;
+  label = labOut;
+}
+
+border outletLeftWall(t=0, 1) {
+  real xi = Lout * (1.0 - t);
+  x = xArcEnd + xi*txOut + halfW*nxOut;
+  y = yArcEnd + xi*tyOut + halfW*nyOut;
+  label = labWall;
+}
+
+border innerArc(t=0, 1) {
+  real ang = ang1 + (ang0 - ang1) * t;
+  x = xC + Ri*cos(ang);
+  y = yC + Ri*sin(ang);
+  label = labWall;
+}
+
+border inletTopWall(t=0, 1) {
+  x = Lin * (1.0 - t);
+  y = halfW;
+  label = labWall;
+}
+
+border inletEdge(t=0, 1) {
+  real eta = halfW - W * t;
+  x = 0.0;
+  y = eta;
+  label = labIn;
+}
+
+int nIn = max(48, int(22 * Lin));
+int nArc = max(72, int(22 * Rc * turnAngle));
+int nOut = max(64, int(22 * Lout));
+int nEdge = 36;
+mesh Th = buildmesh(
+    inletBottomWall(nIn)
+  + outerArc(nArc)
+  + outletRightWall(nOut)
+  + outletEdge(nEdge)
+  + outletLeftWall(nOut)
+  + innerArc(nArc)
+  + inletTopWall(nIn)
+  + inletEdge(nEdge)
+);
+
+fespace Vh(Th, P2);
+fespace Qh(Th, P1);
+Vh u, v, ut, vt;
+Qh p, qt;
+
+solve Stokes([u,v,p],[ut,vt,qt], solver=UMFPACK) =
+    int2d(Th)(
+      dx(u)*dx(ut) + dy(u)*dy(ut)
+    + dx(v)*dx(vt) + dy(v)*dy(vt)
+    - p*(dx(ut) + dy(vt))
+    - qt*(dx(u) + dy(v))
+    - 1.0e-10*p*qt
+    )
+  + on(labIn, u=uIn(y), v=0)
+  + on(labWall, u=0, v=0)
+  + on(labOut, p=0)
+  ;
+
+int[int] vTag(Th.nv);
+for (int i = 0; i < Th.nv; ++i) vTag[i] = 0;
+for (int be = 0; be < Th.nbe; ++be) {
+  int iv0 = Th.be(be)[0];
+  int iv1 = Th.be(be)[1];
+  int lab = Th.be(be).label;
+  if (vTag[iv0] == 0 || ((lab == 1 || lab == 2) && vTag[iv0] == 3)) vTag[iv0] = lab;
+  if (vTag[iv1] == 0 || ((lab == 1 || lab == 2) && vTag[iv1] == 3)) vTag[iv1] = lab;
+}
+
+ofstream fout("/root/dev/pinn_v3/cases/bend_2d/cfd/B-test-1/B-test-1_raw.csv");
+fout << "x_star,y_star,u_star,v_star,p_star,bc_tag" << endl;
+for (int i = 0; i < Th.nv; ++i) {
+  real xx = Th(i).x;
+  real yy = Th(i).y;
+  fout << xx << "," << yy << "," << u(xx,yy) << "," << v(xx,yy) << "," << p(xx,yy) << "," << vTag[i] << endl;
+}
+
+cout << "Saved: /root/dev/pinn_v3/cases/bend_2d/cfd/B-test-1/B-test-1_raw.csv" << endl;

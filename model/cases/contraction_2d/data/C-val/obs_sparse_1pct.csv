@@ -1,0 +1,14 @@
+sample_id,case_id,family,sampling_tag,noise_tag,x_star,y_star,u_obs,v_obs,p_obs,region_id,wall_distance_star
+882,C-val,contraction,region_aware_1pct,clean,5.85855,0.253302,1.13548,-0.0361384,997.135,1,0.20264105692992068
+826,C-val,contraction,region_aware_1pct,clean,6.43243,0.206438,1.35556,-0.0485261,986.803,1,0.21185669727616063
+569,C-val,contraction,region_aware_1pct,clean,9.8907,-0.050022,2.87927,0.000453919,778.492,1,0.19999270291304305
+549,C-val,contraction,region_aware_1pct,clean,10.25,0.05,2.88,2.66595e-07,744.0,1,0.2
+925,C-val,contraction,region_aware_1pct,clean,5.45932,0.0951752,1.51625,-0.0129453,1002.9,1,0.38070117411924354
+963,C-val,contraction,region_aware_1pct,clean,5.15991,0.194708,1.29486,-0.0159747,1006.97,1,0.29206277017263593
+1050,C-val,contraction,region_aware_1pct,clean,4.27163,-0.399876,0.539009,0.00122175,1017.92,2,0.09990750340955523
+283,C-val,contraction,region_aware_1pct,clean,14.5616,-0.15,1.92,-1.58332e-09,330.085,2,0.1
+471,C-val,contraction,region_aware_1pct,clean,11.4477,0.15,1.92,3.01066e-09,629.023,2,0.1
+332,C-val,contraction,region_aware_1pct,clean,13.7232,-0.15,1.92,-1.97243e-09,410.569,2,0.1
+1265,C-val,contraction,region_aware_1pct,clean,2.36534,0.4,0.54,7.32559e-09,1040.79,2,0.09999999999999998
+1648,C-val,contraction,region_aware_1pct,clean,0.0612421,-0.260021,1.09433,-6.55321e-09,1068.43,0,0.239979
+225,C-val,contraction,region_aware_1pct,clean,15.4399,-0.05,2.88,-5.90687e-10,245.77,0,0.2

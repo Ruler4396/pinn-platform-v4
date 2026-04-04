@@ -1,0 +1,7 @@
+case_id,beta,lc_over_w,role,field_source,dense_rows,raw_rows,data_dir,cfd_dir
+C-train-1,0.85,4.0,training,freefem_stokes_cfd,2339,2339,/root/dev/pinn_v3/cases/contraction_2d/data/C-train-1,/root/dev/pinn_v3/cases/contraction_2d/cfd/C-train-1
+C-train-2,0.7,4.0,training,freefem_stokes_cfd,2113,2113,/root/dev/pinn_v3/cases/contraction_2d/data/C-train-2,/root/dev/pinn_v3/cases/contraction_2d/cfd/C-train-2
+C-train-3,0.5,4.0,training,freefem_stokes_cfd,1843,1843,/root/dev/pinn_v3/cases/contraction_2d/data/C-train-3,/root/dev/pinn_v3/cases/contraction_2d/cfd/C-train-3
+C-train-4,0.85,6.0,training,freefem_stokes_cfd,2176,2176,/root/dev/pinn_v3/cases/contraction_2d/data/C-train-4,/root/dev/pinn_v3/cases/contraction_2d/cfd/C-train-4
+C-train-5,0.7,6.0,training,freefem_stokes_cfd,1914,1914,/root/dev/pinn_v3/cases/contraction_2d/data/C-train-5,/root/dev/pinn_v3/cases/contraction_2d/cfd/C-train-5
+C-val,0.5,6.0,validation,freefem_stokes_cfd,1689,1689,/root/dev/pinn_v3/cases/contraction_2d/data/C-val,/root/dev/pinn_v3/cases/contraction_2d/cfd/C-val
