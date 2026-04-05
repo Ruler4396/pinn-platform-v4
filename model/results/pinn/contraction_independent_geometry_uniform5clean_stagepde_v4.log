@@ -1,0 +1,64 @@
+[run] contraction_independent_geometry_uniform5clean_stagepde_v4
+[第一阶段_速度模型 第1轮] 总损失=1.5741e+00 验证速度相对二范数=4.8560e-01 验证压力相对二范数=7.1040e-01 验证最大速度误差=5.9651e-01 验证最大压力误差=7.7142e-01
+[第一阶段_速度模型 第20轮] 总损失=7.7921e-01 验证速度相对二范数=7.9633e-02 验证压力相对二范数=7.1040e-01 验证最大速度误差=1.7934e-01 验证最大压力误差=7.7142e-01
+[第一阶段_速度模型 第40轮] 总损失=4.0719e-01 验证速度相对二范数=7.0705e-02 验证压力相对二范数=7.1040e-01 验证最大速度误差=1.6410e-01 验证最大压力误差=7.7142e-01
+[第一阶段_速度模型 第60轮] 总损失=1.2397e-01 验证速度相对二范数=6.0585e-02 验证压力相对二范数=7.1040e-01 验证最大速度误差=1.5469e-01 验证最大压力误差=7.7142e-01
+[第一阶段_速度模型 第80轮] 总损失=7.2441e-02 验证速度相对二范数=5.0095e-02 验证压力相对二范数=7.1040e-01 验证最大速度误差=1.4217e-01 验证最大压力误差=7.7142e-01
+[第一阶段_速度模型 第100轮] 总损失=5.2361e-02 验证速度相对二范数=4.2325e-02 验证压力相对二范数=7.1040e-01 验证最大速度误差=1.3247e-01 验证最大压力误差=7.7142e-01
+[第一阶段_速度模型 第120轮] 总损失=3.8705e-02 验证速度相对二范数=3.9510e-02 验证压力相对二范数=7.1040e-01 验证最大速度误差=1.2879e-01 验证最大压力误差=7.7142e-01
+[第一阶段_速度模型 第140轮] 总损失=2.7783e-02 验证速度相对二范数=3.6396e-02 验证压力相对二范数=7.1040e-01 验证最大速度误差=1.2558e-01 验证最大压力误差=7.7142e-01
+[第一阶段_速度模型 第160轮] 总损失=1.8873e-02 验证速度相对二范数=3.3682e-02 验证压力相对二范数=7.1040e-01 验证最大速度误差=1.1968e-01 验证最大压力误差=7.7142e-01
+[第一阶段_速度模型 第180轮] 总损失=1.2224e-02 验证速度相对二范数=3.1639e-02 验证压力相对二范数=7.1040e-01 验证最大速度误差=1.1167e-01 验证最大压力误差=7.7142e-01
+[第一阶段_速度模型 第200轮] 总损失=7.9721e-03 验证速度相对二范数=3.0097e-02 验证压力相对二范数=7.1040e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=7.7142e-01
+[第二阶段_压力模型 第1轮] 总损失=1.0052e+01 验证速度相对二范数=3.0097e-02 验证压力相对二范数=7.0783e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=7.6622e-01
+[第二阶段_压力模型 第20轮] 总损失=1.2062e+00 验证速度相对二范数=3.0097e-02 验证压力相对二范数=6.4186e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=6.5580e-01
+[第二阶段_压力模型 第40轮] 总损失=5.4681e-01 验证速度相对二范数=3.0097e-02 验证压力相对二范数=5.6690e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=5.9881e-01
+[第二阶段_压力模型 第60轮] 总损失=3.8889e-01 验证速度相对二范数=3.0097e-02 验证压力相对二范数=5.0634e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=5.6832e-01
+[第二阶段_压力模型 第80轮] 总损失=2.5246e-01 验证速度相对二范数=3.0097e-02 验证压力相对二范数=4.3562e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=5.5776e-01
+[第二阶段_压力模型 第100轮] 总损失=1.6769e-01 验证速度相对二范数=3.0097e-02 验证压力相对二范数=3.7067e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=5.4403e-01
+[第二阶段_压力模型 第120轮] 总损失=1.2685e-01 验证速度相对二范数=3.0097e-02 验证压力相对二范数=3.2976e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=5.3169e-01
+[第二阶段_压力模型 第140轮] 总损失=1.0369e-01 验证速度相对二范数=3.0097e-02 验证压力相对二范数=2.9969e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=5.0575e-01
+[第二阶段_压力模型 第160轮] 总损失=8.6345e-02 验证速度相对二范数=3.0097e-02 验证压力相对二范数=2.7348e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=4.7342e-01
+[第二阶段_压力模型 第180轮] 总损失=7.2046e-02 验证速度相对二范数=3.0097e-02 验证压力相对二范数=2.4781e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=4.3903e-01
+[第二阶段_压力模型 第200轮] 总损失=5.9531e-02 验证速度相对二范数=3.0097e-02 验证压力相对二范数=2.2362e-01 验证最大速度误差=1.0315e-01 验证最大压力误差=4.0429e-01
+[第三阶段_交替耦合 第1轮] 总损失=8.5778e-02 验证速度相对二范数=3.0772e-02 验证压力相对二范数=2.2329e-01 验证最大速度误差=1.0283e-01 验证最大压力误差=4.0423e-01
+[第三阶段_交替耦合 第20轮] 总损失=5.4253e-02 验证速度相对二范数=2.8774e-02 验证压力相对二范数=1.9356e-01 验证最大速度误差=1.0053e-01 验证最大压力误差=3.5019e-01
+[第三阶段_交替耦合 第40轮] 总损失=3.6476e-02 验证速度相对二范数=2.7284e-02 验证压力相对二范数=1.6368e-01 验证最大速度误差=9.0673e-02 验证最大压力误差=2.9718e-01
+[第三阶段_交替耦合 第60轮] 总损失=2.4388e-02 验证速度相对二范数=2.5188e-02 验证压力相对二范数=1.3867e-01 验证最大速度误差=8.2658e-02 验证最大压力误差=2.4810e-01
+[第三阶段_交替耦合 第80轮] 总损失=1.6381e-02 验证速度相对二范数=2.3381e-02 验证压力相对二范数=1.1989e-01 验证最大速度误差=7.5306e-02 验证最大压力误差=2.0878e-01
+[完成] 输出目录=model/results/pinn/contraction_independent_geometry_uniform5clean_stagepde_v4
+{
+  "最终验证指标": {
+    "rel_l2_u": 0.02339106984436512,
+    "rel_l2_v": 0.08476715534925461,
+    "rel_l2_p": 0.11988795548677444,
+    "rel_l2_speed": 0.023380670696496964,
+    "max_speed_err_over_speed_max": 0.07530570030212402,
+    "max_p_err_over_p_range": 0.20877577364444733,
+    "p95_speed_err_over_speed_max": 0.027728378772735596,
+    "p95_p_err_over_p_range": 0.1406077891588211
+  }
+}
+	Command being timed: "nice -n 10 python3 model/scripts/train_velocity_pressure_independent.py --run-name contraction_independent_geometry_uniform5clean_stagepde_v4 --family contraction_2d --train-cases C-base,C-train-1,C-train-2,C-train-3,C-train-4,C-train-5 --val-cases C-val --feature-mode geometry --drop-features inlet_profile_star --train-velocity-source obs_uniform_5pct --val-velocity-source obs_uniform_5pct --train-pressure-source obs_uniform_5pct --val-pressure-source obs_uniform_5pct --velocity-hidden-layers 128,128,128 --pressure-hidden-layers 128,128,128 --activation silu --velocity-epochs 200 --pressure-epochs 200 --coupling-epochs 80 --velocity-lr 6e-4 --pressure-lr 6e-4 --coupling-velocity-lr 1e-4 --coupling-pressure-lr 1e-4 --wall-weight 0.0 --inlet-flux-weight 0.5 --continuity-weight 0.1 --velocity-stage-continuity-weight 0.3 --velocity-stage-momentum-weight 0.0 --outlet-pressure-weight 1e-4 --pressure-drop-weight 1.0 --pressure-stage-momentum-weight 0.5 --velocity-wall-mode hard --hard-wall-sharpness 12 --coupling-momentum-weight 10.0 --coupling-continuity-weight 0.1 --coupling-velocity-supervision-weight 1.0 --coupling-pressure-supervision-weight 1.0 --max-physics-points 512 --print-every 20 --max-retries 1"
+	User time (seconds): 56.08
+	System time (seconds): 0.95
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:57.57
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 646512
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 68
+	Minor (reclaiming a frame) page faults: 417448
+	Voluntary context switches: 128
+	Involuntary context switches: 4167
+	Swaps: 0
+	File system inputs: 136808
+	File system outputs: 1240
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

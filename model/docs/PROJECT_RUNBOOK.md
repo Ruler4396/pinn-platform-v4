@@ -1,9 +1,9 @@
-# PROJECT_RUNBOOK（pinn_v4）
+# PROJECT_RUNBOOK（model / pinn_v4）
 
 ## 项目定位
 
-- 路径：`/root/dev/pinn_v4`
-- 用途：承接 `pinn_v3` 当前最新主线，作为继续训练、评估、导图与论文收口的精简工作区。
+- 路径：`./model`
+- 用途：承接 `pinn_v3` 当前最新主线，作为整合仓中的训练、评估、导图与论文收口工作区。
 - 保留原则：只保留“当前继续实验必须用到”的脚本、数据与文档。
 
 ## 当前正式主线
@@ -83,9 +83,9 @@ bash scripts/run_contraction_independent_mainline_lowimpact.sh
 
 ```bash
 python3 scripts/export_field_maps.py \
-  --predictions-dir /root/dev/pinn_v3/results/pinn/bend_targetrecon_independent_btest1_sparse5_nobc_hardwall_stagepde_v1_20260401/evaluations/predictions_target \
+  --predictions-dir historical/pinn_v3/results/pinn/bend_targetrecon_independent_btest1_sparse5_nobc_hardwall_stagepde_v1_20260401/evaluations/predictions_target \
   --cases B-test-1__ip_blunted \
-  --output-dir /root/dev/pinn_v4/results/field_map_checks/bend_target_stagepde_relpct \
+  --output-dir results/field_map_checks/bend_target_stagepde_relpct \
   --error-mode rel \
   --relative-floor-ratio 0.01 \
   --max-retries 1

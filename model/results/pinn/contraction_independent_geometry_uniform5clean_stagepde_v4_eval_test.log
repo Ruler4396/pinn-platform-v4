@@ -1,0 +1,59 @@
+[eval] test contraction_independent_geometry_uniform5clean_stagepde_v4
+[done] metrics=model/results/pinn/contraction_independent_geometry_uniform5clean_stagepde_v4/evaluations/metrics_test.json
+predictions_dir=model/results/pinn/contraction_independent_geometry_uniform5clean_stagepde_v4/evaluations/predictions_test
+{
+  "num_cases": 2,
+  "mean_rel_l2_u": 0.024075819179415703,
+  "max_rel_l2_u": 0.031811684370040894,
+  "mean_rel_l2_v": 0.09937870502471924,
+  "max_rel_l2_v": 0.14579366147518158,
+  "mean_rel_l2_p": 0.18918643705546856,
+  "max_rel_l2_p": 0.33225712180137634,
+  "mean_rel_l2_speed": 0.02406579814851284,
+  "max_rel_l2_speed": 0.03179502859711647,
+  "mean_mae_u": 0.023655940778553486,
+  "max_mae_u": 0.03241918608546257,
+  "mean_mae_v": 0.0008717536984477192,
+  "max_mae_v": 0.0013751245569437742,
+  "mean_mae_p": 266.52828311920166,
+  "max_mae_p": 513.746337890625,
+  "mean_pressure_drop_rel_error": 0.19199056828118333,
+  "max_pressure_drop_rel_error": 0.3276638566183277,
+  "mean_wall_max_abs_u_pred": 6.026502342137974e-05,
+  "max_wall_max_abs_u_pred": 7.52763298805803e-05,
+  "mean_wall_max_abs_v_pred": 1.3396622762229526e-06,
+  "max_wall_max_abs_v_pred": 1.5059334828038118e-06
+}
+{
+  "rel_l2_u": 0.026127889752388,
+  "rel_l2_v": 0.12256547808647156,
+  "rel_l2_p": 0.3156600892543793,
+  "rel_l2_speed": 0.026115782558918,
+  "max_speed_err_over_speed_max": 0.11481329798698425,
+  "max_p_err_over_p_range": 0.38200119137763977,
+  "p95_speed_err_over_speed_max": 0.025086354464292526,
+  "p95_p_err_over_p_range": 0.32933956384658813
+}
+	Command being timed: "nice -n 10 python3 scripts/evaluate_velocity_pressure_independent.py --family contraction_2d --run-name contraction_independent_geometry_uniform5clean_stagepde_v4 --eval-cases C-test-1,C-test-2 --split-name test --eval-source dense --max-retries 1"
+	User time (seconds): 2.24
+	System time (seconds): 0.16
+	Percent of CPU this job got: 80%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:02.99
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 271976
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 141
+	Minor (reclaiming a frame) page faults: 50217
+	Voluntary context switches: 702
+	Involuntary context switches: 1340
+	Swaps: 0
+	File system inputs: 26296
+	File system outputs: 648
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

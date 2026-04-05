@@ -10,8 +10,5 @@ api/__pycache__/
 model/__pycache__/
 model/scripts/__pycache__/
 model/src/__pycache__/
-model/results/*
-!model/results/
-!model/results/README.md
 
 .DS_Store

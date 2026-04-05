@@ -1,0 +1,10 @@
+[val]
+mean_rel_l2_speed: region-aware=0.028904, uniform=0.023381, diff(ra-uni)=0.005523, rel=23.62%
+mean_rel_l2_p: region-aware=0.125489, uniform=0.119888, diff(ra-uni)=0.005601, rel=4.67%
+mean_pressure_drop_rel_error: region-aware=0.104073, uniform=0.095638, diff(ra-uni)=0.008435, rel=8.82%
+
+[test]
+mean_rel_l2_speed: region-aware=0.033707, uniform=0.024066, diff(ra-uni)=0.009642, rel=40.06%
+mean_rel_l2_p: region-aware=0.192390, uniform=0.189186, diff(ra-uni)=0.003204, rel=1.69%
+mean_pressure_drop_rel_error: region-aware=0.199453, uniform=0.191991, diff(ra-uni)=0.007462, rel=3.89%
+

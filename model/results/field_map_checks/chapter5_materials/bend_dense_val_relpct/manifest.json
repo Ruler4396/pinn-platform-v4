@@ -1,0 +1,19 @@
+{
+  "run_name": "",
+  "split_name": "test",
+  "predictions_dir": "historical/pinn_v3/results/pinn/bend_independent_blunted_dense_nobc_hardwall_clean_v1_20260401/predictions",
+  "output_dir": "model/results/field_map_checks/chapter5_materials/bend_dense_val_relpct",
+  "cases": [
+    "B-val__ip_blunted"
+  ],
+  "files": [
+    "model/results/field_map_checks/chapter5_materials/bend_dense_val_relpct/B-val__ip_blunted_speed_truth_pred_rel_error_pct.png",
+    "model/results/field_map_checks/chapter5_materials/bend_dense_val_relpct/B-val__ip_blunted_pressure_truth_pred_rel_error_pct.png",
+    "model/results/field_map_checks/chapter5_materials/bend_dense_val_relpct/B-val__ip_blunted_speed_pressure_truth_pred_rel_error_pct.png"
+  ],
+  "error_mode": "rel",
+  "relative_floor_ratio": 0.01,
+  "percent_scale": true,
+  "mask_outside_geometry": true,
+  "max_retries": 1
+}

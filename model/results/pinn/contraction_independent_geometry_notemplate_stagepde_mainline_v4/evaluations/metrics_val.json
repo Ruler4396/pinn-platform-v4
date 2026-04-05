@@ -1,0 +1,82 @@
+{
+  "family": "contraction_2d",
+  "run_name": "contraction_independent_geometry_notemplate_stagepde_mainline_v4",
+  "split_name": "val",
+  "eval_cases": [
+    "C-val"
+  ],
+  "eval_source": "dense",
+  "feature_mode": "geometry",
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "beta",
+    "lc_over_w",
+    "wall_distance_frac",
+    "region_id_norm",
+    "eta_norm_star",
+    "axial_frac_star",
+    "segment_id_norm",
+    "center_proximity_star",
+    "wall_proximity_star",
+    "half_width_ratio_star",
+    "inv_half_width_ratio_star",
+    "contraction_rate_star"
+  ],
+  "summary": {
+    "num_cases": 1,
+    "mean_rel_l2_u": 0.02211248129606247,
+    "max_rel_l2_u": 0.02211248129606247,
+    "mean_rel_l2_v": 0.06820979714393616,
+    "max_rel_l2_v": 0.06820979714393616,
+    "mean_rel_l2_p": 0.10409148037433624,
+    "max_rel_l2_p": 0.10409148037433624,
+    "mean_rel_l2_speed": 0.022112878039479256,
+    "max_rel_l2_speed": 0.022112878039479256,
+    "mean_mae_u": 0.022474560886621475,
+    "max_mae_u": 0.022474560886621475,
+    "mean_mae_v": 0.0005999123095534742,
+    "max_mae_v": 0.0005999123095534742,
+    "mean_mae_p": 79.7769546508789,
+    "max_mae_p": 79.7769546508789,
+    "mean_pressure_drop_rel_error": 0.09507194095522345,
+    "max_pressure_drop_rel_error": 0.09507194095522345,
+    "mean_wall_max_abs_u_pred": 4.038109182147309e-05,
+    "max_wall_max_abs_u_pred": 4.038109182147309e-05,
+    "mean_wall_max_abs_v_pred": 1.272906047233846e-06,
+    "max_wall_max_abs_v_pred": 1.272906047233846e-06
+  },
+  "global_metrics": {
+    "rel_l2_u": 0.02211248129606247,
+    "rel_l2_v": 0.06820979714393616,
+    "rel_l2_p": 0.10409148037433624,
+    "rel_l2_speed": 0.022112878039479256,
+    "max_speed_err_over_speed_max": 0.06896352767944336,
+    "max_p_err_over_p_range": 0.1459893137216568,
+    "p95_speed_err_over_speed_max": 0.01770896650850773,
+    "p95_p_err_over_p_range": 0.126407191157341
+  },
+  "case_metrics": [
+    {
+      "case_id": "C-val",
+      "num_points": 1689,
+      "rel_l2_u": 0.02211248129606247,
+      "rel_l2_v": 0.06820979714393616,
+      "rel_l2_p": 0.10409148037433624,
+      "rel_l2_speed": 0.022112878039479256,
+      "mae_u": 0.022474560886621475,
+      "mae_v": 0.0005999123095534742,
+      "mae_p": 79.7769546508789,
+      "wall_max_abs_u_pred": 4.038109182147309e-05,
+      "wall_max_abs_v_pred": 1.272906047233846e-06,
+      "pressure_drop_truth": 1069.1700439453125,
+      "pressure_drop_pred": 967.52197265625,
+      "pressure_drop_rel_error": 0.09507194095522345,
+      "inlet_flux_truth": 0.9993339531855148,
+      "inlet_flux_pred": 0.9938982874811366,
+      "outlet_flux_truth": 0.9985914423065942,
+      "outlet_flux_pred": 1.0057874082243194
+    }
+  ],
+  "source_run_config": "model/results/pinn/contraction_independent_geometry_notemplate_stagepde_mainline_v4/config.json"
+}

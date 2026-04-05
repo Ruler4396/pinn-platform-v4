@@ -135,7 +135,7 @@ pinn-platform-v4/
 
 ### `api/`
 
-- 当前统一 API 入口为 [`api/pinn_platform_api.py`](/root/dev/pinn-platform-v4/api/pinn_platform_api.py)
+- 当前统一 API 入口为 [`api/pinn_platform_api.py`](./api/pinn_platform_api.py)
 - 负责接收网页参数、组织几何与物理输入、调用模型并返回标准化结果
 - 当前接口覆盖 `simulate`、`query-point`、`reconstruct`、`streamlines`、`probes`、`sweep` 等能力
 
@@ -143,7 +143,7 @@ pinn-platform-v4/
 
 - 来自原 `pinn_v4`
 - 保留 `src/`、`scripts/`、`cases/`、`docs/`
-- `results/` 默认不纳入 Git，仅保留结构和说明
+- `results/` 已并入一批用于完整展示的 `v4` 关键 run、日志、checkpoint 与论文素材
 - 负责训练、评估、案例生成、论文素材导出等核心研究工作
 
 ### `legacy/`
@@ -157,23 +157,25 @@ pinn-platform-v4/
 
 - `contraction_independent_geometry_notemplate_stagepde_mainline_v4`
 
-该 run 的 checkpoint 与配置默认保留在本地：
+该 run 的 checkpoint、配置、日志与评估结果现在已作为展示资产保留在仓库内：
 
 - `model/results/pinn/contraction_independent_geometry_notemplate_stagepde_mainline_v4/`
 
-弯曲流道历史上对应的 run 名称仍然保留，但如果本地缺少对应 checkpoint，当前 API 会退回合成场 fallback，以保证网站在删除历史大权重后仍可正常启动和演示。
+此外，仓库中还保留了若干 `v4` 阶段性对照 run，以及 `field_map_checks/`、`thesis_assets/` 下的导图检查与论文第五章素材，用于展示完整开发过程。
+
+弯曲流道历史上对应的 run 名称仍然保留，但当前整合仓没有把全部 bend 权重都并入；若本地缺少对应 checkpoint，API 会退回合成场 fallback，以保证网站仍可正常启动和演示。
 
 更详细的关键 run、整合改动与部署说明见：
 
-- [`docs/INTEGRATION_AND_DEPLOYMENT.md`](/root/dev/pinn-platform-v4/docs/INTEGRATION_AND_DEPLOYMENT.md)
-- [`docs/REPO_LAYOUT.md`](/root/dev/pinn-platform-v4/docs/REPO_LAYOUT.md)
+- [`docs/INTEGRATION_AND_DEPLOYMENT.md`](./docs/INTEGRATION_AND_DEPLOYMENT.md)
+- [`docs/REPO_LAYOUT.md`](./docs/REPO_LAYOUT.md)
 
 ## 快速开始
 
 ### 1. 前端开发
 
 ```bash
-cd /root/dev/pinn-platform-v4/web
+cd ./web
 npm install
 npm run dev
 ```
@@ -181,14 +183,14 @@ npm run dev
 ### 2. 启动 API
 
 ```bash
-cd /root/dev/pinn-platform-v4
+cd .
 python3 api/pinn_platform_api.py --host 127.0.0.1 --port 8011
 ```
 
 ### 3. 模型训练 / 评估
 
 ```bash
-cd /root/dev/pinn-platform-v4/model
+cd ./model
 bash scripts/run_contraction_independent_mainline_lowimpact.sh
 ```
 
@@ -216,14 +218,14 @@ bash scripts/run_contraction_independent_mainline_lowimpact.sh
 - 对更复杂几何和更大参数范围的泛化能力仍有限
 - 对真实实验级噪声与更复杂边界条件的适应性仍需继续验证
 - 一部分历史文档仍保留旧项目名和旧路径表述
-- `model/results/` 中的正式权重和评估产物默认不进 Git，需要本地或外部存储单独管理
+- 仓库当前仅纳入用于展示的关键结果快照，不包含所有历史中间产物
 
 ## 相关文档
 
-- 仓库结构说明：[`docs/REPO_LAYOUT.md`](/root/dev/pinn-platform-v4/docs/REPO_LAYOUT.md)
-- 整合与部署说明：[`docs/INTEGRATION_AND_DEPLOYMENT.md`](/root/dev/pinn-platform-v4/docs/INTEGRATION_AND_DEPLOYMENT.md)
-- 版本演进与试错时间线：[`docs/PROJECT_EVOLUTION_V1_TO_V4.md`](/root/dev/pinn-platform-v4/docs/PROJECT_EVOLUTION_V1_TO_V4.md)
-- 模型工作区说明：[`model/README.md`](/root/dev/pinn-platform-v4/model/README.md)
+- 仓库结构说明：[`docs/REPO_LAYOUT.md`](./docs/REPO_LAYOUT.md)
+- 整合与部署说明：[`docs/INTEGRATION_AND_DEPLOYMENT.md`](./docs/INTEGRATION_AND_DEPLOYMENT.md)
+- 版本演进与试错时间线：[`docs/PROJECT_EVOLUTION_V1_TO_V4.md`](./docs/PROJECT_EVOLUTION_V1_TO_V4.md)
+- 模型工作区说明：[`model/README.md`](./model/README.md)
 
 ## 说明
 

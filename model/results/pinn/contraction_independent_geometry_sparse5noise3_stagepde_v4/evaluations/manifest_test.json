@@ -1,0 +1,14 @@
+{
+  "family": "contraction_2d",
+  "run_name": "contraction_independent_geometry_sparse5noise3_stagepde_v4",
+  "split_name": "test",
+  "eval_cases": [
+    "C-test-1",
+    "C-test-2"
+  ],
+  "eval_source": "dense",
+  "device": "cpu",
+  "max_retries": 1,
+  "metrics_file": "model/results/pinn/contraction_independent_geometry_sparse5noise3_stagepde_v4/evaluations/metrics_test.json",
+  "predictions_dir": "model/results/pinn/contraction_independent_geometry_sparse5noise3_stagepde_v4/evaluations/predictions_test"
+}

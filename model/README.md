@@ -27,21 +27,33 @@
 - `src/data/`：几何、case registry、FreeFEM++ 相关数据模块
 - `cases/`：bend / contraction 的训练、验证、测试数据
 - `docs/`：精简后的运行说明与迁移说明
-- `results/`：从现在开始在 v4 中产生的新结果
+- `results/`：整合仓中保留的正式展示结果、checkpoint、日志与论文资产
+
+## 展示资产
+
+为了把毕业设计项目整理成一个可完整展示的单仓库，整合仓额外纳入了一批 `v4` 结果快照，包括：
+
+- 收缩流道正式主线 `contraction_independent_geometry_notemplate_stagepde_mainline_v4`
+- 稀疏采样 / 均匀采样 / 含噪采样对照 run
+- 对应训练日志、评估日志、`best.ckpt`、`metrics.json`、`history.csv`
+- `field_map_checks/` 下的误差导图检查素材
+- `thesis_assets/chapter5/` 下的第五章图表与 `manifest`
+
+这些内容主要用于论文展示、结果回顾和仓库对外演示，而不是继续扩展为完整的大型结果仓。
 
 ## 快速入口
 
 ### 收缩流道正式低冲击主线
 
 ```bash
-cd /root/dev/pinn-platform-v4/model
+cd ./model
 bash scripts/run_contraction_independent_mainline_lowimpact.sh
 ```
 
 ### 直接训练
 
 ```bash
-cd /root/dev/pinn-platform-v4/model
+cd ./model
 python3 scripts/train_velocity_pressure_independent.py \
   --family contraction_2d \
   --feature-mode geometry \
@@ -55,7 +67,7 @@ python3 scripts/train_velocity_pressure_independent.py \
 ### 用新导图脚本读取任意 predictions 目录
 
 ```bash
-cd /root/dev/pinn-platform-v4/model
+cd ./model
 python3 scripts/export_field_maps.py \
   --predictions-dir /path/to/predictions_dir \
   --cases B-test-1__ip_blunted \

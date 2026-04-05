@@ -1,0 +1,23 @@
+{
+  "run_name": "contraction_independent_geometry_sparse5clean_stagepde_v4",
+  "split_name": "test",
+  "predictions_dir": "model/results/pinn/contraction_independent_geometry_sparse5clean_stagepde_v4/evaluations/predictions_test",
+  "output_dir": "model/results/field_map_checks/chapter5_materials/contraction_sparse5clean_test_relpct",
+  "cases": [
+    "C-test-1",
+    "C-test-2"
+  ],
+  "files": [
+    "model/results/field_map_checks/chapter5_materials/contraction_sparse5clean_test_relpct/C-test-1_speed_truth_pred_rel_error_pct.png",
+    "model/results/field_map_checks/chapter5_materials/contraction_sparse5clean_test_relpct/C-test-1_pressure_truth_pred_rel_error_pct.png",
+    "model/results/field_map_checks/chapter5_materials/contraction_sparse5clean_test_relpct/C-test-1_speed_pressure_truth_pred_rel_error_pct.png",
+    "model/results/field_map_checks/chapter5_materials/contraction_sparse5clean_test_relpct/C-test-2_speed_truth_pred_rel_error_pct.png",
+    "model/results/field_map_checks/chapter5_materials/contraction_sparse5clean_test_relpct/C-test-2_pressure_truth_pred_rel_error_pct.png",
+    "model/results/field_map_checks/chapter5_materials/contraction_sparse5clean_test_relpct/C-test-2_speed_pressure_truth_pred_rel_error_pct.png"
+  ],
+  "error_mode": "rel",
+  "relative_floor_ratio": 0.01,
+  "percent_scale": true,
+  "mask_outside_geometry": true,
+  "max_retries": 1
+}
