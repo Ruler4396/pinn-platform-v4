@@ -29,6 +29,22 @@
 - `docs/`：精简后的运行说明与迁移说明
 - `results/`：整合仓中保留的正式展示结果、checkpoint、日志与论文资产
 
+## 环境
+
+推荐先安装：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+其中：
+
+- `requirements.txt` 对应当前公开结果所使用的 Python 包版本
+- 若要重建 CFD 真值，还需要额外安装 `FreeFEM++`
+
 ## 展示资产
 
 为了把毕业设计项目整理成一个可完整展示的单仓库，整合仓额外纳入了一批 `v4` 结果快照，包括：
@@ -40,6 +56,10 @@
 - `thesis_assets/chapter5/` 下的第五章图表与 `manifest`
 
 这些内容主要用于论文展示、结果回顾和仓库对外演示，而不是继续扩展为完整的大型结果仓。
+
+更完整的复现路径说明见：
+
+- `../docs/REPRODUCTION_GUIDE.md`
 
 ## 快速入口
 

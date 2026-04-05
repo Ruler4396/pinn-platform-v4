@@ -1,0 +1,17 @@
+# Core Python dependencies for the model workspace and API.
+# The pinned versions below match the environment used to produce the
+# current public results in this repository.
+#
+# Install with:
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   pip install --upgrade pip
+#   pip install -r model/requirements.txt
+#
+# CPU-only PyTorch wheel source:
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+numpy==2.2.6
+pandas==2.2.3
+matplotlib==3.10.8
+torch==2.11.0+cpu

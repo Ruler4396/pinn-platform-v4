@@ -172,6 +172,15 @@ pinn-platform-v4/
 
 ## 快速开始
 
+### 0. 安装模型依赖
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r model/requirements.txt
+```
+
 ### 1. 前端开发
 
 ```bash
@@ -224,6 +233,7 @@ bash scripts/run_contraction_independent_mainline_lowimpact.sh
 
 - 仓库结构说明：[`docs/REPO_LAYOUT.md`](./docs/REPO_LAYOUT.md)
 - 整合与部署说明：[`docs/INTEGRATION_AND_DEPLOYMENT.md`](./docs/INTEGRATION_AND_DEPLOYMENT.md)
+- 复现指南：[`docs/REPRODUCTION_GUIDE.md`](./docs/REPRODUCTION_GUIDE.md)
 - 版本演进与试错时间线：[`docs/PROJECT_EVOLUTION_V1_TO_V4.md`](./docs/PROJECT_EVOLUTION_V1_TO_V4.md)
 - 模型工作区说明：[`model/README.md`](./model/README.md)
 
