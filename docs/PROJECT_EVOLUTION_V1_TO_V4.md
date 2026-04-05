@@ -57,6 +57,555 @@
 | `v3` | 2026-03-30 起 | 从分叉回退，重启为 `contraction_2d + bend_2d` | 这是第一次真正形成论文级主线的阶段 |
 | `v4` | 2026-04-01 起 | 从 `v3` 中抽离精简主线，冻结历史包袱 | 不是重新开题，而是把最成熟主线收束为可持续工作区 |
 
+## 项目日志版时间线
+
+下面这一部分按“日志”来写，而不是只做概括。每条都尽量回答三件事：
+
+- 当时做了什么
+- 相比上一阶段有什么进步
+- 还剩哪些没有解决的问题
+
+## v1 日志
+
+### 2026-03-27：P5 正式退出，转向 P6 bounded residual
+
+做了什么：
+
+- 完成 `P5` 两条最小单机制入口的首轮远端 formal。
+- 明确定性：
+  - `v8 authority transition closure`：无效但可解释
+  - `v9 semantic amplitude closure`：中性结果 / 无效但可解释
+- 正式触发 `P5 scalar closure family` 的阶段退出复核。
+- 新建 `P6 bounded residual` 的最小入口设计与远端实现计划。
+
+带来的进步：
+
+- 项目没有继续在 `v8 / v9` 上做无意义细修，而是明确承认这一家族当前不再值得继续投资源。
+- “失败”第一次被写成显式决策，而不是隐性搁置。
+- 下一阶段入口被提前设计出来，项目没有因为 P5 失败而停摆。
+
+当时还没解决什么：
+
+- 高角度 Y 型上的主坏验证链仍然存在。
+- `bounded residual` 只是进入最小入口设计，还没证明能真正改善关键指标。
+
+### 2026-03-27：P6 v10 首轮 formal，确认仍然 bad_validation
+
+做了什么：
+
+- 完成 `P6 v10 bounded residual` 首轮远端 formal。
+
+带来的进步：
+
+- 至少验证了：问题不是“bounded residual 还没接入”，而是“接入后改善极小，且副作用明显”。
+
+当时还没解决什么：
+
+- 主坏点仅微小改善。
+- `crossflow_rel` 明显带脏。
+- 结果仍是 `bad_validation=true`。
+- 默认策略因此不是做 seed check，而是先回到机制复盘。
+
+### 2026-03-27：v1 的中前期成果被统一写清
+
+做了什么：
+
+- 在 README 里把 `P1 ~ P4` 到当时为止已经完成的 through-gate 链条统一整理出来。
+
+带来的进步：
+
+- 项目终于明确区分出“已经稳定 through-gate 的 benchmark”和“当前仍未 through-gate 的复杂 benchmark”。
+- 已确认成功的部分包括：
+  - `P1` 收口
+  - `P2` constant-width / single-outlet 到高曲率单弯折的 `3-seed` 低冲击确认
+  - `P3` 多层 variable-width / single-outlet benchmark 的 `3-seed` 低冲击确认
+  - `P4 owner-clean` canonical benchmark through-gate
+  - `P4 junction fixed blending` 阶段由 `B3-v2 owner-safe hard-wall + fixed-blending pressure basis` 接住
+
+当时还没解决什么：
+
+- 这些成功都集中在单出口、低复杂结构、确定性骨架链条。
+- 一旦进入高角度 Y 型，through-gate 仍然卡住。
+
+### 2026-03-27：高角度 Y 型热点修补链完成，但仍未过 gate
+
+做了什么：
+
+- 对 `high-angle junction fixed blending` 做了一整套逐层热点修补：
+  - `trunk-priority side assignment`
+  - `truth-side / blending-authority`
+  - `same-side / no-opposite-branch authority`
+  - `wider trunk-authority band`
+  - 分叉中心感知门函数
+  - 双重重叠核心带成对共享向量骨架
+
+带来的进步：
+
+- `speed_max_rel` 从约 `0.400` 一路压到约 `0.318`
+- 若只看局部热点，很多点位确实被精确修掉了
+- 项目对“问题到底在什么结构层级”有了越来越清楚的认识
+
+当时还没解决什么：
+
+- through-gate 目标仍未达到
+- 最大误差点不断从一个区域转移到下一个区域
+- 项目最终确认：问题已经不是单点补丁，而是共享向量语义、局部基底和横向速度口径之间的结构错位
+
+### 2026-03-28：归档并退役 v1
+
+做了什么：
+
+- 将 `pinn_bifurcation_controlled_v1` 作为归档仓推送到 GitHub。
+- 本地与远端原主工作区进入清理退役流程。
+- 默认策略从“继续扩实验”切换为“结构整理与文档降复杂”。
+
+带来的进步：
+
+- `v1` 的价值被完整保留：代码、文档、实验结构都留档，不再担心随着清场丢失。
+- 项目终于承认：这一代的核心成果是“benchmark ladder 与失败边界”，不是“把高角度 Y 型彻底做成”。
+
+当时还没解决什么：
+
+- 高角度 Y 型的根问题仍未闭环。
+- 后续必须决定：是继续顶复杂分叉，还是换一个更可收束的研究对象。
+
+## v2 日志
+
+### 早期过渡阶段：把分叉问题收成可复现工作区
+
+做了什么：
+
+- 建立 `pinn_v2` 工作区，围绕 `T / Y` 分叉流道组织最小可复现闭环：
+  - `freefem/` 真值生成
+  - `src/` 训练与评估
+  - `configs/` 基线配置
+  - `scripts/` 启动与实验脚本
+  - `docs/` 开发规范与实验计划
+
+带来的进步：
+
+- 相比 `v1`，`v2` 更像一个可以直接上手复跑的项目骨架，而不是以阶段门禁为主的复杂实验母仓。
+- 问题被整理为更清楚的三步：
+  1. 先过 `100%` 采样基线
+  2. 再看泛化
+  3. 再做稀疏采样重建
+
+当时还没解决什么：
+
+- 仍然停留在 `T / Y` 分叉拓扑。
+- 没有找到足够强、足够稳定的正式成功主线。
+- 历史材料不足，无法恢复出像 `v3` 那样详细的 run 级演化记录。
+
+### v2 时期的技术方向信号
+
+做了什么：
+
+- 从文件名上可以看到，此时已经开始试探：
+  - `adaptive`
+  - `streamfunction`
+  这类替代方向
+
+带来的进步：
+
+- 说明项目并没有只盯着单一训练脚本，而是在摸索更稳的表达方式。
+
+当时还没解决什么：
+
+- 没有证据表明这些尝试在 `v2` 阶段形成了正式主线成果。
+- 也没有足够文档支持把 `v2` 写成一个完整成功阶段。
+
+### v2 的最终位置
+
+做了什么：
+
+- 保住了分叉研究的可复现骨架。
+
+带来的进步：
+
+- 为后续真正改道提供了“不要从零重新搭项目”的基础。
+
+当时还没解决什么：
+
+- thesis mainline 仍未出现。
+- 分叉流道依旧过难。
+
+## v3 日志
+
+### 2026-03-30：正式从分叉回退，重启为 contraction + bend
+
+做了什么：
+
+- 初始化 `pinn_v3`。
+- 明确把研究对象切换为：
+  - `contraction_2d`
+  - `bend_2d`
+- 同时建立：
+  - `PLAN`
+  - `EXPERIMENT_LOG`
+  - `PROJECT_RUNBOOK`
+  - `PROJECT_CHANGELOG`
+  - 训练协议、数据契约、图表清单等项目级文档
+
+带来的进步：
+
+- 这是项目第一次真正从“复杂分叉求闭环”转到“先做可控参数化几何”的战略转向。
+- 研究对象一下子变得更适合：
+  - 稳定收敛
+  - 参数化比较
+  - 论文分析
+  - 系统展示
+
+当时还没解决什么：
+
+- 新几何虽然更简单，但还没有任何正式 baseline 结果。
+- 还需要先证明数据链路、训练链路和泛化口径都成立。
+
+### 2026-03-30：两类几何的数据链路落地
+
+做了什么：
+
+- 落地 `contraction_2d` 与 `bend_2d` 的：
+  - 几何描述
+  - FreeFEM CFD 生成
+  - 稠密场组织
+  - 稀疏 / noisy 观测构造
+  - `trainval_manifest`
+  - `DATASET_SPEC`
+
+带来的进步：
+
+- 从这一刻起，训练、评估、导图和后续网站接入有了统一数据契约。
+- 数据生成不再是手工散落脚本，而是项目级生产链路。
+
+当时还没解决什么：
+
+- 还没有证明模型在这些数据上能训练到可用精度。
+
+### 2026-03-30：supervised baseline 首次闭环
+
+做了什么：
+
+- 完成 `contraction_supervised_baseline`
+- 完成 `bend_supervised_baseline`
+- 补齐 test split 的 CFD 数据
+- 完成两类几何的离线 test 泛化评估
+
+带来的进步：
+
+- 第一次形成了论文可写的 baseline 上界。
+- 当时已经得到比较清楚的边界：
+  - contraction：
+    - 包络内插值可以
+    - 强外推明显困难
+  - bend：
+    - 曲率半径族内泛化尚可
+    - 转角结构外推失败
+
+当时还没解决什么：
+
+- 壁面约束仍不够紧
+- 仅靠 supervised 还不足以回答“PINN 的价值在哪里”
+
+### 2026-03-30：weak-physics PINN 正式接入
+
+做了什么：
+
+- 把 `train_pinn_finetune.py` 从占位变成可运行入口
+- 支持：
+  - supervised checkpoint 初始化
+  - `L_obs + L_bc + L_pde`
+  - Stokes 残差 warmup
+  - dense / sparse / noisy 切换
+
+带来的进步：
+
+- 项目第一次具备真正意义上的 weak-physics PINN 微调能力。
+
+当时还没解决什么：
+
+- PDE 接入不等于 PDE 有稳定收益。
+- 接下来必须证明：PDE 不是“只是挂在训练图里”。
+
+### 2026-03-30：PDE 价值排查开始，结论并不统一
+
+做了什么：
+
+- 在 contraction 与 bend 上分别做了 PDE 作用排查。
+- 引入 `physics_score`、更细的 history 留痕、dense split 物理指标等机制。
+
+带来的进步：
+
+- contraction：
+  - 在 `5% sparse` 场景下，PDE 开始在压力误差、压降和散度上体现正向作用
+- bend：
+  - 证明了 PDE 会改变训练结果，但收益不稳定
+
+当时还没解决什么：
+
+- PDE 没有形成“一刀切普遍更好”的证据。
+- 后续必须转向更细的 backbone、边界、观测口径联合分析。
+
+### 2026-03-30：文献导向 streamfunction 路线被证明不适合作为主线
+
+做了什么：
+
+- 实现 `train_pinn_streamfunction.py`
+- 运行：
+  - `contraction_stream_sparse5_lit_v1_20260330`
+  - `bend_stream_sparse5_lit_v1_20260330`
+
+带来的进步：
+
+- 明确验证了这条文献风格路线在本任务上的真实表现，而不是停留在“理论上可能更对”。
+
+当时还没解决什么：
+
+- 这条路线虽然散度很好，但整体场误差、压力误差和压降都明显落后。
+- 结论很清楚：它不能成为当前 thesis mainline。
+
+### 2026-03-31：wall-only hard no-slip 成为关键转折点
+
+做了什么：
+
+- 把原“wall + inlet 耦合式乘法边界强制”重构为“仅 wall 的指数饱和 hard no-slip”
+- 对照 run：
+  - `contraction_hybrid_geo_adapt_wallonly_v1_20260331`
+
+带来的进步：
+
+- 这是 `v3` 最关键的结构修复之一。
+- 在 `C-val` 上：
+  - `Rel-L2(|V|)` 从 `0.43812` 降到 `0.06248`
+  - 最大速度误差从 `51.65%` 降到 `8.92%`
+
+当时还没解决什么：
+
+- 速度问题被大幅拉回来了，但还没有达到最终最优口径。
+- 后续还要继续做 loss 收束、backbone 优化和多 seed 验证。
+
+### 2026-03-31：contraction 主线真正成熟
+
+做了什么：
+
+- 新增 tail-aware supervised backbone
+- 新增 base-output-aware correction head
+- 跑出：
+  - `contraction_supervised_tailaware_v1_20260331`
+  - `contraction_hybrid_tailbase_basefeat_v1_20260331`
+  - `contraction_hybrid_tailbase_basefeat_ensemble3_v1_20260331`
+
+带来的进步：
+
+- contraction 主线第一次形成了非常像“正式答案”的 run 组合。
+- 代表性结果：
+  - `Rel-L2(|V|)=0.04352`
+  - `Rel-L2(p)=0.05334`
+  - `max speed err=6.07%`
+  - `max p err=7.20%`
+
+当时还没解决什么：
+
+- pressure 口径、课程学习、geometry feature 等细节仍需要继续比较和收束。
+
+### 2026-03-31：bend 的突破来自几何感知，而不是照搬 contraction 配方
+
+做了什么：
+
+- 先试图把 contraction 的 tail-aware 配方移植到 bend
+- 结果前 200 epoch 明显落后，未保留
+- 随后改做 bend 专用几何感知输入：
+  - `bend_supervised_geometry_v1_20260331`
+
+带来的进步：
+
+- 找到了 bend 主线真正有效的方向：显式几何表达
+- 在 `B-val` 上达到：
+  - `Rel-L2(|V|)=0.00529`
+  - `Rel-L2(p)=0.00984`
+  - `max speed err=2.13%`
+  - `max p err=2.16%`
+
+当时还没解决什么：
+
+- 还需要把这个 backbone 接到 hybrid / PINN 主线上，看看是否既保留几何优势，又带来物理一致性增益。
+
+### 2026-03-31：bend hybrid 主线建立，但 PDE 不可替代性证据始终不够强
+
+做了什么：
+
+- 基于 geometry backbone 跑出：
+  - `bend_hybrid_geombackbone_basefeat_v1_20260331`
+- 同时围绕 PDE 不可替代性做了大量 probe：
+  - `pressure-only`
+  - `flux-only inlet BC`
+  - `holdout_turnbox`
+  - `noise3 / noise5`
+  - `gap65to4`
+  - `interior_focus`
+  - 各类 `BC-only vs PDE` 配对 run
+
+带来的进步：
+
+- bend hybrid 主线本身是成功的，至少它比早期不少旧路线更稳定、也更适合离线评估和导图。
+- 项目对“PDE 什么时候有效”有了更细的认识。
+
+当时还没解决什么：
+
+- 很多 PDE probe 只带来很小改进，甚至局部变好全局变差。
+- 因此它们不适合直接写成论文主结论。
+
+### 2026-04-01：正式切换到独立速度 / 独立压力双模型主线
+
+做了什么：
+
+- 通过 `MAINLINE_SWITCH_20260401.md` 明确宣布：
+  - 正式主线切换为独立速度模型 + 独立压力模型 + 控制方程交替耦合
+- 冻结旧 hybrid 目标工况稀疏重建路线
+
+带来的进步：
+
+- 项目终于从“还在同时维护多条主线”进入“主线正式收束”状态。
+- 这条新主线更适合：
+  - 阶段内 PDE
+  - 目标工况 sparse reconstruction
+  - 更清晰的速度 / 压力训练职责分离
+
+当时还没解决什么：
+
+- 虽然主线切换了，但 `v3` 内部已经积累太多历史路线和结果目录。
+- 如果继续在 `v3` 上推进，误用风险很高。
+
+## v4 日志
+
+### 2026-04-01：从 v3 抽离出精简主线工作区
+
+做了什么：
+
+- 新建 `pinn_v4`
+- 从 `v3` 中迁移：
+  - 当前双模型主线训练脚本
+  - 评估脚本
+  - 导图脚本
+  - 数据生成脚本
+  - bend / contraction 的训练与验证数据
+
+带来的进步：
+
+- 历史路线与正式主线第一次被物理分开。
+- 后续新实验默认不再从旧 hybrid / old probe 路线起跑。
+
+当时还没解决什么：
+
+- `v4` 虽然精简了，但还不是最终交付形态。
+- 网站、API 和模型仍然分散在不同目录 / 仓库。
+
+### 2026-04-01：正式主线固定为 independent + stage PDE
+
+做了什么：
+
+- 固定 `v4` 当前主线为：
+  - 独立速度模型
+  - 独立压力模型
+  - 阶段内部分控制方程
+  - 最终控制方程交替耦合
+- 同时把关键入口脚本切到这条主线
+
+带来的进步：
+
+- 这条线成了后续论文和整合仓的默认口径。
+
+当时还没解决什么：
+
+- 导图、章节素材和系统交付层面还需要继续整理。
+
+### 2026-04-02：v4 从“能训”推进到“能交论文素材”
+
+做了什么：
+
+- 继续重写 `export_field_maps.py`
+- 显式指定中文字体
+- 支持域外留白、相对误差百分比、纵向堆叠布局、连续几何裁剪
+- 新增 `prepare_chapter5_assets.py`
+- 重整 `results/thesis_assets/chapter5/`
+
+带来的进步：
+
+- `v4` 不再只是训练工作区，而变成“论文素材生成工作区”。
+- 场图可读性和可直接引用程度大幅提高。
+
+当时还没解决什么：
+
+- 仍然是模型工作区，不是完整系统交付。
+- 一些 bend 结果仍依赖 `v3` 时代形成的历史 run。
+
+## pinn-platform-v4 日志
+
+### 2026-04-04：把网站、API、模型整合成一个单仓库
+
+做了什么：
+
+- 新建 `pinn-platform-v4`
+- 把：
+  - `pinn-flow-visual-demo-v4` 的前端整理进 `web/`
+  - 演示 API 整理进 `api/`
+  - `pinn_v4` 模型主线整理进 `model/`
+- 补齐整合仓的 README、布局文档、部署说明
+
+带来的进步：
+
+- 毕设第一次以“单项目”的方式呈现，而不是两个并列仓库。
+- “模型 + 网站 + 接口 + 文档”被收在一个工作区里。
+
+当时还没解决什么：
+
+- 旧文档和部分 case/manifest 中仍残留旧路径
+- bend 权重并不完整，需要 fallback 兜底
+
+### 2026-04-04：本地跑通整合仓并切线上
+
+做了什么：
+
+- 验证了：
+  - `npm run check`
+  - `npm run test`
+  - `npm run build`
+  - Python 脚本 `py_compile`
+  - 本地 `/simulate`
+- 调整 API 为整合仓相对路径优先
+- 为 bend checkpoint 缺失场景增加 `SyntheticBendRuntime`
+- 切换线上静态站与 systemd service
+- 外网验证首页、`healthz`、contraction `/simulate`、bend `/simulate`
+
+带来的进步：
+
+- 这一步真正把前几代的研究内容变成“外网可访问的正式版系统”。
+
+当时还没解决什么：
+
+- bend 当前线上不是完整真实 checkpoint 口径，而是 fallback 兜底
+- 旧路径残留还没完全清光
+
+### 2026-04-04 ~ 2026-04-05：文档开始从“工作记录”升级成“交付说明”
+
+做了什么：
+
+- 重写整合仓 `README`
+- 新增：
+  - `INTEGRATION_AND_DEPLOYMENT.md`
+  - `PROJECT_EVOLUTION_V1_TO_V4.md`
+
+带来的进步：
+
+- 项目终于具备了对外可解释的层次：
+  - README 解释项目本身
+  - integration 文档解释当前系统怎么跑
+  - evolution 文档解释为什么会走到今天这一步
+
+当时还没解决什么：
+
+- 演进文档仍可继续细化到更具体的 run 表格级别
+- 如果后续要答辩或公开展示，可能还需要再补一版“精简答辩版摘要”
+
 ## 1. pinn_bifurcation_controlled_v1
 
 ### 阶段目标
