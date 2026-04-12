@@ -299,6 +299,118 @@ input[type='range'] {
   color: var(--ink-soft);
 }
 
+.hero-progress {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  gap: 16px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.hero-progress-inset {
+  flex: 0 0 min(100%, 440px);
+  width: min(100%, 440px);
+  margin-top: 2px;
+  margin-left: auto;
+  padding: 11px 13px;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  border-radius: 18px;
+}
+
+.hero-progress-copy,
+.hero-progress-meta {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.hero-progress-copy strong,
+.hero-progress-meta span {
+  color: var(--ink);
+}
+
+.hero-progress-copy span,
+.hero-progress-meta span {
+  font-size: 0.84rem;
+}
+
+.hero-progress-copy span {
+  color: var(--ink-soft);
+}
+
+.hero-progress-meta {
+  align-content: center;
+  justify-items: end;
+}
+
+.hero-progress-inset .hero-progress-meta {
+  justify-items: stretch;
+}
+
+.hero-progress-track {
+  position: relative;
+  width: min(100%, 320px);
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.hero-progress-inset .hero-progress-track {
+  width: 100%;
+}
+
+.hero-progress-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.hero-progress-running {
+  background: linear-gradient(180deg, rgba(31, 91, 216, 0.08), rgba(255, 255, 255, 0.86));
+}
+
+.hero-progress-running .hero-progress-fill {
+  width: 40%;
+  background: linear-gradient(90deg, rgba(31, 91, 216, 0.22), rgba(31, 91, 216, 0.92), rgba(108, 160, 255, 0.28));
+  animation: hero-progress-slide 1.35s ease-in-out infinite;
+}
+
+.hero-progress-ok {
+  background: linear-gradient(180deg, rgba(15, 118, 110, 0.08), rgba(255, 255, 255, 0.86));
+}
+
+.hero-progress-ok .hero-progress-fill {
+  width: 100%;
+  background: linear-gradient(90deg, rgba(15, 118, 110, 0.88), rgba(91, 183, 162, 0.92));
+}
+
+.hero-progress-danger {
+  background: linear-gradient(180deg, rgba(180, 35, 24, 0.08), rgba(255, 255, 255, 0.86));
+}
+
+.hero-progress-danger .hero-progress-fill {
+  width: 100%;
+  background: linear-gradient(90deg, rgba(180, 35, 24, 0.92), rgba(235, 95, 84, 0.92));
+}
+
+.hero-progress-idle,
+.hero-progress-warning {
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.hero-progress-idle .hero-progress-fill,
+.hero-progress-warning .hero-progress-fill {
+  width: 24%;
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.45), rgba(148, 163, 184, 0.82));
+}
+
 
 .workspace-grid {
   display: grid;
@@ -795,6 +907,14 @@ label {
     flex-direction: column;
   }
 
+  .hero-progress {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-progress-meta {
+    justify-items: start;
+  }
+
   .workspace-grid,
   .chart-row,
   .support-grid {
@@ -830,11 +950,25 @@ label {
     align-items: stretch;
   }
 
+  .hero-progress-track {
+    width: 100%;
+  }
+
   .stage-stats {
     justify-content: stretch;
   }
 
   .stage-stats div {
     min-width: 0;
+  }
+}
+
+@keyframes hero-progress-slide {
+  0% {
+    transform: translateX(-115%);
+  }
+
+  100% {
+    transform: translateX(285%);
   }
 }

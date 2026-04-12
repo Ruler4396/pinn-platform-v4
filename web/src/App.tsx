@@ -4,8 +4,10 @@ import { appConfig } from './lib/config';
 import { createInferenceAdapter } from './lib/inferenceAdapter';
 import { readPreviewCache, writePreviewCache } from './lib/localResultCache';
 import { defaultScenario, demoPresets } from './lib/presets';
-import { hashScenario } from './lib/utils';
+import { formatTimestamp, hashScenario } from './lib/utils';
 import type { ActionStatus, DemoPreset, FieldLayer, FieldPoint, ScenarioInput, ScenarioResult } from './types/pinn';
+
+type StatusKey = 'simulate' | 'reconstruct' | 'probe' | 'streamlines';
 
 const emptyStatus = (label: string): ActionStatus => ({
   label,
@@ -13,6 +15,50 @@ const emptyStatus = (label: string): ActionStatus => ({
   detail: '待执行',
   updatedAt: undefined
 });
+
+const createInitialStatuses = (): Record<StatusKey, ActionStatus> => ({
+  simulate: emptyStatus('simulate'),
+  reconstruct: emptyStatus('reconstruct'),
+  probe: emptyStatus('probe'),
+  streamlines: emptyStatus('streamlines')
+});
+
+const statusTitles: Record<StatusKey, string> = {
+  simulate: '流场计算',
+  reconstruct: '稀疏重建',
+  probe: '点位查询',
+  streamlines: '流线加载'
+};
+
+function statusHeadline(status: ActionStatus): string {
+  const label = statusTitles[status.label as StatusKey] ?? status.label;
+  if (status.state === 'running') {
+    return `${label}进行中`;
+  }
+  if (status.state === 'retrying') {
+    return `${label}重试中`;
+  }
+  if (status.state === 'success') {
+    return `${label}已完成`;
+  }
+  if (status.state === 'error') {
+    return `${label}失败`;
+  }
+  return `${label}待执行`;
+}
+
+function statusTone(status: ActionStatus): 'idle' | 'running' | 'ok' | 'danger' | 'warning' {
+  if (status.state === 'running' || status.state === 'retrying') {
+    return 'running';
+  }
+  if (status.state === 'success') {
+    return 'ok';
+  }
+  if (status.state === 'error') {
+    return 'danger';
+  }
+  return 'idle';
+}
 
 const fluidPresets = {
   water: { density: 997.05, viscosity: 8.902e-4 },
@@ -119,12 +165,19 @@ export default function App() {
   const [streamlineLoadState, setStreamlineLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [probeInput, setProbeInput] = useState({ x: 0, y: 0 });
   const [probeResult, setProbeResult] = useState<FieldPoint | null>(null);
-  const [, setStatuses] = useState<Record<string, ActionStatus>>({
-    simulate: emptyStatus('simulate'),
-    reconstruct: emptyStatus('reconstruct'),
-    probe: emptyStatus('probe'),
-    streamlines: emptyStatus('streamlines')
-  });
+  const [statuses, setStatuses] = useState<Record<StatusKey, ActionStatus>>(createInitialStatuses);
+
+  const publishStatus = (label: StatusKey, state: ActionStatus['state'], detail: string) => {
+    setStatuses((current) => ({
+      ...current,
+      [label]: {
+        label,
+        state,
+        detail,
+        updatedAt: formatTimestamp()
+      }
+    }));
+  };
 
   const adapter = useMemo(
     () =>
@@ -158,6 +211,14 @@ export default function App() {
     () => hashScenario(normalizeScenario(scenario)) !== hashScenario(solvedScenario),
     [scenario, solvedScenario]
   );
+  const simulateBusy = statuses.simulate.state === 'running' || statuses.simulate.state === 'retrying';
+  const reconstructBusy = statuses.reconstruct.state === 'running' || statuses.reconstruct.state === 'retrying';
+  const streamlinesBusy = statuses.streamlines.state === 'running' || statuses.streamlines.state === 'retrying';
+  const activeBusyStatus = useMemo(() => {
+    const ordered = ['simulate', 'reconstruct', 'streamlines'].map((key) => statuses[key as StatusKey]);
+    return ordered.find((status) => status.state === 'running' || status.state === 'retrying') ?? null;
+  }, [statuses]);
+  const activeStatusClass = activeBusyStatus ? `hero-progress hero-progress-inset hero-progress-${statusTone(activeBusyStatus)}` : '';
 
   const activePresetId = selectedPresetId;
 
@@ -245,6 +306,9 @@ export default function App() {
   };
 
   const handleSimulate = async (input = scenario) => {
+    if (simulateBusy || reconstructBusy) {
+      return;
+    }
     const normalizedInput = normalizeScenario(input);
     if (hashScenario(normalizedInput) !== hashScenario(input)) {
       setScenario(normalizedInput);
@@ -257,6 +321,7 @@ export default function App() {
         includeSparsePoints: false,
         includeReconstruction: false
       });
+      publishStatus('simulate', 'success', '流场热力图已更新。');
       writePreviewCache(normalizedInput, next);
       setSolvedScenario(normalizedInput);
       setResult(next);
@@ -269,14 +334,7 @@ export default function App() {
         void handleLoadStreamlines(normalizedInput);
       }
     } catch (error) {
-      setStatuses((current) => ({
-        ...current,
-        simulate: {
-          label: 'simulate',
-          state: 'error',
-          detail: error instanceof Error ? error.message : '计算失败'
-        }
-      }));
+      publishStatus('simulate', 'error', error instanceof Error ? error.message : '计算失败');
     }
   };
 
@@ -285,6 +343,7 @@ export default function App() {
       return;
     }
     setStreamlineLoadState('loading');
+    publishStatus('streamlines', 'running', '正在生成流线，可继续查看热力图。');
     try {
       const streamlines = await adapter.loadStreamlines(input, { resolution: 'preview' });
       setResult((current) =>
@@ -296,40 +355,21 @@ export default function App() {
           : current
       );
       setStreamlineLoadState('ready');
+      publishStatus('streamlines', 'success', '流线已加载。');
     } catch {
       setStreamlineLoadState('error');
+      publishStatus('streamlines', 'error', '流线加载失败，请稍后重试。');
     }
   };
 
   const handleQuery = async (point = probeInput) => {
-    setStatuses((current) => ({
-      ...current,
-      probe: {
-        label: 'probe',
-        state: 'running',
-        detail: '查询中'
-      }
-    }));
+    publishStatus('probe', 'running', '正在查询点位参数。');
     try {
       const value = await adapter.queryPoint(solvedScenario, point);
       setProbeResult(value);
-      setStatuses((current) => ({
-        ...current,
-        probe: {
-          label: 'probe',
-          state: 'success',
-          detail: value ? '已返回点位参数' : '该点位于流道外'
-        }
-      }));
+      publishStatus('probe', 'success', value ? '已返回点位参数。' : '该点位于流道外。');
     } catch (error) {
-      setStatuses((current) => ({
-        ...current,
-        probe: {
-          label: 'probe',
-          state: 'error',
-          detail: error instanceof Error ? error.message : '查询失败'
-        }
-      }));
+      publishStatus('probe', 'error', error instanceof Error ? error.message : '查询失败');
     }
   };
 
@@ -339,6 +379,9 @@ export default function App() {
   };
 
   const handleReconstruct = async () => {
+    if (simulateBusy || reconstructBusy) {
+      return;
+    }
     try {
       const normalizedScenario = normalizeScenario(scenario);
       if (hashScenario(normalizedScenario) !== hashScenario(scenario)) {
@@ -349,6 +392,7 @@ export default function App() {
         includeStreamlines: false,
         includeProbes: false
       });
+      publishStatus('reconstruct', 'success', '稀疏重建结果已生成。');
       setSolvedScenario(normalizedScenario);
       setResult({
         field: next.field,
@@ -362,14 +406,7 @@ export default function App() {
         void handleLoadStreamlines(normalizedScenario);
       }
     } catch (error) {
-      setStatuses((current) => ({
-        ...current,
-        reconstruct: {
-          label: 'reconstruct',
-          state: 'error',
-          detail: error instanceof Error ? error.message : '重建失败'
-        }
-      }));
+      publishStatus('reconstruct', 'error', error instanceof Error ? error.message : '重建失败');
     }
   };
 
@@ -411,7 +448,12 @@ export default function App() {
         </div>
         <div className="hero-actions">
           <div className="hero-select-field">
-            <select aria-label="案例预设" value={activePresetId} onChange={(event) => handleApplyPreset(event.target.value)}>
+            <select
+              aria-label="案例预设"
+              value={activePresetId}
+              onChange={(event) => handleApplyPreset(event.target.value)}
+              disabled={simulateBusy || reconstructBusy}
+            >
               {demoPresets.map((preset) => (
                 <option key={preset.id} value={preset.id}>
                   {preset.name}
@@ -421,20 +463,34 @@ export default function App() {
               <option value={customPresetIds.bend}>自定义弯曲流道</option>
             </select>
           </div>
-          <button type="button" className="primary" onClick={() => void handleSimulate()}>
-            {scenarioDirty ? '更新流场' : '重新计算'}
+          <button type="button" className="primary" onClick={() => void handleSimulate()} disabled={simulateBusy || reconstructBusy}>
+            {simulateBusy ? '计算中…' : scenarioDirty ? '更新流场' : '重新计算'}
           </button>
-          <button type="button" className="secondary" onClick={() => void handleReconstruct()}>
-            稀疏重建
+          <button type="button" className="secondary" onClick={() => void handleReconstruct()} disabled={simulateBusy || reconstructBusy}>
+            {reconstructBusy ? '重建中…' : '稀疏重建'}
           </button>
           <button
             type="button"
             className={showReconstruction ? 'secondary active' : 'secondary'}
             onClick={() => setShowReconstruction((value) => !value)}
-            disabled={!reconstructionResult}
+            disabled={!reconstructionResult || simulateBusy || reconstructBusy}
           >
             {showReconstruction ? '显示基准场' : '显示重建场'}
           </button>
+          {activeBusyStatus ? (
+            <div className={activeStatusClass} aria-live="polite">
+              <div className="hero-progress-copy">
+                <strong>{statusHeadline(activeBusyStatus)}</strong>
+                <span>{activeBusyStatus.detail}</span>
+              </div>
+              <div className="hero-progress-meta">
+                <span>{activeBusyStatus.updatedAt ? `更新时间 ${activeBusyStatus.updatedAt}` : '处理中'}</span>
+                <div className="hero-progress-track" aria-hidden="true">
+                  <div className="hero-progress-fill" />
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
       </header>
 
@@ -461,8 +517,9 @@ export default function App() {
                   type="button"
                   className={fieldLayer === 'streamline' ? 'mini-toggle active' : 'mini-toggle'}
                   onClick={() => handleLayerChange('streamline')}
+                  disabled={streamlinesBusy}
                 >
-                  流线
+                  {streamlinesBusy ? '流线加载中…' : '流线'}
                 </button>
               </div>
 

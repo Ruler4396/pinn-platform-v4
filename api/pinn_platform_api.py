@@ -688,6 +688,47 @@ class ScenarioEngine:
         return sparse_points
 
     @staticmethod
+    def _nearest_sparse_points(
+        target: dict[str, float],
+        sparse_points: list[dict[str, float]],
+        count: int,
+    ) -> list[dict[str, float]]:
+        ranked = sorted(
+            sparse_points,
+            key=lambda point: max(math.hypot(point['x'] - target['x'], point['y'] - target['y']), 1.0),
+        )
+        return ranked[:max(1, min(count, len(ranked)))]
+
+    def _reconstruct_field(
+        self,
+        field: list[dict[str, float]],
+        sparse_points: list[dict[str, float]],
+    ) -> list[dict[str, float]]:
+        if not sparse_points:
+            return field
+        reconstruction: list[dict[str, float]] = []
+        for target in field:
+            neighbors = self._nearest_sparse_points(target, sparse_points, count=8)
+            weights = [
+                1.0 / max(math.hypot(sample['x'] - target['x'], sample['y'] - target['y']), 1.0) ** 2
+                for sample in neighbors
+            ]
+            total_weight = max(sum(weights), 1.0e-6)
+            ux = sum(sample['ux'] * weight for sample, weight in zip(neighbors, weights, strict=False)) / total_weight
+            uy = sum(sample['uy'] * weight for sample, weight in zip(neighbors, weights, strict=False)) / total_weight
+            p = sum(sample['p'] * weight for sample, weight in zip(neighbors, weights, strict=False)) / total_weight
+            reconstruction.append(
+                {
+                    **target,
+                    'ux': float(ux),
+                    'uy': float(uy),
+                    'p': float(p),
+                    'speed': float(math.hypot(ux, uy)),
+                }
+            )
+        return reconstruction
+
+    @staticmethod
     def _compute_metrics(
         scenario: dict[str, Any],
         field: list[dict[str, float]],
@@ -765,9 +806,14 @@ class ScenarioEngine:
                 'mainCenterline': main_curve,
                 'branchCenterline': branch_curve,
             }
+        metrics_field = field
+        reconstruction = None
+        if include_reconstruction:
+            reconstruction = self._reconstruct_field(field, sparse_points or [])
+            metrics_field = reconstruction
         result: dict[str, Any] = {
             'field': field,
-            'metrics': self._compute_metrics(scenario, field, probes),
+            'metrics': self._compute_metrics(scenario, metrics_field, probes),
         }
         if streamlines is not None:
             result['streamlines'] = streamlines
@@ -775,8 +821,8 @@ class ScenarioEngine:
             result['probes'] = probes
         if sparse_points is not None:
             result['sparsePoints'] = sparse_points
-        if include_reconstruction:
-            result['reconstruction'] = field
+        if reconstruction is not None:
+            result['reconstruction'] = reconstruction
         return result
 
     def query_point(self, scenario: dict[str, Any], point: dict[str, float]) -> dict[str, float] | None:
