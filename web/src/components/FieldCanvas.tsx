@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef } from 'react';
 import type { FieldLayer, FieldPoint, ScenarioInput, ScenarioResult } from '../types/pinn';
-import { buildGeometry, type Point2D } from '../lib/geometry';
+import { buildGeometry, projectToSegment, type GeometryModel, type Point2D } from '../lib/geometry';
 import { clamp, lerp } from '../lib/utils';
 
 interface FieldCanvasProps {
@@ -19,7 +19,9 @@ interface ColorStop {
   rgb: [number, number, number];
 }
 
-const scientificStops: ColorStop[] = [
+type ScalarLayer = Exclude<FieldLayer, 'streamline'>;
+
+const velocityStops: ColorStop[] = [
   { at: 0, rgb: [22, 51, 112] },
   { at: 0.18, rgb: [35, 103, 206] },
   { at: 0.38, rgb: [67, 176, 223] },
@@ -29,19 +31,35 @@ const scientificStops: ColorStop[] = [
   { at: 1, rgb: [184, 45, 38] }
 ];
 
-function colorAt(t: number): [number, number, number] {
+const signedVelocityStops: ColorStop[] = [
+  { at: 0, rgb: [27, 77, 168] },
+  { at: 0.24, rgb: [114, 174, 233] },
+  { at: 0.5, rgb: [246, 246, 242] },
+  { at: 0.76, rgb: [241, 170, 104] },
+  { at: 1, rgb: [175, 49, 32] }
+];
+
+const pressureStops: ColorStop[] = [
+  { at: 0, rgb: [248, 247, 241] },
+  { at: 0.22, rgb: [238, 224, 200] },
+  { at: 0.48, rgb: [217, 177, 128] },
+  { at: 0.74, rgb: [176, 108, 74] },
+  { at: 1, rgb: [108, 38, 29] }
+];
+
+function colorAt(t: number, stops: ColorStop[]): [number, number, number] {
   const clamped = clamp(t, 0, 1);
-  const upperIndex = scientificStops.findIndex((stop) => stop.at >= clamped);
+  const upperIndex = stops.findIndex((stop) => stop.at >= clamped);
 
   if (upperIndex <= 0) {
-    return scientificStops[0].rgb;
+    return stops[0].rgb;
   }
   if (upperIndex === -1) {
-    return scientificStops[scientificStops.length - 1].rgb;
+    return stops[stops.length - 1].rgb;
   }
 
-  const left = scientificStops[upperIndex - 1];
-  const right = scientificStops[upperIndex];
+  const left = stops[upperIndex - 1];
+  const right = stops[upperIndex];
   const localT = (clamped - left.at) / Math.max(right.at - left.at, 1e-6);
 
   return [0, 1, 2].map((index) => {
@@ -50,8 +68,8 @@ function colorAt(t: number): [number, number, number] {
   }) as [number, number, number];
 }
 
-function buildGradientString(): string {
-  return `linear-gradient(90deg, ${scientificStops
+function buildGradientString(stops: ColorStop[]): string {
+  return `linear-gradient(90deg, ${stops
     .map((stop) => {
       const [r, g, b] = stop.rgb;
       return `rgb(${r}, ${g}, ${b}) ${stop.at * 100}%`;
@@ -59,11 +77,145 @@ function buildGradientString(): string {
     .join(', ')})`;
 }
 
-function rasterize(dataset: FieldPoint[], layer: FieldLayer) {
-  const scalarLayer = layer === 'pressure' ? 'pressure' : 'speed';
-  const values = dataset.map((point) => (scalarLayer === 'pressure' ? point.p : point.speed));
-  const minValue = values.length ? Math.min(...values) : 0;
-  const maxValue = values.length ? Math.max(...values) : 1;
+function findNearestGuideStation(point: Point2D, geometry: GeometryModel) {
+  const projections = geometry.guideStations.map((station) => ({
+    station,
+    projection: projectToSegment(point, station.segment)
+  }));
+
+  projections.sort((left, right) => {
+    const leftPenalty = Math.abs(left.projection.t) + left.projection.distance * 0.1;
+    const rightPenalty = Math.abs(right.projection.t) + right.projection.distance * 0.1;
+    return leftPenalty - rightPenalty;
+  });
+
+  return projections[0];
+}
+
+function scalarValueOf(point: FieldPoint, scalarLayer: ScalarLayer, geometry: GeometryModel): number {
+  switch (scalarLayer) {
+    case 'pressure':
+      return point.p;
+    case 'ux':
+      return point.ux;
+    case 'uy':
+      return point.uy;
+    case 'axial': {
+      const nearest = findNearestGuideStation(point, geometry);
+      return point.ux * nearest.station.segment.dir.x + point.uy * nearest.station.segment.dir.y;
+    }
+    case 'speed':
+    default:
+      return point.speed;
+  }
+}
+
+function estimatePressureSpan(
+  input: ScenarioInput,
+  geometry: GeometryModel,
+  result: ScenarioResult | null | undefined
+): number {
+  const widthM = input.geometry.wUm * 1e-6;
+  const totalLengthM = (geometry.meta.totalLengthUm ?? input.geometry.wUm * 8) * 1e-6;
+  const baseDrop =
+    widthM > 0 && totalLengthM > 0
+      ? (12 * input.fluid.viscosity * input.flow.meanVelocity * totalLengthM) / (widthM * widthM)
+      : 0;
+  const scenarioDrop =
+    input.geometry.type === 'bend'
+      ? baseDrop *
+        (1 +
+          (input.geometry.wUm / Math.max((geometry.meta.rcUm ?? input.geometry.wUm * 2), input.geometry.wUm)) *
+            ((geometry.meta.thetaDeg ?? input.geometry.thetaDeg) / 90) *
+            0.28)
+      : baseDrop;
+  return Math.max(result?.metrics.avgPressureDrop ?? 0, scenarioDrop, 1e-6);
+}
+
+function scalarRange(
+  input: ScenarioInput,
+  geometry: GeometryModel,
+  result: ScenarioResult | null | undefined,
+  scalarLayer: ScalarLayer,
+  values: number[]
+): { minValue: number; maxValue: number } {
+  const dataMin = values.length ? Math.min(...values) : 0;
+  const dataMax = values.length ? Math.max(...values) : 1;
+
+  if (input.geometry.type === 'bend') {
+    const speedCapMultiplier = input.geometry.inletProfile === 'blunted' ? 1.72 : 1.62;
+    const speedCap = Math.max(input.flow.meanVelocity * speedCapMultiplier, 1e-7);
+    const signedCap = Math.max(input.flow.meanVelocity * 1.05, speedCap * 0.92);
+    const transverseCap = Math.max(input.flow.meanVelocity * 0.38, speedCap * 0.34);
+    const pressureCap = estimatePressureSpan(input, geometry, result) * 1.04;
+
+    switch (scalarLayer) {
+      case 'pressure':
+        return {
+          minValue: input.flow.outletPressure,
+          maxValue: input.flow.outletPressure + pressureCap
+        };
+      case 'ux':
+        return {
+          minValue: -signedCap,
+          maxValue: signedCap
+        };
+      case 'uy':
+        return {
+          minValue: -transverseCap,
+          maxValue: transverseCap
+        };
+      case 'axial':
+      case 'speed':
+      default:
+        return {
+          minValue: 0,
+          maxValue: speedCap
+        };
+    }
+  }
+
+  if (scalarLayer === 'ux' || scalarLayer === 'uy') {
+    const signedBound = Math.max(Math.abs(dataMin), Math.abs(dataMax), 1e-6);
+    return {
+      minValue: -signedBound,
+      maxValue: signedBound
+    };
+  }
+
+  if (scalarLayer === 'axial') {
+    return {
+      minValue: Math.min(0, dataMin),
+      maxValue: Math.max(dataMax, 1e-6)
+    };
+  }
+
+  return {
+    minValue: dataMin,
+    maxValue: dataMax
+  };
+}
+
+function scalarStops(layer: ScalarLayer): ColorStop[] {
+  if (layer === 'pressure') {
+    return pressureStops;
+  }
+  if (layer === 'ux' || layer === 'uy') {
+    return signedVelocityStops;
+  }
+  return velocityStops;
+}
+
+function rasterize(
+  dataset: FieldPoint[],
+  layer: FieldLayer,
+  input: ScenarioInput,
+  geometry: GeometryModel,
+  result: ScenarioResult | null | undefined
+) {
+  const scalarLayer: ScalarLayer = layer === 'streamline' ? 'speed' : layer;
+  const values = dataset.map((point) => scalarValueOf(point, scalarLayer, geometry));
+  const { minValue, maxValue } = scalarRange(input, geometry, result, scalarLayer, values);
 
   const xs = Array.from(new Set(dataset.map((point) => point.x))).sort((left, right) => left - right);
   const ys = Array.from(new Set(dataset.map((point) => point.y))).sort((left, right) => left - right);
@@ -72,7 +224,7 @@ function rasterize(dataset: FieldPoint[], layer: FieldLayer) {
   const grid = Array.from({ length: ys.length }, () => Array<number | undefined>(xs.length).fill(undefined));
 
   dataset.forEach((point) => {
-    const value = scalarLayer === 'pressure' ? point.p : point.speed;
+    const value = scalarValueOf(point, scalarLayer, geometry);
     const row = yIndex.get(point.y);
     const col = xIndex.get(point.x);
     if (row !== undefined && col !== undefined) {
@@ -84,7 +236,7 @@ function rasterize(dataset: FieldPoint[], layer: FieldLayer) {
   const points = dataset.map((point) => ({
     x: point.x,
     y: point.y,
-    value: scalarLayer === 'pressure' ? point.p : point.speed
+    value: scalarValueOf(point, scalarLayer, geometry)
   }));
 
   return {
@@ -95,7 +247,9 @@ function rasterize(dataset: FieldPoint[], layer: FieldLayer) {
     points,
     occupancy,
     minValue,
-    maxValue
+    maxValue,
+    scalarLayer,
+    stops: scalarStops(scalarLayer)
   };
 }
 
@@ -209,13 +363,27 @@ function FieldCanvas({
   const width = bounds.xMax - bounds.xMin;
   const height = bounds.yMax - bounds.yMin;
   const viewBox = `${bounds.xMin} ${-bounds.yMax} ${width} ${height}`;
-  const raster = useMemo(() => rasterize(datasetForRender, layer), [datasetForRender, layer]);
+  const raster = useMemo(() => rasterize(datasetForRender, layer, input, geometry, result), [datasetForRender, geometry, input, layer, result]);
   const pixelWidth = 1440;
   const pixelHeight = Math.round((pixelWidth * height) / Math.max(width, 1));
   const aspectRatio = `${width} / ${height}`;
-  const scalarLabel = layer === 'pressure' ? '压力' : '速度';
+  const scalarLabel = useMemo(() => {
+    if (layer === 'pressure') {
+      return '压力';
+    }
+    if (layer === 'ux') {
+      return 'ux';
+    }
+    if (layer === 'uy') {
+      return 'uy';
+    }
+    if (layer === 'axial') {
+      return '局部轴向速度';
+    }
+    return '速度模';
+  }, [layer]);
   const legendUnit = layer === 'pressure' ? 'Pa' : 'm/s';
-  const legendGradient = useMemo(() => buildGradientString(), []);
+  const legendGradient = useMemo(() => buildGradientString(raster.stops), [raster.stops]);
   const streamlineStrokeWidth = Math.max(input.geometry.wUm * 0.018, 4);
   const markerRadius = Math.max(input.geometry.wUm * 0.042, 9);
 
@@ -297,7 +465,7 @@ function FieldCanvas({
               continue;
             }
             const t = clamp((value - raster.minValue) / Math.max(raster.maxValue - raster.minValue, 1e-6), 0, 1);
-            const [r, g, b] = colorAt(t);
+            const [r, g, b] = colorAt(t, raster.stops);
             image.data[pixelIndex] = r;
             image.data[pixelIndex + 1] = g;
             image.data[pixelIndex + 2] = b;
@@ -307,7 +475,7 @@ function FieldCanvas({
         sourceCtx.putImageData(image, 0, 0);
 
         ctx.imageSmoothingEnabled = true;
-        ctx.filter = 'blur(9px) saturate(0.96)';
+        ctx.filter = layer === 'pressure' ? 'blur(4px) saturate(0.92)' : 'blur(5px) saturate(0.98)';
         ctx.drawImage(source, 0, 0, pixelWidth, pixelHeight);
         ctx.filter = 'none';
         ctx.globalAlpha = layer === 'streamline' ? 0.48 : 0.92;
@@ -387,7 +555,7 @@ function FieldCanvas({
         raster.points.forEach((point) => {
           const mapped = toCanvasPoint(point);
           const t = clamp((point.value - raster.minValue) / Math.max(raster.maxValue - raster.minValue, 1e-6), 0, 1);
-          const [r, g, b] = colorAt(t);
+          const [r, g, b] = colorAt(t, raster.stops);
           const gradient = sourceCtx.createRadialGradient(mapped.x, mapped.y, 0, mapped.x, mapped.y, scatterRadius);
           gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${layer === 'streamline' ? 0.16 : 0.34})`);
           gradient.addColorStop(0.58, `rgba(${r}, ${g}, ${b}, ${layer === 'streamline' ? 0.08 : 0.16})`);
@@ -402,7 +570,7 @@ function FieldCanvas({
         });
 
         ctx.imageSmoothingEnabled = true;
-        ctx.filter = layer === 'streamline' ? 'blur(10px) saturate(0.9)' : 'blur(14px) saturate(1.04)';
+        ctx.filter = layer === 'streamline' ? 'blur(7px) saturate(0.9)' : 'blur(8px) saturate(1.02)';
         ctx.drawImage(source, 0, 0, pixelWidth, pixelHeight);
         ctx.filter = 'none';
         ctx.globalAlpha = layer === 'streamline' ? 0.44 : 0.96;

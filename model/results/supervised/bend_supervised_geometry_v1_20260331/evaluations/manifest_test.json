@@ -1,0 +1,33 @@
+{
+  "family": "bend_2d",
+  "run_name": "bend_supervised_geometry_v1_20260331",
+  "split_name": "test",
+  "eval_cases": [
+    "B-test-1",
+    "B-test-2"
+  ],
+  "device": "cpu",
+  "max_retries": 1,
+  "checkpoint_epoch": 1500,
+  "feature_mode": "geometry",
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "rc_over_w",
+    "theta_over_90",
+    "wall_distance_frac",
+    "region_id_norm",
+    "eta_norm_star",
+    "axial_frac_star",
+    "inlet_profile_star",
+    "tangent_x_star",
+    "tangent_y_star",
+    "segment_id_norm",
+    "center_proximity_star",
+    "wall_proximity_star",
+    "curvature_star"
+  ],
+  "source_run_config": "/root/dev/pinn_v3/results/supervised/bend_supervised_geometry_v1_20260331/config.json",
+  "metrics_file": "/root/dev/pinn_v3/results/supervised/bend_supervised_geometry_v1_20260331/evaluations/metrics_test.json",
+  "predictions_dir": "/root/dev/pinn_v3/results/supervised/bend_supervised_geometry_v1_20260331/evaluations/predictions_test"
+}

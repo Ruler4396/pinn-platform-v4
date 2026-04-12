@@ -87,6 +87,24 @@ function geometryFamilyLabel(type: ScenarioInput['geometry']['type']): string {
   return type === 'contraction' ? 'contraction_2d' : 'bend_2d';
 }
 
+function layerLabel(layer: FieldLayer): string {
+  switch (layer) {
+    case 'speed':
+      return '速度模';
+    case 'ux':
+      return 'ux';
+    case 'uy':
+      return 'uy';
+    case 'axial':
+      return '局部轴向';
+    case 'pressure':
+      return '压力';
+    case 'streamline':
+    default:
+      return '流线';
+  }
+}
+
 function presetIdForScenario(input: ScenarioInput): string {
   const target = hashScenario(input);
   const matched = demoPresets.find((preset) => hashScenario(preset.input) === target);
@@ -206,6 +224,12 @@ export default function App() {
     void handleSimulate(defaultScenario);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (solvedScenario.geometry.type === 'contraction' && fieldLayer === 'axial') {
+      setFieldLayer('speed');
+    }
+  }, [fieldLayer, solvedScenario.geometry.type]);
 
   const scenarioDirty = useMemo(
     () => hashScenario(normalizeScenario(scenario)) !== hashScenario(solvedScenario),
@@ -504,8 +528,31 @@ export default function App() {
                   className={fieldLayer === 'speed' ? 'mini-toggle active' : 'mini-toggle'}
                   onClick={() => handleLayerChange('speed')}
                 >
-                  速度场
+                  速度模
                 </button>
+                <button
+                  type="button"
+                  className={fieldLayer === 'ux' ? 'mini-toggle active' : 'mini-toggle'}
+                  onClick={() => handleLayerChange('ux')}
+                >
+                  ux
+                </button>
+                <button
+                  type="button"
+                  className={fieldLayer === 'uy' ? 'mini-toggle active' : 'mini-toggle'}
+                  onClick={() => handleLayerChange('uy')}
+                >
+                  uy
+                </button>
+                {solvedScenario.geometry.type === 'bend' ? (
+                  <button
+                    type="button"
+                    className={fieldLayer === 'axial' ? 'mini-toggle active' : 'mini-toggle'}
+                    onClick={() => handleLayerChange('axial')}
+                  >
+                    局部轴向
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className={fieldLayer === 'pressure' ? 'mini-toggle active' : 'mini-toggle'}
@@ -533,8 +580,8 @@ export default function App() {
                   <strong>{currentMetrics ? formatPressure(currentMetrics.avgPressureDrop) : '—'}</strong>
                 </div>
                 <div>
-                  <span>显示模式</span>
-                  <strong>{showReconstruction ? '重建场' : '基准场'}</strong>
+                  <span>当前图层</span>
+                  <strong>{layerLabel(fieldLayer)}</strong>
                 </div>
                 <div>
                   <span>Re</span>

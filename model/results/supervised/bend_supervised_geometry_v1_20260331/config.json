@@ -1,0 +1,132 @@
+{
+  "family": "bend_2d",
+  "data_subdir": "bend_2d",
+  "feature_mode": "geometry",
+  "base_feature_cols": [
+    "x_star",
+    "y_star",
+    "rc_over_w",
+    "theta_over_90",
+    "wall_distance_frac",
+    "region_id_norm",
+    "eta_norm_star",
+    "axial_frac_star",
+    "inlet_profile_star",
+    "tangent_x_star",
+    "tangent_y_star",
+    "segment_id_norm",
+    "center_proximity_star",
+    "wall_proximity_star",
+    "curvature_star"
+  ],
+  "drop_features": [],
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "rc_over_w",
+    "theta_over_90",
+    "wall_distance_frac",
+    "region_id_norm",
+    "eta_norm_star",
+    "axial_frac_star",
+    "inlet_profile_star",
+    "tangent_x_star",
+    "tangent_y_star",
+    "segment_id_norm",
+    "center_proximity_star",
+    "wall_proximity_star",
+    "curvature_star"
+  ],
+  "target_cols": [
+    "u_star",
+    "v_star",
+    "p_star"
+  ],
+  "train_cases": [
+    "B-base",
+    "B-train-1",
+    "B-train-2",
+    "B-train-3"
+  ],
+  "val_cases": [
+    "B-val"
+  ],
+  "train_observation_source": "dense",
+  "val_observation_source": "dense",
+  "device": "cpu",
+  "hidden_layers": [
+    128,
+    128,
+    128,
+    128
+  ],
+  "activation": "silu",
+  "lr": 0.0008,
+  "pressure_weight": 1.0,
+  "pressure_loss_mode": "mse",
+  "pressure_loss_p": 16.0,
+  "pressure_loss_p_start": 4.0,
+  "pressure_loss_p_end": 16.0,
+  "speed_tail_weight": 0.0,
+  "speed_tail_mode": "none",
+  "speed_tail_p": 12.0,
+  "speed_tail_p_start": 4.0,
+  "speed_tail_p_end": 12.0,
+  "progressive_pnorm": false,
+  "progressive_pnorm_start_ratio": 0.0,
+  "progressive_pnorm_end_ratio": 1.0,
+  "progressive_pnorm_power": 1.0,
+  "max_epochs": 1500,
+  "patience": 180,
+  "seed": 42,
+  "max_retries": 1,
+  "runtime_guard": {
+    "max_retries": 1
+  },
+  "normalization": {
+    "x_mean": [
+      6.736799716949463,
+      3.6690361499786377,
+      5.298110008239746,
+      1.0,
+      0.482832670211792,
+      0.5351900458335876,
+      0.012634243816137314,
+      0.2748304605484009,
+      0.9646729826927185,
+      0.5073868632316589,
+      0.6113195419311523,
+      0.5523451566696167,
+      0.482832670211792,
+      0.517167329788208,
+      0.0826731026172638
+    ],
+    "x_std": [
+      3.1268398761749268,
+      3.8123905658721924,
+      0.8173235058784485,
+      1.0,
+      0.2990361750125885,
+      0.38242068886756897,
+      0.59726482629776,
+      0.18677182495594025,
+      0.4798578917980194,
+      0.4366486370563507,
+      0.4221196174621582,
+      0.3728359639644623,
+      0.2990361750125885,
+      0.2990361750125885,
+      0.09694981575012207
+    ],
+    "y_mean": [
+      0.49003684520721436,
+      0.5897693634033203,
+      110.08792114257812
+    ],
+    "y_std": [
+      0.529924750328064,
+      0.5411533117294312,
+      66.49104309082031
+    ]
+  }
+}

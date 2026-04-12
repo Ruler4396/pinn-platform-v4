@@ -1,0 +1,13 @@
+{
+  "family": "bend_2d",
+  "run_name": "bend_independent_blunted_geometry_notemplate_medium_v1_20260401",
+  "split_name": "web_candidate_test",
+  "eval_cases": [
+    "B-test-1__ip_blunted"
+  ],
+  "eval_source": "dense",
+  "device": "cpu",
+  "max_retries": 1,
+  "metrics_file": "/root/dev/pinn_v3/results/pinn/bend_independent_blunted_geometry_notemplate_medium_v1_20260401/evaluations/metrics_web_candidate_test.json",
+  "predictions_dir": "/root/dev/pinn_v3/results/pinn/bend_independent_blunted_geometry_notemplate_medium_v1_20260401/evaluations/predictions_web_candidate_test"
+}

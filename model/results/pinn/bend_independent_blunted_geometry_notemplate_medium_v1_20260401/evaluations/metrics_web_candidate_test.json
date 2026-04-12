@@ -1,0 +1,82 @@
+{
+  "family": "bend_2d",
+  "run_name": "bend_independent_blunted_geometry_notemplate_medium_v1_20260401",
+  "split_name": "web_candidate_test",
+  "eval_cases": [
+    "B-test-1__ip_blunted"
+  ],
+  "eval_source": "dense",
+  "feature_mode": "geometry",
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "rc_over_w",
+    "theta_over_90",
+    "wall_distance_frac",
+    "region_id_norm",
+    "eta_norm_star",
+    "axial_frac_star",
+    "tangent_x_star",
+    "tangent_y_star",
+    "segment_id_norm",
+    "center_proximity_star",
+    "wall_proximity_star",
+    "curvature_star"
+  ],
+  "summary": {
+    "num_cases": 1,
+    "mean_rel_l2_u": 0.05630224198102951,
+    "max_rel_l2_u": 0.05630224198102951,
+    "mean_rel_l2_v": 0.031183086335659027,
+    "max_rel_l2_v": 0.031183086335659027,
+    "mean_rel_l2_p": 0.03607439249753952,
+    "max_rel_l2_p": 0.03607439249753952,
+    "mean_rel_l2_speed": 0.03237175568938255,
+    "max_rel_l2_speed": 0.03237175568938255,
+    "mean_mae_u": 0.030833963304758072,
+    "max_mae_u": 0.030833963304758072,
+    "mean_mae_v": 0.018286628648638725,
+    "max_mae_v": 0.018286628648638725,
+    "mean_mae_p": 3.1619648933410645,
+    "max_mae_p": 3.1619648933410645,
+    "mean_pressure_drop_rel_error": 0.017136922322422088,
+    "max_pressure_drop_rel_error": 0.017136922322422088,
+    "mean_wall_max_abs_u_pred": 0.1296088695526123,
+    "max_wall_max_abs_u_pred": 0.1296088695526123,
+    "mean_wall_max_abs_v_pred": 0.09178680181503296,
+    "max_wall_max_abs_v_pred": 0.09178680181503296
+  },
+  "global_metrics": {
+    "rel_l2_u": 0.05630224198102951,
+    "rel_l2_v": 0.031183086335659027,
+    "rel_l2_p": 0.03607439249753952,
+    "rel_l2_speed": 0.03237175568938255,
+    "max_speed_err_over_speed_max": 0.14232204854488373,
+    "max_p_err_over_p_range": 0.05515018105506897,
+    "p95_speed_err_over_speed_max": 0.04313204810023308,
+    "p95_p_err_over_p_range": 0.039477765560150146
+  },
+  "case_metrics": [
+    {
+      "case_id": "B-test-1__ip_blunted",
+      "num_points": 8015,
+      "rel_l2_u": 0.05630224198102951,
+      "rel_l2_v": 0.031183086335659027,
+      "rel_l2_p": 0.03607439249753952,
+      "rel_l2_speed": 0.03237175568938255,
+      "mae_u": 0.030833963304758072,
+      "mae_v": 0.018286628648638725,
+      "mae_p": 3.1619648933410645,
+      "wall_max_abs_u_pred": 0.1296088695526123,
+      "wall_max_abs_v_pred": 0.09178680181503296,
+      "pressure_drop_truth": 178.37290954589844,
+      "pressure_drop_pred": 181.42967224121094,
+      "pressure_drop_rel_error": 0.017136922322422088,
+      "inlet_flux_truth": 0.9986742110685451,
+      "inlet_flux_pred": 0.9683413722548444,
+      "outlet_flux_truth": 0.9992261489309442,
+      "outlet_flux_pred": 0.9973888379290656
+    }
+  ],
+  "source_run_config": "/root/dev/pinn_v3/results/pinn/bend_independent_blunted_geometry_notemplate_medium_v1_20260401/config.json"
+}
