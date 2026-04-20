@@ -1,0 +1,164 @@
+{
+  "metadata": {
+    "created_at": "2026-04-20T16:51:07",
+    "hostname": "iZ7xv19l7qsogyq3hzyhydZ",
+    "platform": "Linux-5.15.0-164-generic-x86_64-with-glibc2.35",
+    "python": "3.10.12",
+    "pinn_runs": 7,
+    "cfd_runs": 3,
+    "pinn_mode": "api ScenarioEngine preview inference",
+    "cfd_mode": "FreeFem++ Stokes solve"
+  },
+  "scenarios": {
+    "contraction": {
+      "geometry": {
+        "type": "contraction",
+        "wUm": 200,
+        "lInOverW": 4,
+        "lOutOverW": 8,
+        "beta": 0.7,
+        "lCOverW": 4,
+        "rcOverW": 6,
+        "thetaDeg": 90,
+        "inletProfile": "parabolic"
+      },
+      "fluid": {
+        "preset": "water",
+        "density": 997.05,
+        "viscosity": 0.0008902
+      },
+      "flow": {
+        "meanVelocity": 0.0001,
+        "outletPressure": 0
+      },
+      "sparse": {
+        "sampleRatePct": 10,
+        "noisePct": 2,
+        "strategy": "region_aware"
+      }
+    },
+    "bend": {
+      "geometry": {
+        "type": "bend",
+        "wUm": 200,
+        "lInOverW": 4,
+        "lOutOverW": 6,
+        "beta": 0.7,
+        "lCOverW": 4,
+        "rcOverW": 6,
+        "thetaDeg": 90,
+        "inletProfile": "parabolic"
+      },
+      "fluid": {
+        "preset": "water",
+        "density": 997.05,
+        "viscosity": 0.0008902
+      },
+      "flow": {
+        "meanVelocity": 0.0001,
+        "outletPressure": 0
+      },
+      "sparse": {
+        "sampleRatePct": 10,
+        "noisePct": 2,
+        "strategy": "region_aware"
+      }
+    }
+  },
+  "benchmarks": {
+    "contraction_full_inference": {
+      "samples_s": [
+        0.08088681500521488,
+        0.08290161300101317,
+        0.07872793199203443,
+        0.08092998199572321,
+        0.08538748799765017,
+        0.08742135501233861,
+        0.0951941910025198
+      ],
+      "min_s": 0.07872793199203443,
+      "median_s": 0.08290161300101317,
+      "max_s": 0.0951941910025198,
+      "mean_s": 0.08449276800092775,
+      "runs": 7
+    },
+    "contraction_sparse_reconstruction": {
+      "samples_s": [
+        0.24029378399427515,
+        0.22832436898897868,
+        0.21607210500224028,
+        0.22498685200116597,
+        0.236469188996125,
+        0.23647359800816048,
+        0.22658495500218123
+      ],
+      "min_s": 0.21607210500224028,
+      "median_s": 0.22832436898897868,
+      "max_s": 0.24029378399427515,
+      "mean_s": 0.22988640742758953,
+      "runs": 7
+    },
+    "bend_full_inference": {
+      "samples_s": [
+        0.12051299201266374,
+        0.11495743299019523,
+        0.12366224199649878,
+        0.11830073400051333,
+        0.11456536100013182,
+        0.1184109440073371,
+        0.12647477599966805
+      ],
+      "min_s": 0.11456536100013182,
+      "median_s": 0.1184109440073371,
+      "max_s": 0.12647477599966805,
+      "mean_s": 0.11955492600100115,
+      "runs": 7
+    },
+    "bend_sparse_reconstruction": {
+      "samples_s": [
+        0.38999231399793644,
+        0.3789929100021254,
+        0.47622409199539106,
+        0.3897043859906262,
+        0.3832928009942407,
+        0.3902726249943953,
+        0.3790380290010944
+      ],
+      "min_s": 0.3789929100021254,
+      "median_s": 0.3897043859906262,
+      "max_s": 0.47622409199539106,
+      "mean_s": 0.3982167367108299,
+      "runs": 7
+    },
+    "contraction_cfd": {
+      "samples_s": [
+        0.7481764940021094,
+        0.48716429799969774,
+        0.5009102029871428
+      ],
+      "min_s": 0.48716429799969774,
+      "median_s": 0.5009102029871428,
+      "max_s": 0.7481764940021094,
+      "mean_s": 0.5787503316629833,
+      "runs": 3
+    },
+    "bend_cfd": {
+      "samples_s": [
+        3.638016572003835,
+        3.6311956889985595,
+        3.7745859760034364
+      ],
+      "min_s": 3.6311956889985595,
+      "median_s": 3.638016572003835,
+      "max_s": 3.7745859760034364,
+      "mean_s": 3.6812660790019436,
+      "runs": 3
+    }
+  },
+  "comparison": {
+    "contraction_full_vs_cfd_speedup": 6.042225052738371,
+    "contraction_sparse_vs_cfd_speedup": 2.1938534428242393,
+    "bend_full_vs_cfd_speedup": 30.723651453858967,
+    "bend_sparse_vs_cfd_speedup": 9.33532365245523
+  }
+}

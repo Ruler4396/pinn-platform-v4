@@ -1,0 +1,4 @@
+metric_key,metric_label,definition,basic,geometry,absolute_gain,relative_gain_pct
+geometry_generalization_error,几何泛化误差,dense 监督训练后，在未见几何 C-test-1/C-test-2 上的速度 mean Rel-L2,0.575324535369873,0.030832740478217602,0.5444917948916554,94.64080904208345
+pressure_error,压力误差,dense 监督训练后，在未见几何 C-test-1/C-test-2 上的压力 mean Rel-L2,0.26808154582977295,0.1843373030424118,0.08374424278736115,31.238346723253102
+sparse_reconstruction_error,稀疏重建误差,5% 稀疏观测监督训练后，在 dense test 上恢复全场的速度 mean Rel-L2,0.7883111238479614,0.1642717346549034,0.624039389193058,79.16156074862317

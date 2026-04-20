@@ -1,0 +1,37 @@
+
+$ python3 /root/dev/pinn-platform-v4/model/scripts/evaluate_velocity_pressure_independent.py --family contraction_2d --run-name contraction_independent_basic_sparse5clean_softwall_ablation_v1_20260420 --eval-cases C-test-1,C-test-2 --split-name ablation_test_sparse --eval-source dense --max-retries 1
+[done] metrics=/root/dev/pinn-platform-v4/model/results/pinn/contraction_independent_basic_sparse5clean_softwall_ablation_v1_20260420/evaluations/metrics_ablation_test_sparse.json
+predictions_dir=/root/dev/pinn-platform-v4/model/results/pinn/contraction_independent_basic_sparse5clean_softwall_ablation_v1_20260420/evaluations/predictions_ablation_test_sparse
+{
+  "num_cases": 2,
+  "mean_rel_l2_u": 0.7883585691452026,
+  "max_rel_l2_u": 0.8149648904800415,
+  "mean_rel_l2_v": 1.0420464873313904,
+  "max_rel_l2_v": 1.1368675231933594,
+  "mean_rel_l2_p": 0.26447389274835587,
+  "max_rel_l2_p": 0.31247085332870483,
+  "mean_rel_l2_speed": 0.7883111238479614,
+  "max_rel_l2_speed": 0.8149072527885437,
+  "mean_mae_u": 0.9471670091152191,
+  "max_mae_u": 1.115323543548584,
+  "mean_mae_v": 0.013145090080797672,
+  "max_mae_v": 0.01696043089032173,
+  "mean_mae_p": 269.49384689331055,
+  "max_mae_p": 460.72314453125,
+  "mean_pressure_drop_rel_error": 0.262498950306205,
+  "max_pressure_drop_rel_error": 0.3650214184786937,
+  "mean_wall_max_abs_u_pred": 2.8705382347106934,
+  "max_wall_max_abs_u_pred": 3.1534900665283203,
+  "mean_wall_max_abs_v_pred": 0.03301939647644758,
+  "max_wall_max_abs_v_pred": 0.04083685204386711
+}
+{
+  "rel_l2_u": 0.791883647441864,
+  "rel_l2_v": 1.0765407085418701,
+  "rel_l2_p": 0.30429401993751526,
+  "rel_l2_speed": 0.791835367679596,
+  "max_speed_err_over_speed_max": 0.840930700302124,
+  "max_p_err_over_p_range": 0.42679262161254883,
+  "p95_speed_err_over_speed_max": 0.6900202035903931,
+  "p95_p_err_over_p_range": 0.39512085914611816
+}

@@ -1,0 +1,93 @@
+{
+  "family": "contraction_2d",
+  "run_name": "contraction_independent_basic_dense_softwall_ablation_v1_20260420",
+  "split_name": "ablation_test_dense",
+  "eval_cases": [
+    "C-test-1",
+    "C-test-2"
+  ],
+  "eval_source": "dense",
+  "feature_mode": "basic",
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "beta",
+    "lc_over_w"
+  ],
+  "summary": {
+    "num_cases": 2,
+    "mean_rel_l2_u": 0.5753615200519562,
+    "max_rel_l2_u": 0.6311554312705994,
+    "mean_rel_l2_v": 0.8628172874450684,
+    "max_rel_l2_v": 0.8694355487823486,
+    "mean_rel_l2_p": 0.26808154582977295,
+    "max_rel_l2_p": 0.28388768434524536,
+    "mean_rel_l2_speed": 0.575324535369873,
+    "max_rel_l2_speed": 0.6311109662055969,
+    "mean_mae_u": 0.7646791338920593,
+    "max_mae_u": 0.9510020017623901,
+    "mean_mae_v": 0.009423648472875357,
+    "max_mae_v": 0.011299383826553822,
+    "mean_mae_p": 250.3281478881836,
+    "max_mae_p": 409.8053283691406,
+    "mean_pressure_drop_rel_error": 0.27543487647921217,
+    "max_pressure_drop_rel_error": 0.43707713539870846,
+    "mean_wall_max_abs_u_pred": 1.8785759210586548,
+    "max_wall_max_abs_u_pred": 2.106921911239624,
+    "mean_wall_max_abs_v_pred": 0.021315784193575382,
+    "max_wall_max_abs_v_pred": 0.023838868364691734
+  },
+  "global_metrics": {
+    "rel_l2_u": 0.5844621658325195,
+    "rel_l2_v": 0.8649862408638,
+    "rel_l2_p": 0.2809070646762848,
+    "rel_l2_speed": 0.5844248533248901,
+    "max_speed_err_over_speed_max": 0.5619423985481262,
+    "max_p_err_over_p_range": 0.4021216332912445,
+    "p95_speed_err_over_speed_max": 0.45538419485092163,
+    "p95_p_err_over_p_range": 0.3699679672718048
+  },
+  "case_metrics": [
+    {
+      "case_id": "C-test-1",
+      "num_points": 1900,
+      "rel_l2_u": 0.519567608833313,
+      "rel_l2_v": 0.8561990261077881,
+      "rel_l2_p": 0.25227540731430054,
+      "rel_l2_speed": 0.5195381045341492,
+      "mae_u": 0.5783562660217285,
+      "mae_v": 0.007547913119196892,
+      "mae_p": 90.85096740722656,
+      "wall_max_abs_u_pred": 1.6502299308776855,
+      "wall_max_abs_v_pred": 0.01879270002245903,
+      "pressure_drop_truth": 638.3499755859375,
+      "pressure_drop_pred": 917.358154296875,
+      "pressure_drop_rel_error": 0.43707713539870846,
+      "inlet_flux_truth": 0.9993342202681574,
+      "inlet_flux_pred": 1.4793686718200543,
+      "outlet_flux_truth": 0.9985988031622166,
+      "outlet_flux_pred": 0.8891858006151782
+    },
+    {
+      "case_id": "C-test-2",
+      "num_points": 1545,
+      "rel_l2_u": 0.6311554312705994,
+      "rel_l2_v": 0.8694355487823486,
+      "rel_l2_p": 0.28388768434524536,
+      "rel_l2_speed": 0.6311109662055969,
+      "mae_u": 0.9510020017623901,
+      "mae_v": 0.011299383826553822,
+      "mae_p": 409.8053283691406,
+      "wall_max_abs_u_pred": 2.106921911239624,
+      "wall_max_abs_v_pred": 0.023838868364691734,
+      "pressure_drop_truth": 1957.869873046875,
+      "pressure_drop_pred": 1735.0787353515625,
+      "pressure_drop_rel_error": 0.11379261755971581,
+      "inlet_flux_truth": 0.9993339531855148,
+      "inlet_flux_pred": 1.7170936902088583,
+      "outlet_flux_truth": 0.9985859180816705,
+      "outlet_flux_pred": 0.6054367860429422
+    }
+  ],
+  "source_run_config": "/root/dev/pinn-platform-v4/model/results/pinn/contraction_independent_basic_dense_softwall_ablation_v1_20260420/config.json"
+}

@@ -1,0 +1,49 @@
+
+$ python3 /root/dev/pinn-platform-v4/model/scripts/evaluate_velocity_pressure_independent.py --family contraction_2d --run-name contraction_independent_basic_dense_softwall_ablation_v1_20260420 --eval-cases C-test-1,C-test-2 --split-name ablation_test_dense --eval-source dense --max-retries 1
+[attempt 1/1] failed: Missing checkpoint: /root/dev/pinn-platform-v4/model/results/pinn/contraction_independent_basic_dense_softwall_ablation_v1_20260420/best.ckpt
+Traceback (most recent call last):
+  File "/root/dev/pinn-platform-v4/model/scripts/evaluate_velocity_pressure_independent.py", line 198, in <module>
+    main()
+  File "/root/dev/pinn-platform-v4/model/scripts/evaluate_velocity_pressure_independent.py", line 182, in main
+    result = evaluate_once(args)
+  File "/root/dev/pinn-platform-v4/model/scripts/evaluate_velocity_pressure_independent.py", line 81, in evaluate_once
+    raise FileNotFoundError(f"Missing checkpoint: {ckpt_path}")
+FileNotFoundError: Missing checkpoint: /root/dev/pinn-platform-v4/model/results/pinn/contraction_independent_basic_dense_softwall_ablation_v1_20260420/best.ckpt
+[attempt 1] failed with exit code 1
+
+$ python3 /root/dev/pinn-platform-v4/model/scripts/evaluate_velocity_pressure_independent.py --family contraction_2d --run-name contraction_independent_basic_dense_softwall_ablation_v1_20260420 --eval-cases C-test-1,C-test-2 --split-name ablation_test_dense --eval-source dense --max-retries 1
+[done] metrics=/root/dev/pinn-platform-v4/model/results/pinn/contraction_independent_basic_dense_softwall_ablation_v1_20260420/evaluations/metrics_ablation_test_dense.json
+predictions_dir=/root/dev/pinn-platform-v4/model/results/pinn/contraction_independent_basic_dense_softwall_ablation_v1_20260420/evaluations/predictions_ablation_test_dense
+{
+  "num_cases": 2,
+  "mean_rel_l2_u": 0.5753615200519562,
+  "max_rel_l2_u": 0.6311554312705994,
+  "mean_rel_l2_v": 0.8628172874450684,
+  "max_rel_l2_v": 0.8694355487823486,
+  "mean_rel_l2_p": 0.26808154582977295,
+  "max_rel_l2_p": 0.28388768434524536,
+  "mean_rel_l2_speed": 0.575324535369873,
+  "max_rel_l2_speed": 0.6311109662055969,
+  "mean_mae_u": 0.7646791338920593,
+  "max_mae_u": 0.9510020017623901,
+  "mean_mae_v": 0.009423648472875357,
+  "max_mae_v": 0.011299383826553822,
+  "mean_mae_p": 250.3281478881836,
+  "max_mae_p": 409.8053283691406,
+  "mean_pressure_drop_rel_error": 0.27543487647921217,
+  "max_pressure_drop_rel_error": 0.43707713539870846,
+  "mean_wall_max_abs_u_pred": 1.8785759210586548,
+  "max_wall_max_abs_u_pred": 2.106921911239624,
+  "mean_wall_max_abs_v_pred": 0.021315784193575382,
+  "max_wall_max_abs_v_pred": 0.023838868364691734
+}
+{
+  "rel_l2_u": 0.5844621658325195,
+  "rel_l2_v": 0.8649862408638,
+  "rel_l2_p": 0.2809070646762848,
+  "rel_l2_speed": 0.5844248533248901,
+  "max_speed_err_over_speed_max": 0.5619423985481262,
+  "max_p_err_over_p_range": 0.4021216332912445,
+  "p95_speed_err_over_speed_max": 0.45538419485092163,
+  "p95_p_err_over_p_range": 0.3699679672718048
+}
