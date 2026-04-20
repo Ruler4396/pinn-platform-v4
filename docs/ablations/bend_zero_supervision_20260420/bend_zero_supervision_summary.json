@@ -1,0 +1,38 @@
+{
+  "experiment": "bend_sparse_rate_curve_with_zero",
+  "note": "0% 观测表示无点位监督，但仍保留物理方程、入口流量、出口压力/压降等约束；1%/5%/10%/15% 为对应比例的内部观测监督。",
+  "dense_reference_run": "bend_independent_blunted_geometry_notemplate_medium_v1_20260401",
+  "dense_final_val_rel_l2_speed": 0.0281091425567865,
+  "sparse_sampling_results": {
+    "0%": {
+      "run_name": "bend_independent_blunted_sparse0clean_softwall_v1_20260420",
+      "final_val_rel_l2_speed": 0.3004438281059265,
+      "gap_vs_dense": 0.27233468554914003,
+      "ratio_vs_dense": 10.688473598899913
+    },
+    "1%": {
+      "run_name": "bend_independent_blunted_sparse1clean_softwall_v1_20260420",
+      "final_val_rel_l2_speed": 0.0296342093497514,
+      "gap_vs_dense": 0.0015250667929649006,
+      "ratio_vs_dense": 1.0542551872538957
+    },
+    "5%": {
+      "run_name": "bend_independent_blunted_sparse5clean_softwall_v1_20260420",
+      "final_val_rel_l2_speed": 0.0275110658258199,
+      "gap_vs_dense": -0.0005980767309665992,
+      "ratio_vs_dense": 0.9787230531931611
+    },
+    "10%": {
+      "run_name": "bend_independent_blunted_sparse10clean_softwall_v1_20260420",
+      "final_val_rel_l2_speed": 0.0279586464166641,
+      "gap_vs_dense": -0.00015049614012239976,
+      "ratio_vs_dense": 0.9946460074398084
+    },
+    "15%": {
+      "run_name": "bend_independent_blunted_sparse15clean_softwall_v1_20260420",
+      "final_val_rel_l2_speed": 0.027815818786621,
+      "gap_vs_dense": -0.00029332377016549893,
+      "ratio_vs_dense": 0.9895648268326606
+    }
+  }
+}
