@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -347,6 +348,167 @@ def plot_stagepde_comparison(section_dir: Path) -> list[str]:
     return [out.name]
 
 
+def plot_dual_model_coupled_training_loss(section_dir: Path) -> list[str]:
+    配置中文绘图(prefer_serif=False)
+    history = pd.read_csv(
+        V4_ROOT / "results" / "pinn" / "contraction_independent_geometry_notemplate_stagepde_mainline_v4" / "history.csv"
+    )
+    history["训练步"] = np.arange(1, len(history) + 1)
+
+    stage_spans: list[tuple[str, int, int]] = []
+    start = 1
+    for stage_name, group in history.groupby("阶段", sort=False):
+        end = start + len(group) - 1
+        stage_spans.append((str(stage_name), start, end))
+        start = end + 1
+
+    fig, ax = plt.subplots(figsize=(9.8, 5.8))
+    bg_colors = ["#f6efe7", "#eef4fb", "#edf7ed"]
+    stage_labels = {
+        "第一阶段_速度模型": "阶段 1\n速度模型预训练",
+        "第二阶段_压力模型": "阶段 2\n压力模型预训练",
+        "第三阶段_交替耦合": "阶段 3\n交替耦合微调",
+    }
+
+    y_speed = history["验证_rel_l2_speed"].to_numpy()
+    y_pressure = history["验证_rel_l2_p"].to_numpy()
+    y_max = float(max(np.nanmax(y_speed), np.nanmax(y_pressure)))
+    y_min = float(min(np.nanmin(y_speed), np.nanmin(y_pressure)))
+    y_span = max(y_max - y_min, 1.0e-6)
+    stage_centers: list[float] = []
+    stage_texts: list[str] = []
+
+    for idx, (stage_name, span_start, span_end) in enumerate(stage_spans):
+        ax.axvspan(span_start, span_end, color=bg_colors[idx % len(bg_colors)], alpha=0.65, zorder=0)
+        stage_centers.append((span_start + span_end) / 2.0)
+        stage_texts.append(stage_labels.get(stage_name, stage_name))
+        if idx > 0:
+            ax.axvline(span_start - 0.5, color="#7f7f7f", linestyle="--", linewidth=1.0, alpha=0.9, zorder=1)
+
+    top_ax = ax.secondary_xaxis("top")
+    top_ax.set_xticks(stage_centers)
+    top_ax.set_xticklabels(stage_texts, fontsize=10, color="#444444")
+    top_ax.tick_params(axis="x", length=0, pad=8)
+    for spine in top_ax.spines.values():
+        spine.set_visible(False)
+
+    ax.plot(
+        history["训练步"],
+        history["验证_rel_l2_speed"],
+        color="#1f77b4",
+        linewidth=2.4,
+        label="速度损失",
+        zorder=3,
+    )
+    ax.plot(
+        history["训练步"],
+        history["验证_rel_l2_p"],
+        color="#d62728",
+        linewidth=2.4,
+        label="压力损失",
+        zorder=3,
+    )
+
+    final_row = history.iloc[-1]
+    ax.scatter([final_row["训练步"]], [final_row["验证_rel_l2_speed"]], color="#1f77b4", s=28, zorder=4)
+    ax.scatter([final_row["训练步"]], [final_row["验证_rel_l2_p"]], color="#d62728", s=28, zorder=4)
+    ax.annotate(
+        f"{float(final_row['验证_rel_l2_speed']):.4f}",
+        xy=(float(final_row["训练步"]), float(final_row["验证_rel_l2_speed"])),
+        xytext=(-10, -12),
+        textcoords="offset points",
+        ha="right",
+        va="top",
+        fontsize=9,
+        color="#1f77b4",
+        bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.85},
+    )
+    ax.annotate(
+        f"{float(final_row['验证_rel_l2_p']):.4f}",
+        xy=(float(final_row["训练步"]), float(final_row["验证_rel_l2_p"])),
+        xytext=(-10, 10),
+        textcoords="offset points",
+        ha="right",
+        va="bottom",
+        fontsize=9,
+        color="#d62728",
+        bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.85},
+    )
+
+    ax.set_xlim(1, len(history))
+    ax.set_ylim(y_min - y_span * 0.06, y_max + y_span * 0.06)
+    ax.set_xlabel("累计训练轮次")
+    ax.set_ylabel("验证集相对二范数误差")
+    ax.set_title("双模型耦合训练中速度与压力误差的阶段性下降")
+    ax.grid(alpha=0.25, linestyle=":")
+    ax.legend(frameon=False, loc="upper right")
+    fig.tight_layout(rect=(0.02, 0.02, 0.98, 0.92))
+
+    out = section_dir / "dual_model_coupled_loss.png"
+    fig.savefig(out, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+    return [out.name]
+
+
+def plot_single_vs_dual_coupling_comparison(section_dir: Path) -> list[str]:
+    配置中文绘图(prefer_serif=False)
+    history = pd.read_csv(
+        V4_ROOT / "results" / "pinn" / "contraction_independent_geometry_notemplate_stagepde_mainline_v4" / "history.csv"
+    )
+
+    stage2_last = history[history["阶段"] == "第二阶段_压力模型"].iloc[-1]
+    stage3_last = history[history["阶段"] == "第三阶段_交替耦合"].iloc[-1]
+
+    metrics = [
+        ("验证_rel_l2_speed", "速度 Rel-L2"),
+        ("验证_rel_l2_p", "压力 Rel-L2"),
+        ("验证_max_speed_err_over_speed_max", "最大速度误差"),
+        ("验证_max_p_err_over_p_range", "最大压力误差"),
+    ]
+    single_vals = [float(stage2_last[col]) for col, _ in metrics]
+    dual_vals = [float(stage3_last[col]) for col, _ in metrics]
+    labels = [label for _, label in metrics]
+
+    y = np.arange(len(labels))
+    height = 0.32
+    fig, ax = plt.subplots(figsize=(10.4, 6.0))
+    single_color = "#ff8a5b"
+    dual_color = "#0f766e"
+    single_bars = ax.barh(y - height / 2, single_vals, height=height, color=single_color, label="单模型独立阶段")
+    dual_bars = ax.barh(y + height / 2, dual_vals, height=height, color=dual_color, label="双模型耦合阶段")
+
+    max_val = max(max(single_vals), max(dual_vals))
+    x_pad = max(max_val * 0.18, 0.01)
+
+    for bars in (single_bars, dual_bars):
+        for bar in bars:
+            width = float(bar.get_width())
+            ax.text(
+                width + x_pad * 0.12,
+                bar.get_y() + bar.get_height() / 2,
+                f"{width * 100:.2f}%",
+                ha="left",
+                va="center",
+                fontsize=9,
+                color="#333333",
+            )
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlim(0.0, max_val + x_pad)
+    ax.set_xlabel("验证误差百分比")
+    ax.set_title("单模型独立阶段与双模型耦合阶段误差对比")
+    ax.grid(axis="x", alpha=0.25, linestyle=":")
+    ax.legend(frameon=False, loc="lower right")
+    fig.tight_layout(rect=(0.06, 0.06, 0.98, 0.98))
+
+    out = section_dir / "single_vs_dual_coupling_comparison.png"
+    fig.savefig(out, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+    return [out.name]
+
+
 def build_manifest(section_files: dict[str, list[str]]) -> None:
     manifest = {
         "root": str(THESIS_ROOT),
@@ -505,7 +667,10 @@ def prepare_once(max_retries: int) -> None:
 
     sec = THESIS_ROOT / "5_7_training_stability"
     reset_dir(sec)
-    section_files[sec.name] = plot_stagepde_comparison(sec)
+    files = plot_stagepde_comparison(sec)
+    files.extend(plot_dual_model_coupled_training_loss(sec))
+    files.extend(plot_single_vs_dual_coupling_comparison(sec))
+    section_files[sec.name] = sorted(set(files))
 
     build_manifest(section_files)
 

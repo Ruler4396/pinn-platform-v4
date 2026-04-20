@@ -1,0 +1,22 @@
+{
+  "case_id": "B-train-2__ip_skewed_bottom",
+  "family": "bend",
+  "geometry": {
+    "kind": "smooth_constant_width_bend",
+    "W_star": 1.0,
+    "L_in_over_W": 4.0,
+    "R_c_over_W": 5.0,
+    "theta_deg": 90.0,
+    "arc_length_over_W": 7.853981633974483,
+    "L_out_over_W": 6.0,
+    "total_centerline_length_over_W": 17.853981633974485,
+    "outlet_direction": [
+      6.123233995736766e-17,
+      1.0
+    ]
+  },
+  "inlet_profile": {
+    "name": "skewed_bottom"
+  },
+  "field_source": "freefem_stokes_cfd"
+}

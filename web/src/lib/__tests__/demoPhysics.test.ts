@@ -33,6 +33,11 @@ describe('demo adapter', () => {
     const result = await adapter.reconstruct(defaultScenario);
     expect(result.sparsePoints?.length).toBeGreaterThan(10);
     expect(result.reconstruction?.length).toBe(result.field.length);
+    const changed = result.reconstruction?.some((point, index) => {
+      const baseline = result.field[index];
+      return Math.abs(point.speed - baseline.speed) > 1e-9 || Math.abs(point.p - baseline.p) > 1e-9;
+    });
+    expect(changed).toBe(true);
   });
 
   it('supports viscosity calibration and parameter sweep', async () => {

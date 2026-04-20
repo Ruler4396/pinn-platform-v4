@@ -108,7 +108,23 @@ def enrich_bend_frame(df: pd.DataFrame, case: BendCase) -> pd.DataFrame:
     axial_frac = _safe_divide(xi, np.full_like(xi, case.total_centerline_length_over_w))
     eta_norm = _safe_divide(eta, np.full_like(eta, geom.half_width))
     wall_distance_frac = _safe_divide(wall_distance, np.full_like(wall_distance, geom.half_width))
+    # Keep the legacy parabolic proxy for backward compatibility with older checkpoints.
     inlet_profile = np.maximum(0.0, 1.5 * (1.0 - np.clip(eta_norm, -1.0, 1.0) ** 2))
+    inlet_profile_shape = evaluate_inlet_profile(eta, geom.half_width, case.inlet_profile_name)
+    profile_bias_map = {
+        "parabolic": 0.0,
+        "blunted": 0.0,
+        "skewed_top": 1.0,
+        "skewed_bottom": -1.0,
+    }
+    profile_flatness_map = {
+        "parabolic": 0.0,
+        "blunted": 1.0,
+        "skewed_top": 0.0,
+        "skewed_bottom": 0.0,
+    }
+    inlet_profile_bias = np.full_like(x, profile_bias_map.get(case.inlet_profile_name, 0.0), dtype=np.float64)
+    inlet_profile_flatness = np.full_like(x, profile_flatness_map.get(case.inlet_profile_name, 0.0), dtype=np.float64)
     half_width_ratio = np.ones_like(x, dtype=np.float64)
     inv_half_width_ratio = np.ones_like(x, dtype=np.float64)
     center_proximity = np.clip(1.0 - np.abs(np.clip(eta_norm, -1.0, 1.0)), 0.0, 1.0)
@@ -125,6 +141,9 @@ def enrich_bend_frame(df: pd.DataFrame, case: BendCase) -> pd.DataFrame:
     out["wall_distance_frac"] = np.clip(wall_distance_frac, 0.0, 1.0)
     out["region_id_norm"] = _safe_region_normalized(region_id)
     out["inlet_profile_star"] = inlet_profile
+    out["inlet_profile_shape_star"] = inlet_profile_shape
+    out["inlet_profile_bias_star"] = inlet_profile_bias
+    out["inlet_profile_flatness_star"] = inlet_profile_flatness
     out["tangent_x_star"] = tx
     out["tangent_y_star"] = ty
     out["segment_id_norm"] = np.asarray(segment, dtype=np.float32) / 2.0
@@ -184,6 +203,26 @@ DEFAULTS: dict[str, FamilySpec] = {
                 "eta_norm_star",
                 "axial_frac_star",
                 "inlet_profile_star",
+                "tangent_x_star",
+                "tangent_y_star",
+                "segment_id_norm",
+                "center_proximity_star",
+                "wall_proximity_star",
+                "curvature_star",
+            ),
+            "geometry_profileaware": (
+                "x_star",
+                "y_star",
+                "rc_over_w",
+                "theta_over_90",
+                "wall_distance_frac",
+                "region_id_norm",
+                "eta_norm_star",
+                "axial_frac_star",
+                "inlet_profile_star",
+                "inlet_profile_shape_star",
+                "inlet_profile_bias_star",
+                "inlet_profile_flatness_star",
                 "tangent_x_star",
                 "tangent_y_star",
                 "segment_id_norm",

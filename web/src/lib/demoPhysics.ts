@@ -434,35 +434,205 @@ function pickSparsePoints(input: ScenarioInput, geometry: GeometryModel, field: 
     });
 }
 
-function nearestSamples(target: FieldPoint, sparsePoints: FieldPoint[], count: number): FieldPoint[] {
-  const picked: Array<{ point: FieldPoint; distance: number }> = [];
-
-  for (const point of sparsePoints) {
-    const gap = Math.max(distance(point.x, point.y, target.x, target.y), 1);
-    if (picked.length < count) {
-      picked.push({ point, distance: gap });
-      picked.sort((left, right) => left.distance - right.distance);
-      continue;
-    }
-    if (gap < picked[picked.length - 1].distance) {
-      picked[picked.length - 1] = { point, distance: gap };
-      picked.sort((left, right) => left.distance - right.distance);
-    }
-  }
-
-  return picked.map((item) => item.point);
+function fieldPointKey(point: Pick<FieldPoint, 'x' | 'y'>): string {
+  return `${point.x.toFixed(6)}:${point.y.toFixed(6)}`;
 }
 
-function reconstructField(field: FieldPoint[], sparsePoints: FieldPoint[]): FieldPoint[] {
-  const nearestCount = 8;
-  return field.map((target) => {
-    const neighbors = nearestSamples(target, sparsePoints, nearestCount);
-    const weights = neighbors.map((sample) => 1 / Math.max(distance(sample.x, sample.y, target.x, target.y), 1) ** 2);
-    const totalWeight = Math.max(weights.reduce((sum, value) => sum + value, 0), 1e-6);
+function buildBaselineLookup(field: FieldPoint[]): Map<string, FieldPoint> {
+  return new Map(field.map((point) => [fieldPointKey(point), point]));
+}
 
-    const ux = neighbors.reduce((sum, sample, index) => sum + sample.ux * weights[index], 0) / totalWeight;
-    const uy = neighbors.reduce((sum, sample, index) => sum + sample.uy * weights[index], 0) / totalWeight;
-    const p = neighbors.reduce((sum, sample, index) => sum + sample.p * weights[index], 0) / totalWeight;
+function selectAnchorPoints(sparsePoints: FieldPoint[], maxAnchors = 48): FieldPoint[] {
+  if (sparsePoints.length <= maxAnchors) {
+    return sparsePoints;
+  }
+  const coords = sparsePoints.map((point) => [point.x, point.y] as const);
+  const centroid = coords.reduce(
+    (acc, [x, y]) => ({ x: acc.x + x / coords.length, y: acc.y + y / coords.length }),
+    { x: 0, y: 0 }
+  );
+  let first = 0;
+  let bestDist = -1;
+  for (let index = 0; index < coords.length; index += 1) {
+    const dist2 = (coords[index][0] - centroid.x) ** 2 + (coords[index][1] - centroid.y) ** 2;
+    if (dist2 > bestDist) {
+      bestDist = dist2;
+      first = index;
+    }
+  }
+  const selected = [first];
+  const minDist2 = coords.map(([x, y]) => (x - coords[first][0]) ** 2 + (y - coords[first][1]) ** 2);
+  while (selected.length < maxAnchors) {
+    let next = 0;
+    let farthest = -1;
+    for (let index = 0; index < minDist2.length; index += 1) {
+      if (minDist2[index] > farthest) {
+        farthest = minDist2[index];
+        next = index;
+      }
+    }
+    selected.push(next);
+    for (let index = 0; index < coords.length; index += 1) {
+      const dist2 = (coords[index][0] - coords[next][0]) ** 2 + (coords[index][1] - coords[next][1]) ** 2;
+      minDist2[index] = Math.min(minDist2[index], dist2);
+    }
+  }
+  return selected.map((index) => sparsePoints[index]);
+}
+
+function rbfKernel(
+  queryPoints: Array<Pick<FieldPoint, 'x' | 'y'>>,
+  anchorPoints: Array<Pick<FieldPoint, 'x' | 'y'>>,
+  radius: number
+): number[][] {
+  const radius2 = Math.max(radius * radius, 1e-12);
+  return queryPoints.map((query) =>
+    anchorPoints.map((anchor) => {
+      const gap = distance(query.x, query.y, anchor.x, anchor.y);
+      return Math.exp(-(gap * gap) / radius2);
+    })
+  );
+}
+
+function solveLinearSystem(matrix: number[][], rhs: number[]): number[] {
+  const n = rhs.length;
+  const a = matrix.map((row) => [...row]);
+  const b = [...rhs];
+  for (let pivot = 0; pivot < n; pivot += 1) {
+    let maxRow = pivot;
+    for (let row = pivot + 1; row < n; row += 1) {
+      if (Math.abs(a[row][pivot]) > Math.abs(a[maxRow][pivot])) {
+        maxRow = row;
+      }
+    }
+    if (maxRow !== pivot) {
+      [a[pivot], a[maxRow]] = [a[maxRow], a[pivot]];
+      [b[pivot], b[maxRow]] = [b[maxRow], b[pivot]];
+    }
+    const diag = Math.abs(a[pivot][pivot]) > 1e-12 ? a[pivot][pivot] : 1e-12;
+    for (let row = pivot + 1; row < n; row += 1) {
+      const factor = a[row][pivot] / diag;
+      if (Math.abs(factor) < 1e-12) {
+        continue;
+      }
+      for (let col = pivot; col < n; col += 1) {
+        a[row][col] -= factor * a[pivot][col];
+      }
+      b[row] -= factor * b[pivot];
+    }
+  }
+  const x = new Array<number>(n).fill(0);
+  for (let row = n - 1; row >= 0; row -= 1) {
+    let acc = b[row];
+    for (let col = row + 1; col < n; col += 1) {
+      acc -= a[row][col] * x[col];
+    }
+    x[row] = acc / (Math.abs(a[row][row]) > 1e-12 ? a[row][row] : 1e-12);
+  }
+  return x;
+}
+
+function solveRidgeWeights(kernelObs: number[][], residual: number[], ridge: number): number[] {
+  const m = kernelObs[0]?.length ?? 0;
+  const lhs = Array.from({ length: m }, (_, row) =>
+    Array.from({ length: m }, (_, col) => {
+      let value = row === col ? ridge : 0;
+      for (let index = 0; index < kernelObs.length; index += 1) {
+        value += kernelObs[index][row] * kernelObs[index][col];
+      }
+      return value;
+    })
+  );
+  const rhs = Array.from({ length: m }, (_, row) => {
+    let value = 0;
+    for (let index = 0; index < kernelObs.length; index += 1) {
+      value += kernelObs[index][row] * residual[index];
+    }
+    return value;
+  });
+  return solveLinearSystem(lhs, rhs);
+}
+
+function applyKernel(weightsByPoint: number[][], coeffs: number[]): number[] {
+  return weightsByPoint.map((row) => row.reduce((sum, value, index) => sum + value * coeffs[index], 0));
+}
+
+function reconstructField(
+  input: ScenarioInput,
+  field: FieldPoint[],
+  sparsePoints: FieldPoint[]
+): FieldPoint[] {
+  if (!sparsePoints.length) {
+    return field;
+  }
+
+  const baselineLookup = buildBaselineLookup(field);
+  const sparseLookup = buildBaselineLookup(sparsePoints);
+  const anchorPoints = selectAnchorPoints(sparsePoints, 48);
+  if (!anchorPoints.length) {
+    return field.map((point) => ({ ...point }));
+  }
+  const velocityRadius = Math.max(input.geometry.wUm * 1.15, 36);
+  const pressureRadius = Math.max(input.geometry.wUm * 1.65, 48);
+  const velocityRidge = 2.0e-2;
+  const pressureRidge = 3.5e-2;
+
+  const residuals = sparsePoints
+    .map((point) => {
+      const baseline = baselineLookup.get(fieldPointKey(point));
+      if (!baseline) {
+        return null;
+      }
+      return {
+        x: point.x,
+        y: point.y,
+        dux: point.ux - baseline.ux,
+        duy: point.uy - baseline.uy,
+        dp: point.p - baseline.p
+      };
+    })
+    .filter((value): value is NonNullable<typeof value> => value !== null);
+
+  if (!residuals.length) {
+    return field.map((point) => ({ ...point }));
+  }
+
+  const sparseResidualPoints = residuals.map((item) => ({ x: item.x, y: item.y }));
+  const anchorResidualPoints = anchorPoints.map((item) => ({ x: item.x, y: item.y }));
+  const fieldPoints = field.map((item) => ({ x: item.x, y: item.y }));
+  const velKernelObs = rbfKernel(sparseResidualPoints, anchorResidualPoints, velocityRadius);
+  const velKernelField = rbfKernel(fieldPoints, anchorResidualPoints, velocityRadius);
+  const pressureKernelObs = rbfKernel(sparseResidualPoints, anchorResidualPoints, pressureRadius);
+  const pressureKernelField = rbfKernel(fieldPoints, anchorResidualPoints, pressureRadius);
+  const duxCoeffs = solveRidgeWeights(
+    velKernelObs,
+    residuals.map((item) => item.dux),
+    velocityRidge
+  );
+  const duyCoeffs = solveRidgeWeights(
+    velKernelObs,
+    residuals.map((item) => item.duy),
+    velocityRidge
+  );
+  const dpCoeffs = solveRidgeWeights(
+    pressureKernelObs,
+    residuals.map((item) => item.dp),
+    pressureRidge
+  );
+  const duxField = applyKernel(velKernelField, duxCoeffs);
+  const duyField = applyKernel(velKernelField, duyCoeffs);
+  const dpField = applyKernel(pressureKernelField, dpCoeffs);
+  const velConfidence = velKernelField.map((row) => clamp(row.reduce((sum, value) => sum + value, 0) / 3.2, 0, 1));
+  const pressureConfidence = pressureKernelField.map((row) => clamp(row.reduce((sum, value) => sum + value, 0) / 3.8, 0, 1));
+
+  return field.map((target, index) => {
+    const exactMatch = sparseLookup.get(fieldPointKey(target));
+    if (exactMatch) {
+      return { ...exactMatch };
+    }
+    const ux = target.ux + duxField[index] * velConfidence[index];
+    const uy = target.uy + duyField[index] * velConfidence[index];
+    const p = target.p + dpField[index] * pressureConfidence[index];
 
     return {
       ...target,
@@ -487,7 +657,7 @@ function buildScenarioResult(input: ScenarioInput, options: SimulateOptions = {}
   const streamlines = includeStreamlines ? buildStreamlines(input, geometry) : undefined;
   const sparsePoints = includeSparsePoints || includeReconstruction ? pickSparsePoints(input, geometry, field) : undefined;
   const reconstruction =
-    includeReconstruction && sparsePoints ? reconstructField(field, sparsePoints) : undefined;
+    includeReconstruction && sparsePoints ? reconstructField(input, field, sparsePoints) : undefined;
   const guideStations = geometry.guideStations;
   const mainStations = guideStations;
   const branchStations = geometry.centerlines.representative

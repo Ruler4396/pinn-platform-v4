@@ -1,0 +1,22 @@
+{
+  "case_id": "B-val__ip_skewed_top",
+  "family": "bend",
+  "geometry": {
+    "kind": "smooth_constant_width_bend",
+    "W_star": 1.0,
+    "L_in_over_W": 4.0,
+    "R_c_over_W": 3.5,
+    "theta_deg": 90.0,
+    "arc_length_over_W": 5.497787143782138,
+    "L_out_over_W": 6.0,
+    "total_centerline_length_over_W": 15.497787143782137,
+    "outlet_direction": [
+      6.123233995736766e-17,
+      1.0
+    ]
+  },
+  "inlet_profile": {
+    "name": "skewed_top"
+  },
+  "field_source": "freefem_stokes_cfd"
+}

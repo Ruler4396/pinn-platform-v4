@@ -1,0 +1,76 @@
+{
+  "generated_at_utc": "2026-04-19T15:14:33.587168+00:00",
+  "mode": "serial_low_impact",
+  "field_source": "freefem_stokes_cfd",
+  "inlet_profile": "skewed_bottom",
+  "boundary_samples": 101,
+  "seed": 42,
+  "max_retries": 1,
+  "cases": [
+    {
+      "case_id": "B-base__ip_skewed_bottom",
+      "base_case_id": "B-base",
+      "rc_over_w": 6.0,
+      "theta_deg": 90.0,
+      "inlet_profile_name": "skewed_bottom",
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 10493,
+      "raw_rows": 10493,
+      "data_dir": "/root/dev/pinn-platform-v4/model/cases/bend_2d/data/B-base__ip_skewed_bottom",
+      "cfd_dir": "/root/dev/pinn-platform-v4/model/cases/bend_2d/cfd/B-base__ip_skewed_bottom"
+    },
+    {
+      "case_id": "B-train-1__ip_skewed_bottom",
+      "base_case_id": "B-train-1",
+      "rc_over_w": 6.0,
+      "theta_deg": 90.0,
+      "inlet_profile_name": "skewed_bottom",
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 10493,
+      "raw_rows": 10493,
+      "data_dir": "/root/dev/pinn-platform-v4/model/cases/bend_2d/data/B-train-1__ip_skewed_bottom",
+      "cfd_dir": "/root/dev/pinn-platform-v4/model/cases/bend_2d/cfd/B-train-1__ip_skewed_bottom"
+    },
+    {
+      "case_id": "B-train-2__ip_skewed_bottom",
+      "base_case_id": "B-train-2",
+      "rc_over_w": 5.0,
+      "theta_deg": 90.0,
+      "inlet_profile_name": "skewed_bottom",
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 9672,
+      "raw_rows": 9672,
+      "data_dir": "/root/dev/pinn-platform-v4/model/cases/bend_2d/data/B-train-2__ip_skewed_bottom",
+      "cfd_dir": "/root/dev/pinn-platform-v4/model/cases/bend_2d/cfd/B-train-2__ip_skewed_bottom"
+    },
+    {
+      "case_id": "B-train-3__ip_skewed_bottom",
+      "base_case_id": "B-train-3",
+      "rc_over_w": 4.0,
+      "theta_deg": 90.0,
+      "inlet_profile_name": "skewed_bottom",
+      "role": "training",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 9126,
+      "raw_rows": 9126,
+      "data_dir": "/root/dev/pinn-platform-v4/model/cases/bend_2d/data/B-train-3__ip_skewed_bottom",
+      "cfd_dir": "/root/dev/pinn-platform-v4/model/cases/bend_2d/cfd/B-train-3__ip_skewed_bottom"
+    },
+    {
+      "case_id": "B-val__ip_skewed_bottom",
+      "base_case_id": "B-val",
+      "rc_over_w": 3.5,
+      "theta_deg": 90.0,
+      "inlet_profile_name": "skewed_bottom",
+      "role": "validation",
+      "field_source": "freefem_stokes_cfd",
+      "dense_rows": 8385,
+      "raw_rows": 8385,
+      "data_dir": "/root/dev/pinn-platform-v4/model/cases/bend_2d/data/B-val__ip_skewed_bottom",
+      "cfd_dir": "/root/dev/pinn-platform-v4/model/cases/bend_2d/cfd/B-val__ip_skewed_bottom"
+    }
+  ]
+}

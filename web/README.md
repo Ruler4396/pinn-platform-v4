@@ -108,9 +108,11 @@ VITE_LOCAL_PREVIEW_CACHE_TTL_MS=1800000
 - **真实模型覆盖范围**：
   - 收缩流道：已接 `pinn_v4/results/pinn/contraction_independent_geometry_notemplate_stagepde_mainline_v4/best.ckpt`
   - 弯曲流道：
-    - `parabolic / skewed_top / skewed_bottom`：当前走 `pinn_v3/results/supervised/bend_supervised_geometry_v1_20260331/best.ckpt`
+    - `parabolic`：当前走 `pinn_v4/results/pinn/bend_independent_geometry_notemplate_parabolic_mainline_v1_20260419/best.ckpt`
+    - `skewed_top`：当前走 `pinn_v4/results/pinn/bend_independent_geometry_skewed_top_mainline_v1_20260419/best.ckpt`
+    - `skewed_bottom`：当前走 `pinn_v4/results/pinn/bend_independent_geometry_skewed_bottom_mainline_v1_20260419/best.ckpt`
     - `blunted`：当前走 `pinn_v3/results/pinn/bend_independent_blunted_geometry_notemplate_medium_v1_20260401/best.ckpt`
-    - 说明：`pinn_v4` 当前尚无同级可直接上线的 bend checkpoint，因此网站已优先改为**真实 bend 模型**，不再使用 synthetic fallback；其中 `skewed_*` 暂复用 parabolic 这一路真实模型
+    - 说明：四类入口剖面当前都已接真实双模型；`blunted / skewed_top / skewed_bottom` 为各自专门训练的入口剖面 checkpoint
 
 ## 本地开发
 

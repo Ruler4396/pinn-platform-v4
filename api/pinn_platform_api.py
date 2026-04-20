@@ -43,12 +43,25 @@ from src.data.bend_geometry import BendGeometry, GridSpec as BendGridSpec
 torch.set_num_threads(1)
 
 DEFAULT_RUN_NAME = os.environ.get('PINN_V4_RUN_NAME', 'contraction_independent_geometry_notemplate_stagepde_mainline_v4')
-BEND_PARABOLIC_RUN_NAME = os.environ.get('PINN_BEND_PARABOLIC_RUN_NAME', 'bend_supervised_geometry_v1_20260331')
+BEND_PARABOLIC_RUN_NAME = os.environ.get(
+    'PINN_BEND_PARABOLIC_RUN_NAME',
+    'bend_independent_geometry_notemplate_parabolic_mainline_v1_20260419',
+)
+BEND_SKEWED_TOP_RUN_NAME = os.environ.get(
+    'PINN_BEND_SKEWED_TOP_RUN_NAME',
+    'bend_independent_geometry_skewed_top_mainline_v1_20260419',
+)
+BEND_SKEWED_BOTTOM_RUN_NAME = os.environ.get(
+    'PINN_BEND_SKEWED_BOTTOM_RUN_NAME',
+    'bend_independent_geometry_skewed_bottom_mainline_v1_20260419',
+)
 BEND_BLUNTED_RUN_NAME = os.environ.get('PINN_BEND_BLUNTED_RUN_NAME', 'bend_independent_blunted_geometry_notemplate_medium_v1_20260401')
 MIN_VISCOSITY = 4.0e-4
 MAX_VISCOSITY = 8.0e-3
 RESPONSE_CACHE_MAX_ENTRIES = int(os.environ.get('PINN_V4_RESPONSE_CACHE_MAX_ENTRIES', '8'))
 RESPONSE_CACHE_TTL_SECONDS = int(os.environ.get('PINN_V4_RESPONSE_CACHE_TTL_SECONDS', '1800'))
+BEND_PREVIEW_TARGET_POINTS = int(os.environ.get('PINN_BEND_PREVIEW_TARGET_POINTS', '5600'))
+BEND_FULL_TARGET_POINTS = int(os.environ.get('PINN_BEND_FULL_TARGET_POINTS', '11000'))
 
 
 @dataclass
@@ -291,6 +304,9 @@ class IndependentFieldRuntime:
         out['speed_star'] = np.sqrt(out['u_star'] ** 2 + out['v_star'] ** 2)
         return out
 
+    def predict_star(self, frame_star: pd.DataFrame, case: BendCase) -> pd.DataFrame:
+        return self.predict_bend_star(frame_star, case)
+
 
 class SyntheticBendRuntime:
     def __init__(self, run_name: str):
@@ -308,9 +324,17 @@ class ScenarioEngine:
     def __init__(self, run_name: str = DEFAULT_RUN_NAME):
         self.contraction_runtime = ContractionModelRuntime(run_name=run_name)
         try:
-            self.bend_parabolic_runtime = SupervisedFieldRuntime(BEND_WORKSPACE_ROOT, BEND_PARABOLIC_RUN_NAME)
+            self.bend_parabolic_runtime = IndependentFieldRuntime(BEND_WORKSPACE_ROOT, BEND_PARABOLIC_RUN_NAME)
         except FileNotFoundError:
             self.bend_parabolic_runtime = SyntheticBendRuntime('synthetic_bend_parabolic_fallback')
+        try:
+            self.bend_skewed_top_runtime = IndependentFieldRuntime(BEND_WORKSPACE_ROOT, BEND_SKEWED_TOP_RUN_NAME)
+        except FileNotFoundError:
+            self.bend_skewed_top_runtime = SyntheticBendRuntime('synthetic_bend_skewed_top_fallback')
+        try:
+            self.bend_skewed_bottom_runtime = IndependentFieldRuntime(BEND_WORKSPACE_ROOT, BEND_SKEWED_BOTTOM_RUN_NAME)
+        except FileNotFoundError:
+            self.bend_skewed_bottom_runtime = SyntheticBendRuntime('synthetic_bend_skewed_bottom_fallback')
         try:
             self.bend_blunted_runtime = IndependentFieldRuntime(BEND_WORKSPACE_ROOT, BEND_BLUNTED_RUN_NAME)
         except FileNotFoundError:
@@ -379,6 +403,10 @@ class ScenarioEngine:
         profile = case.inlet_profile_name
         if profile == 'blunted':
             return self.bend_blunted_runtime.predict_bend_star(frame_star, case)
+        if profile == 'skewed_top':
+            return self.bend_skewed_top_runtime.predict_star(frame_star, case)
+        if profile == 'skewed_bottom':
+            return self.bend_skewed_bottom_runtime.predict_star(frame_star, case)
         return self.bend_parabolic_runtime.predict_star(frame_star, case)
 
     @staticmethod
@@ -422,7 +450,19 @@ class ScenarioEngine:
         span_x = geometry.x_max - geometry.x_min
         span_y = geometry.y_max - geometry.y_min
         nx, ny = self._grid_shape(span_x, span_y, resolution=resolution)
-        frame_star = geometry.interior_grid(BendGridSpec(nx=nx, ny=ny, boundary_samples=241))
+        boundary_samples = 241
+        frame_star = geometry.interior_grid(BendGridSpec(nx=nx, ny=ny, boundary_samples=boundary_samples))
+        target_points = BEND_PREVIEW_TARGET_POINTS if resolution == 'preview' else BEND_FULL_TARGET_POINTS
+        if target_points > 0 and len(frame_star) > 0 and len(frame_star) < target_points:
+            max_samples = 256 if resolution == 'preview' else 336
+            for _ in range(4):
+                scale = math.sqrt(target_points / max(len(frame_star), 1))
+                nx = min(max_samples, max(nx + 8, int(math.ceil(nx * min(scale, 1.5)))))
+                ny = min(max_samples, max(ny + 8, int(math.ceil(ny * min(scale, 1.5)))))
+                next_frame = geometry.interior_grid(BendGridSpec(nx=nx, ny=ny, boundary_samples=boundary_samples))
+                frame_star = next_frame
+                if len(frame_star) >= target_points or (nx >= max_samples and ny >= max_samples):
+                    break
         predicted = self._predict_bend_with_runtime(frame_star, case)
         return predicted, case, geometry
 
@@ -699,24 +739,112 @@ class ScenarioEngine:
         )
         return ranked[:max(1, min(count, len(ranked)))]
 
+    @staticmethod
+    def _select_anchor_points(
+        sparse_points: list[dict[str, float]],
+        max_anchors: int = 48,
+    ) -> list[dict[str, float]]:
+        if len(sparse_points) <= max_anchors:
+            return sparse_points
+        coords = np.array([[float(point['x']), float(point['y'])] for point in sparse_points], dtype=np.float64)
+        centroid = coords.mean(axis=0)
+        first = int(np.argmax(np.sum((coords - centroid) ** 2, axis=1)))
+        selected = [first]
+        min_dist2 = np.sum((coords - coords[first]) ** 2, axis=1)
+        while len(selected) < max_anchors:
+            next_idx = int(np.argmax(min_dist2))
+            selected.append(next_idx)
+            dist2 = np.sum((coords - coords[next_idx]) ** 2, axis=1)
+            min_dist2 = np.minimum(min_dist2, dist2)
+        return [sparse_points[idx] for idx in selected]
+
+    @staticmethod
+    def _rbf_kernel(query_xy: np.ndarray, anchor_xy: np.ndarray, radius: float) -> np.ndarray:
+        radius2 = max(float(radius) ** 2, 1.0e-12)
+        diff = query_xy[:, None, :] - anchor_xy[None, :, :]
+        dist2 = np.sum(diff * diff, axis=2)
+        return np.exp(-dist2 / radius2)
+
+    @staticmethod
+    def _solve_ridge_weights(kernel_obs: np.ndarray, residual: np.ndarray, ridge: float) -> np.ndarray:
+        lhs = kernel_obs.T @ kernel_obs + np.eye(kernel_obs.shape[1], dtype=np.float64) * max(float(ridge), 1.0e-9)
+        rhs = kernel_obs.T @ residual
+        return np.linalg.solve(lhs, rhs)
+
     def _reconstruct_field(
         self,
+        scenario: dict[str, Any],
         field: list[dict[str, float]],
         sparse_points: list[dict[str, float]],
     ) -> list[dict[str, float]]:
         if not sparse_points:
             return field
+
+        def point_key(point: dict[str, float]) -> tuple[float, float]:
+            return (round(float(point['x']), 6), round(float(point['y']), 6))
+
+        baseline_lookup = {point_key(point): point for point in field}
+        sparse_lookup = {point_key(point): point for point in sparse_points}
+        anchor_points = self._select_anchor_points(sparse_points, max_anchors=48)
+        if not anchor_points:
+            return [dict(point) for point in field]
+
+        width_um = float(scenario['geometry']['wUm'])
+        velocity_radius = max(width_um * 1.15, 36.0)
+        pressure_radius = max(width_um * 1.65, 48.0)
+        velocity_ridge = 2.0e-2
+        pressure_ridge = 3.5e-2
+
+        residuals: list[dict[str, float]] = []
+        for point in sparse_points:
+            baseline = baseline_lookup.get(point_key(point))
+            if baseline is None:
+                continue
+            residuals.append(
+                {
+                    'x': float(point['x']),
+                    'y': float(point['y']),
+                    'dux': float(point['ux']) - float(baseline['ux']),
+                    'duy': float(point['uy']) - float(baseline['uy']),
+                    'dp': float(point['p']) - float(baseline['p']),
+                }
+            )
+
+        if not residuals:
+            return [dict(point) for point in field]
+
+        sparse_xy = np.array([[item['x'], item['y']] for item in residuals], dtype=np.float64)
+        anchor_xy = np.array([[float(point['x']), float(point['y'])] for point in anchor_points], dtype=np.float64)
+        field_xy = np.array([[float(point['x']), float(point['y'])] for point in field], dtype=np.float64)
+
+        vel_kernel_obs = self._rbf_kernel(sparse_xy, anchor_xy, velocity_radius)
+        vel_kernel_field = self._rbf_kernel(field_xy, anchor_xy, velocity_radius)
+        p_kernel_obs = self._rbf_kernel(sparse_xy, anchor_xy, pressure_radius)
+        p_kernel_field = self._rbf_kernel(field_xy, anchor_xy, pressure_radius)
+
+        dux_obs = np.array([item['dux'] for item in residuals], dtype=np.float64)
+        duy_obs = np.array([item['duy'] for item in residuals], dtype=np.float64)
+        dp_obs = np.array([item['dp'] for item in residuals], dtype=np.float64)
+
+        dux_weights = self._solve_ridge_weights(vel_kernel_obs, dux_obs, velocity_ridge)
+        duy_weights = self._solve_ridge_weights(vel_kernel_obs, duy_obs, velocity_ridge)
+        dp_weights = self._solve_ridge_weights(p_kernel_obs, dp_obs, pressure_ridge)
+
+        dux_field = vel_kernel_field @ dux_weights
+        duy_field = vel_kernel_field @ duy_weights
+        dp_field = p_kernel_field @ dp_weights
+        vel_confidence = np.clip(np.sum(vel_kernel_field, axis=1) / 3.2, 0.0, 1.0)
+        p_confidence = np.clip(np.sum(p_kernel_field, axis=1) / 3.8, 0.0, 1.0)
+
         reconstruction: list[dict[str, float]] = []
-        for target in field:
-            neighbors = self._nearest_sparse_points(target, sparse_points, count=8)
-            weights = [
-                1.0 / max(math.hypot(sample['x'] - target['x'], sample['y'] - target['y']), 1.0) ** 2
-                for sample in neighbors
-            ]
-            total_weight = max(sum(weights), 1.0e-6)
-            ux = sum(sample['ux'] * weight for sample, weight in zip(neighbors, weights, strict=False)) / total_weight
-            uy = sum(sample['uy'] * weight for sample, weight in zip(neighbors, weights, strict=False)) / total_weight
-            p = sum(sample['p'] * weight for sample, weight in zip(neighbors, weights, strict=False)) / total_weight
+        for idx, target in enumerate(field):
+            exact_match = sparse_lookup.get(point_key(target))
+            if exact_match is not None:
+                reconstruction.append(dict(exact_match))
+                continue
+            ux = float(target['ux']) + float(dux_field[idx]) * float(vel_confidence[idx])
+            uy = float(target['uy']) + float(duy_field[idx]) * float(vel_confidence[idx])
+            p = float(target['p']) + float(dp_field[idx]) * float(p_confidence[idx])
             reconstruction.append(
                 {
                     **target,
@@ -809,7 +937,7 @@ class ScenarioEngine:
         metrics_field = field
         reconstruction = None
         if include_reconstruction:
-            reconstruction = self._reconstruct_field(field, sparse_points or [])
+            reconstruction = self._reconstruct_field(scenario, field, sparse_points or [])
             metrics_field = reconstruction
         result: dict[str, Any] = {
             'field': field,
@@ -977,6 +1105,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     'service': 'pinn-flow-visual-demo-v4-api',
                     'contraction_run': ENGINE.contraction_runtime.run_name,
                     'bend_parabolic_run': ENGINE.bend_parabolic_runtime.run_name,
+                    'bend_skewed_top_run': ENGINE.bend_skewed_top_runtime.run_name,
+                    'bend_skewed_bottom_run': ENGINE.bend_skewed_bottom_runtime.run_name,
                     'bend_blunted_run': ENGINE.bend_blunted_runtime.run_name,
                 },
             )
