@@ -241,7 +241,10 @@ function evaluatePoint(input: ScenarioInput, point: Point2D): FieldPoint | null 
   return evaluatePointOnGeometry(input, buildGeometry(input), point);
 }
 
-function createGrid(input: ScenarioInput, geometry: GeometryModel, resolution: FieldResolution = 'full'): FieldPoint[] {
+function createInteriorPoints(
+  geometry: GeometryModel,
+  resolution: FieldResolution = 'full'
+): Point2D[] {
   const bounds = geometry.bounds;
   const spanX = bounds.xMax - bounds.xMin;
   const spanY = bounds.yMax - bounds.yMin;
@@ -251,18 +254,23 @@ function createGrid(input: ScenarioInput, geometry: GeometryModel, resolution: F
   const samplesX = clamp(Math.round(aspect >= 1 ? maxSamples : maxSamples * aspect), minSamples, maxSamples);
   const samplesY = clamp(Math.round(aspect >= 1 ? maxSamples / aspect : maxSamples), minSamples, maxSamples);
 
-  const field: FieldPoint[] = [];
+  const points: Point2D[] = [];
   for (let iy = 0; iy < samplesY; iy += 1) {
     const y = lerp(bounds.yMin, bounds.yMax, iy / Math.max(samplesY - 1, 1));
     for (let ix = 0; ix < samplesX; ix += 1) {
       const x = lerp(bounds.xMin, bounds.xMax, ix / Math.max(samplesX - 1, 1));
-      const point = evaluatePointOnGeometry(input, geometry, { x, y });
-      if (point) {
-        field.push(point);
+      if (geometry.polygons.some((polygon) => pointInPolygon({ x, y }, polygon))) {
+        points.push({ x, y });
       }
     }
   }
-  return field;
+  return points;
+}
+
+function createGrid(input: ScenarioInput, geometry: GeometryModel, resolution: FieldResolution = 'full'): FieldPoint[] {
+  return createInteriorPoints(geometry, resolution)
+    .map((point) => evaluatePointOnGeometry(input, geometry, point))
+    .filter((point): point is FieldPoint => point !== null);
 }
 
 function buildStreamlines(input: ScenarioInput, geometry: GeometryModel): Array<Array<{ x: number; y: number }>> {
@@ -383,6 +391,84 @@ function computeMetrics(
 
 function nearestProjection(point: FieldPoint, geometry: GeometryModel) {
   return getNearestGuideStation(point, geometry).projection;
+}
+
+function pointWallBlend(point: Point2D, geometry: GeometryModel): number {
+  const nearest = getNearestGuideStation(point, geometry);
+  const halfWidth = Math.max(nearest.station.segment.width / 2, 1);
+  const wallDistance = Math.max(halfWidth - Math.abs(nearest.projection.t), 0);
+  return clamp(wallDistance / Math.max(geometry.meta.wUm * 0.08, 4), 0, 1);
+}
+
+function pickSparseObservationPoints(
+  input: ScenarioInput,
+  geometry: GeometryModel,
+  targetPointCount: number,
+  candidates: Point2D[]
+): Point2D[] {
+  const count = Math.max(12, Math.floor(targetPointCount * (input.sparse.sampleRatePct / 100)));
+  const rng = mulberry32(hashScenario(input) ^ 0x8b34150d);
+  const focusScale = Math.max(geometry.meta.wUm, 1);
+
+  const weighted = candidates.flatMap((point) => {
+    const nearest = getNearestGuideStation(point, geometry);
+    const halfWidth = Math.max(nearest.station.segment.width / 2, 1);
+    const wallProximity = clamp(Math.abs(nearest.projection.t) / halfWidth, 0, 1);
+    const inwardMargin = 1 - wallProximity;
+
+    if (inwardMargin < 0.08) {
+      return [];
+    }
+
+    const featureAnchor = geometry.type === 'contraction' ? geometry.junction : geometry.centerlines.left?.end ?? geometry.junction;
+    const focusProximity = 1 / (1 + distance(point.x, point.y, featureAnchor.x, featureAnchor.y) / focusScale);
+    const featureBonus =
+      input.sparse.strategy === 'region_aware'
+        ? focusProximity * 0.58 + wallProximity * 0.14 + inwardMargin * 0.28
+        : 0.42;
+
+    return [
+      {
+        point,
+        score: rng() * 0.62 + featureBonus
+      }
+    ];
+  });
+
+  return weighted
+    .sort((left, right) => right.score - left.score)
+    .slice(0, count)
+    .map(({ point }) => point);
+}
+
+function buildSparseObservations(
+  input: ScenarioInput,
+  geometry: GeometryModel,
+  targetPointCount: number,
+  resolution: FieldResolution
+): FieldPoint[] {
+  const candidateResolution = resolution === 'preview' ? 'full' : resolution;
+  const candidates = createInteriorPoints(geometry, candidateResolution);
+  const selected = pickSparseObservationPoints(input, geometry, targetPointCount, candidates);
+  const rng = mulberry32(hashScenario(input) ^ 0x13579bdf);
+  const noise = input.sparse.noisePct / 100;
+
+  return selected
+    .map((point) => evaluatePointOnGeometry(input, geometry, point))
+    .filter((point): point is FieldPoint => point !== null)
+    .map((point) => {
+      const speedScale = 1 + (rng() - 0.5) * noise;
+      const pressureScale = 1 + (rng() - 0.5) * noise * 0.6;
+      const ux = point.ux * speedScale;
+      const uy = point.uy * speedScale;
+      return {
+        ...point,
+        ux,
+        uy,
+        p: point.p * pressureScale,
+        speed: Math.hypot(ux, uy)
+      };
+    });
 }
 
 function pickSparsePoints(input: ScenarioInput, geometry: GeometryModel, field: FieldPoint[]): FieldPoint[] {
@@ -557,6 +643,155 @@ function applyKernel(weightsByPoint: number[][], coeffs: number[]): number[] {
   return weightsByPoint.map((row) => row.reduce((sum, value, index) => sum + value * coeffs[index], 0));
 }
 
+function fitAffineDelta(
+  prior: number[],
+  observed: number[],
+  scaleRidge: number,
+  biasRidge: number
+): { scale: number; bias: number } {
+  if (!prior.length || !observed.length) {
+    return { scale: 1, bias: 0 };
+  }
+  let xx = scaleRidge;
+  let x1 = 0;
+  let one = biasRidge;
+  let xb = 0;
+  let b = 0;
+  for (let index = 0; index < prior.length; index += 1) {
+    const x = prior[index];
+    const delta = observed[index] - prior[index];
+    xx += x * x;
+    x1 += x;
+    one += 1;
+    xb += x * delta;
+    b += delta;
+  }
+  const [deltaScale, bias] = solveLinearSystem(
+    [
+      [xx, x1],
+      [x1, one]
+    ],
+    [xb, b]
+  );
+  return {
+    scale: 1 + deltaScale,
+    bias
+  };
+}
+
+function inverseReconstructField(
+  input: ScenarioInput,
+  geometry: GeometryModel,
+  resolution: FieldResolution
+): { field: FieldPoint[]; sparsePoints: FieldPoint[]; reconstruction: FieldPoint[]; baselineMetrics: ScenarioMetrics } {
+  const targetPoints = createInteriorPoints(geometry, resolution);
+  const sparsePoints = buildSparseObservations(input, geometry, targetPoints.length, resolution);
+  const priorSparse = sparsePoints
+    .map((point) => evaluatePointOnGeometry(input, geometry, { x: point.x, y: point.y }))
+    .filter((point): point is FieldPoint => point !== null);
+
+  const uxAffine = fitAffineDelta(
+    priorSparse.map((point) => point.ux),
+    sparsePoints.map((point) => point.ux),
+    2.5e-2,
+    1.0e-8
+  );
+  const uyAffine = fitAffineDelta(
+    priorSparse.map((point) => point.uy),
+    sparsePoints.map((point) => point.uy),
+    2.5e-2,
+    1.0e-8
+  );
+  const pAffine = fitAffineDelta(
+    priorSparse.map((point) => point.p),
+    sparsePoints.map((point) => point.p),
+    3.0e-2,
+    1.0e-8
+  );
+
+  const anchorPoints = selectAnchorPoints(sparsePoints, 48);
+  const velocityRadius = Math.max(input.geometry.wUm * 1.05, 30);
+  const pressureRadius = Math.max(input.geometry.wUm * 1.55, 42);
+  const velocityRidge = 1.8e-2;
+  const pressureRidge = 3.0e-2;
+
+  const residuals = sparsePoints.map((point, index) => ({
+    x: point.x,
+    y: point.y,
+    dux: point.ux - (priorSparse[index]?.ux ?? 0) * uxAffine.scale - uxAffine.bias,
+    duy: point.uy - (priorSparse[index]?.uy ?? 0) * uyAffine.scale - uyAffine.bias,
+    dp: point.p - (priorSparse[index]?.p ?? 0) * pAffine.scale - pAffine.bias
+  }));
+
+  const field = targetPoints
+    .map((point) => evaluatePointOnGeometry(input, geometry, point))
+    .filter((point): point is FieldPoint => point !== null);
+
+  const sparseLookup = buildBaselineLookup(sparsePoints);
+  if (!anchorPoints.length || !residuals.length) {
+    return {
+      field,
+      sparsePoints,
+      reconstruction: field.map((point) => ({ ...point })),
+      baselineMetrics: computeMetrics(input, geometry, field, [])
+    };
+  }
+
+  const sparseResidualPoints = residuals.map((item) => ({ x: item.x, y: item.y }));
+  const anchorResidualPoints = anchorPoints.map((item) => ({ x: item.x, y: item.y }));
+  const fieldPoints = field.map((item) => ({ x: item.x, y: item.y }));
+  const velKernelObs = rbfKernel(sparseResidualPoints, anchorResidualPoints, velocityRadius);
+  const velKernelField = rbfKernel(fieldPoints, anchorResidualPoints, velocityRadius);
+  const pressureKernelObs = rbfKernel(sparseResidualPoints, anchorResidualPoints, pressureRadius);
+  const pressureKernelField = rbfKernel(fieldPoints, anchorResidualPoints, pressureRadius);
+  const duxCoeffs = solveRidgeWeights(
+    velKernelObs,
+    residuals.map((item) => item.dux),
+    velocityRidge
+  );
+  const duyCoeffs = solveRidgeWeights(
+    velKernelObs,
+    residuals.map((item) => item.duy),
+    velocityRidge
+  );
+  const dpCoeffs = solveRidgeWeights(
+    pressureKernelObs,
+    residuals.map((item) => item.dp),
+    pressureRidge
+  );
+  const duxField = applyKernel(velKernelField, duxCoeffs);
+  const duyField = applyKernel(velKernelField, duyCoeffs);
+  const dpField = applyKernel(pressureKernelField, dpCoeffs);
+  const velConfidence = velKernelField.map((row) => clamp(row.reduce((sum, value) => sum + value, 0) / 3.4, 0, 1));
+  const pressureConfidence = pressureKernelField.map((row) => clamp(row.reduce((sum, value) => sum + value, 0) / 3.9, 0, 1));
+
+  const reconstruction = field.map((target, index) => {
+    const exactMatch = sparseLookup.get(fieldPointKey(target));
+    if (exactMatch) {
+      return { ...exactMatch };
+    }
+    const wallBlend = pointWallBlend(target, geometry);
+    const ux = target.ux * uxAffine.scale + uxAffine.bias * wallBlend + duxField[index] * velConfidence[index] * wallBlend;
+    const uy = target.uy * uyAffine.scale + uyAffine.bias * wallBlend + duyField[index] * velConfidence[index] * wallBlend;
+    const p = target.p * pAffine.scale + pAffine.bias + dpField[index] * pressureConfidence[index];
+
+    return {
+      ...target,
+      ux,
+      uy,
+      p,
+      speed: Math.hypot(ux, uy)
+    };
+  });
+
+  return {
+    field,
+    sparsePoints,
+    reconstruction,
+    baselineMetrics: computeMetrics(input, geometry, field, [])
+  };
+}
+
 function reconstructField(
   input: ScenarioInput,
   field: FieldPoint[],
@@ -653,11 +888,14 @@ function buildScenarioResult(input: ScenarioInput, options: SimulateOptions = {}
     includeReconstruction = false
   } = options;
   const geometry = buildGeometry(input);
-  const field = createGrid(input, geometry, resolution);
+  const inverseBundle = includeReconstruction ? inverseReconstructField(input, geometry, resolution) : null;
+  const field = inverseBundle?.field ?? createGrid(input, geometry, resolution);
   const streamlines = includeStreamlines ? buildStreamlines(input, geometry) : undefined;
-  const sparsePoints = includeSparsePoints || includeReconstruction ? pickSparsePoints(input, geometry, field) : undefined;
+  const sparsePoints =
+    inverseBundle?.sparsePoints ?? (includeSparsePoints ? pickSparsePoints(input, geometry, field) : undefined);
   const reconstruction =
-    includeReconstruction && sparsePoints ? reconstructField(input, field, sparsePoints) : undefined;
+    inverseBundle?.reconstruction ??
+    (includeReconstruction && sparsePoints ? reconstructField(input, field, sparsePoints) : undefined);
   const guideStations = geometry.guideStations;
   const mainStations = guideStations;
   const branchStations = geometry.centerlines.representative
@@ -676,6 +914,7 @@ function buildScenarioResult(input: ScenarioInput, options: SimulateOptions = {}
     sparsePoints,
     reconstruction,
     metrics: computeMetrics(input, geometry, reconstruction ?? field, streamlines ?? []),
+    baselineMetrics: inverseBundle?.baselineMetrics,
     probes
   };
 }

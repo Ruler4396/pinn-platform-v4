@@ -6,8 +6,8 @@ import { clamp, lerp } from '../lib/utils';
 interface FieldCanvasProps {
   input: ScenarioInput;
   result: ScenarioResult | null;
-  streamlines?: ScenarioResult['streamlines'];
   layer: FieldLayer;
+  displayMode?: 'field' | 'difference';
   reconstruction?: FieldPoint[];
   sparsePoints?: FieldPoint[];
   probe?: FieldPoint | null;
@@ -19,7 +19,7 @@ interface ColorStop {
   rgb: [number, number, number];
 }
 
-type ScalarLayer = Exclude<FieldLayer, 'streamline'>;
+type ScalarLayer = FieldLayer;
 
 const velocityStops: ColorStop[] = [
   { at: 0, rgb: [22, 51, 112] },
@@ -92,7 +92,12 @@ function findNearestGuideStation(point: Point2D, geometry: GeometryModel) {
   return projections[0];
 }
 
-function scalarValueOf(point: FieldPoint, scalarLayer: ScalarLayer, geometry: GeometryModel): number {
+function scalarValueOf(
+  point: FieldPoint,
+  scalarLayer: ScalarLayer,
+  geometry: GeometryModel,
+  displayMode: 'field' | 'difference'
+): number {
   switch (scalarLayer) {
     case 'pressure':
       return point.p;
@@ -106,7 +111,7 @@ function scalarValueOf(point: FieldPoint, scalarLayer: ScalarLayer, geometry: Ge
     }
     case 'speed':
     default:
-      return point.speed;
+      return displayMode === 'difference' ? Math.abs(point.speed) : point.speed;
   }
 }
 
@@ -137,10 +142,25 @@ function scalarRange(
   geometry: GeometryModel,
   result: ScenarioResult | null | undefined,
   scalarLayer: ScalarLayer,
-  values: number[]
+  values: number[],
+  displayMode: 'field' | 'difference'
 ): { minValue: number; maxValue: number } {
   const dataMin = values.length ? Math.min(...values) : 0;
   const dataMax = values.length ? Math.max(...values) : 1;
+
+  if (displayMode === 'difference') {
+    if (scalarLayer === 'ux' || scalarLayer === 'uy' || scalarLayer === 'axial') {
+      const signedBound = Math.max(Math.abs(dataMin), Math.abs(dataMax), 1e-9);
+      return {
+        minValue: -signedBound,
+        maxValue: signedBound
+      };
+    }
+    return {
+      minValue: 0,
+      maxValue: Math.max(dataMax, 1e-9)
+    };
+  }
 
   if (input.geometry.type === 'bend') {
     const speedCapMultiplier = input.geometry.inletProfile === 'blunted' ? 1.72 : 1.62;
@@ -211,11 +231,12 @@ function rasterize(
   layer: FieldLayer,
   input: ScenarioInput,
   geometry: GeometryModel,
-  result: ScenarioResult | null | undefined
+  result: ScenarioResult | null | undefined,
+  displayMode: 'field' | 'difference'
 ) {
-  const scalarLayer: ScalarLayer = layer === 'streamline' ? 'speed' : layer;
-  const values = dataset.map((point) => scalarValueOf(point, scalarLayer, geometry));
-  const { minValue, maxValue } = scalarRange(input, geometry, result, scalarLayer, values);
+  const scalarLayer: ScalarLayer = layer;
+  const values = dataset.map((point) => scalarValueOf(point, scalarLayer, geometry, displayMode));
+  const { minValue, maxValue } = scalarRange(input, geometry, result, scalarLayer, values, displayMode);
 
   const xs = Array.from(new Set(dataset.map((point) => point.x))).sort((left, right) => left - right);
   const ys = Array.from(new Set(dataset.map((point) => point.y))).sort((left, right) => left - right);
@@ -224,7 +245,7 @@ function rasterize(
   const grid = Array.from({ length: ys.length }, () => Array<number | undefined>(xs.length).fill(undefined));
 
   dataset.forEach((point) => {
-    const value = scalarValueOf(point, scalarLayer, geometry);
+    const value = scalarValueOf(point, scalarLayer, geometry, displayMode);
     const row = yIndex.get(point.y);
     const col = xIndex.get(point.x);
     if (row !== undefined && col !== undefined) {
@@ -236,7 +257,7 @@ function rasterize(
   const points = dataset.map((point) => ({
     x: point.x,
     y: point.y,
-    value: scalarValueOf(point, scalarLayer, geometry)
+    value: scalarValueOf(point, scalarLayer, geometry, displayMode)
   }));
 
   return {
@@ -289,8 +310,8 @@ const contourCases: Record<number, Array<[number, number]>> = {
 function FieldCanvas({
   input,
   result,
-  streamlines,
   layer,
+  displayMode = 'field',
   reconstruction,
   sparsePoints,
   probe,
@@ -332,11 +353,6 @@ function FieldCanvas({
     () => geometry.polygons.map((polygon) => polygon.map((point) => scalePoint(point, renderScale))),
     [geometry.polygons, renderScale, scalePoint]
   );
-  const renderStreamlines = useMemo(
-    () =>
-      streamlines?.map((line) => line.map((point) => scalePoint(point, renderScale))) ?? [],
-    [renderScale, scalePoint, streamlines]
-  );
   const renderSparsePoints = useMemo(
     () =>
       sparsePoints?.map((point) => {
@@ -363,28 +379,30 @@ function FieldCanvas({
   const width = bounds.xMax - bounds.xMin;
   const height = bounds.yMax - bounds.yMin;
   const viewBox = `${bounds.xMin} ${-bounds.yMax} ${width} ${height}`;
-  const raster = useMemo(() => rasterize(datasetForRender, layer, input, geometry, result), [datasetForRender, geometry, input, layer, result]);
+  const raster = useMemo(
+    () => rasterize(datasetForRender, layer, input, geometry, result, displayMode),
+    [datasetForRender, displayMode, geometry, input, layer, result]
+  );
   const pixelWidth = 1440;
   const pixelHeight = Math.round((pixelWidth * height) / Math.max(width, 1));
   const aspectRatio = `${width} / ${height}`;
   const scalarLabel = useMemo(() => {
     if (layer === 'pressure') {
-      return '压力';
+      return displayMode === 'difference' ? '压力差' : '压力';
     }
     if (layer === 'ux') {
-      return 'ux';
+      return displayMode === 'difference' ? 'Δux' : 'ux';
     }
     if (layer === 'uy') {
-      return 'uy';
+      return displayMode === 'difference' ? 'Δuy' : 'uy';
     }
     if (layer === 'axial') {
-      return '局部轴向速度';
+      return displayMode === 'difference' ? '局部轴向差' : '局部轴向速度';
     }
-    return '速度模';
-  }, [layer]);
+    return displayMode === 'difference' ? '速度差' : '速度模';
+  }, [displayMode, layer]);
   const legendUnit = layer === 'pressure' ? 'Pa' : 'm/s';
   const legendGradient = useMemo(() => buildGradientString(raster.stops), [raster.stops]);
-  const streamlineStrokeWidth = Math.max(input.geometry.wUm * 0.018, 4);
   const markerRadius = Math.max(input.geometry.wUm * 0.042, 9);
 
   useEffect(() => {
@@ -469,7 +487,7 @@ function FieldCanvas({
             image.data[pixelIndex] = r;
             image.data[pixelIndex + 1] = g;
             image.data[pixelIndex + 2] = b;
-            image.data[pixelIndex + 3] = layer === 'streamline' ? 164 : 234;
+            image.data[pixelIndex + 3] = 234;
           }
         }
         sourceCtx.putImageData(image, 0, 0);
@@ -478,11 +496,11 @@ function FieldCanvas({
         ctx.filter = layer === 'pressure' ? 'blur(4px) saturate(0.92)' : 'blur(5px) saturate(0.98)';
         ctx.drawImage(source, 0, 0, pixelWidth, pixelHeight);
         ctx.filter = 'none';
-        ctx.globalAlpha = layer === 'streamline' ? 0.48 : 0.92;
+        ctx.globalAlpha = 0.92;
         ctx.drawImage(source, 0, 0, pixelWidth, pixelHeight);
         ctx.globalAlpha = 1;
 
-        if (layer !== 'streamline' && raster.maxValue - raster.minValue > 1e-6) {
+        if (raster.maxValue - raster.minValue > 1e-6) {
           const levels = Array.from({ length: 6 }, (_, index) => raster.minValue + ((index + 1) * (raster.maxValue - raster.minValue)) / 7);
           ctx.strokeStyle = 'rgba(255, 255, 255, 0.42)';
           ctx.lineWidth = 1.2;
@@ -557,8 +575,8 @@ function FieldCanvas({
           const t = clamp((point.value - raster.minValue) / Math.max(raster.maxValue - raster.minValue, 1e-6), 0, 1);
           const [r, g, b] = colorAt(t, raster.stops);
           const gradient = sourceCtx.createRadialGradient(mapped.x, mapped.y, 0, mapped.x, mapped.y, scatterRadius);
-          gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${layer === 'streamline' ? 0.16 : 0.34})`);
-          gradient.addColorStop(0.58, `rgba(${r}, ${g}, ${b}, ${layer === 'streamline' ? 0.08 : 0.16})`);
+          gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0.34)`);
+          gradient.addColorStop(0.58, `rgba(${r}, ${g}, ${b}, 0.16)`);
           gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
           sourceCtx.fillStyle = gradient;
           sourceCtx.fillRect(
@@ -570,10 +588,10 @@ function FieldCanvas({
         });
 
         ctx.imageSmoothingEnabled = true;
-        ctx.filter = layer === 'streamline' ? 'blur(7px) saturate(0.9)' : 'blur(8px) saturate(1.02)';
+        ctx.filter = 'blur(8px) saturate(1.02)';
         ctx.drawImage(source, 0, 0, pixelWidth, pixelHeight);
         ctx.filter = 'none';
-        ctx.globalAlpha = layer === 'streamline' ? 0.44 : 0.96;
+        ctx.globalAlpha = 0.96;
         ctx.drawImage(source, 0, 0, pixelWidth, pixelHeight);
         ctx.globalAlpha = 1;
       }
@@ -610,8 +628,6 @@ function FieldCanvas({
     onQuery(modelPoint);
   };
 
-  const showStreamlines = Boolean(renderStreamlines.length);
-
   return (
     <section className="canvas-card">
       <div className="field-canvas-shell" style={{ aspectRatio }}>
@@ -634,22 +650,6 @@ function FieldCanvas({
               ))}
             </clipPath>
           </defs>
-
-          {showStreamlines && (
-            <g clipPath={`url(#clip-${clipId})`}>
-              {renderStreamlines.map((line, index) => (
-                <polyline
-                  key={`line-${index}`}
-                  points={line.map((point) => `${point.x},${-point.y}`).join(' ')}
-                  fill="none"
-                  stroke={layer === 'streamline' ? 'rgba(17, 24, 39, 0.34)' : 'rgba(17, 24, 39, 0.16)'}
-                  strokeWidth={layer === 'streamline' ? streamlineStrokeWidth : streamlineStrokeWidth * 0.72}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              ))}
-            </g>
-          )}
 
           {polygons.map((polygon, index) => (
             <polygon
@@ -714,7 +714,7 @@ function FieldCanvas({
 
       <div className="canvas-footer">
         <div className="legend-block">
-          <span className="legend-caption">{layer === 'streamline' ? '速度底图' : `${scalarLabel}热力图`}</span>
+          <span className="legend-caption">{`${scalarLabel}${displayMode === 'difference' ? '分布' : '热力图'}`}</span>
           <div className="legend-scale">
             <span>{raster.minValue.toFixed(layer === 'pressure' ? 3 : 6)}</span>
             <div className="legend-gradient" style={{ background: legendGradient }} />

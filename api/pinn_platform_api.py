@@ -428,7 +428,7 @@ class ScenarioEngine:
         ny = max(min_samples, min(max_samples, ny))
         return nx, ny
 
-    def _predict_contraction_field_star(
+    def _build_contraction_frame_star(
         self,
         scenario: dict[str, Any],
         resolution: str = 'full',
@@ -437,10 +437,9 @@ class ScenarioEngine:
         geometry = ContractionGeometry(case)
         nx, ny = self._grid_shape(case.total_length_over_w, 1.0, resolution=resolution)
         frame_star = geometry.interior_grid(ContractionGridSpec(nx=nx, ny=ny, boundary_samples=241))
-        predicted = self.contraction_runtime.predict_star(frame_star, case)
-        return predicted, case, geometry
+        return frame_star, case, geometry
 
-    def _predict_bend_field_star(
+    def _build_bend_frame_star(
         self,
         scenario: dict[str, Any],
         resolution: str = 'full',
@@ -459,10 +458,46 @@ class ScenarioEngine:
                 scale = math.sqrt(target_points / max(len(frame_star), 1))
                 nx = min(max_samples, max(nx + 8, int(math.ceil(nx * min(scale, 1.5)))))
                 ny = min(max_samples, max(ny + 8, int(math.ceil(ny * min(scale, 1.5)))))
-                next_frame = geometry.interior_grid(BendGridSpec(nx=nx, ny=ny, boundary_samples=boundary_samples))
-                frame_star = next_frame
+                frame_star = geometry.interior_grid(BendGridSpec(nx=nx, ny=ny, boundary_samples=boundary_samples))
                 if len(frame_star) >= target_points or (nx >= max_samples and ny >= max_samples):
                     break
+        return frame_star, case, geometry
+
+    def _build_target_frame_star(
+        self,
+        scenario: dict[str, Any],
+        resolution: str = 'full',
+    ) -> tuple[pd.DataFrame, ContractionCase | BendCase, ContractionGeometry | BendGeometry]:
+        if scenario['geometry']['type'] == 'contraction':
+            return self._build_contraction_frame_star(scenario, resolution=resolution)
+        return self._build_bend_frame_star(scenario, resolution=resolution)
+
+    def _predict_frame_star(
+        self,
+        scenario: dict[str, Any],
+        frame_star: pd.DataFrame,
+    ) -> pd.DataFrame:
+        if scenario['geometry']['type'] == 'contraction':
+            case = self._build_contraction_case(scenario)
+            return self.contraction_runtime.predict_star(frame_star, case)
+        case = self._build_bend_case(scenario)
+        return self._predict_bend_with_runtime(frame_star, case)
+
+    def _predict_contraction_field_star(
+        self,
+        scenario: dict[str, Any],
+        resolution: str = 'full',
+    ) -> tuple[pd.DataFrame, ContractionCase, ContractionGeometry]:
+        frame_star, case, geometry = self._build_contraction_frame_star(scenario, resolution=resolution)
+        predicted = self.contraction_runtime.predict_star(frame_star, case)
+        return predicted, case, geometry
+
+    def _predict_bend_field_star(
+        self,
+        scenario: dict[str, Any],
+        resolution: str = 'full',
+    ) -> tuple[pd.DataFrame, BendCase, BendGeometry]:
+        frame_star, case, geometry = self._build_bend_frame_star(scenario, resolution=resolution)
         predicted = self._predict_bend_with_runtime(frame_star, case)
         return predicted, case, geometry
 
@@ -687,6 +722,80 @@ class ScenarioEngine:
             branch.append({'s': float(xi_local / max(case.l_out_over_w, 1.0e-12)), 'speed': point['speed'], 'p': point['p']})
         return main, branch
 
+    @staticmethod
+    def _scenario_seed(scenario: dict[str, Any], salt: str) -> int:
+        payload = json.dumps({'salt': salt, 'scenario': scenario}, sort_keys=True, ensure_ascii=False).encode('utf-8')
+        digest = hashlib.sha256(payload).digest()
+        return int.from_bytes(digest[:8], 'little', signed=False)
+
+    def _build_observation_candidate_frame_star(
+        self,
+        scenario: dict[str, Any],
+        resolution: str,
+    ) -> pd.DataFrame:
+        candidate_resolution = 'full' if resolution == 'preview' else resolution
+        candidate_frame, _, _ = self._build_target_frame_star(scenario, resolution=candidate_resolution)
+        return candidate_frame
+
+    def _sample_sparse_frame_star(
+        self,
+        scenario: dict[str, Any],
+        target_frame_star: pd.DataFrame,
+        candidate_frame_star: pd.DataFrame,
+    ) -> pd.DataFrame:
+        sample_count = max(1, int(round(len(target_frame_star) * float(scenario['sparse']['sampleRatePct']) / 100.0)))
+        working = candidate_frame_star
+        if 'wall_distance_star' in working.columns:
+            filtered = working[working['wall_distance_star'] >= 0.045].copy()
+            if len(filtered) >= sample_count:
+                working = filtered
+
+        rng = np.random.default_rng(self._scenario_seed(scenario, 'sparse-observations'))
+        indices = np.arange(len(working))
+        if sample_count >= len(indices):
+            selected = indices
+        elif str(scenario['sparse'].get('strategy', 'region_aware')) == 'region_aware' and 'region_id' in working.columns:
+            regions = working['region_id'].to_numpy(dtype=int)
+            picked: list[int] = []
+            quotas = {
+                1: int(round(sample_count * 0.4)),
+                2: int(round(sample_count * 0.25)),
+            }
+            quotas[0] = max(sample_count - quotas[1] - quotas[2], 0)
+            for region_id, quota in quotas.items():
+                region_indices = indices[regions == region_id]
+                if len(region_indices) == 0 or quota <= 0:
+                    continue
+                take = min(quota, len(region_indices))
+                picked.extend(rng.choice(region_indices, size=take, replace=False).tolist())
+            if len(picked) < sample_count:
+                remaining = np.setdiff1d(indices, np.array(picked, dtype=int), assume_unique=False)
+                extra = rng.choice(remaining, size=min(sample_count - len(picked), len(remaining)), replace=False)
+                picked.extend(extra.tolist())
+            selected = np.array(sorted(set(picked)))[:sample_count]
+        else:
+            selected = np.sort(rng.choice(indices, size=sample_count, replace=False))
+        return working.iloc[selected].reset_index(drop=True)
+
+    def _apply_sparse_noise(
+        self,
+        scenario: dict[str, Any],
+        field_points: list[dict[str, float]],
+    ) -> list[dict[str, float]]:
+        noise_pct = float(scenario['sparse'].get('noisePct', 0.0)) / 100.0
+        if noise_pct <= 0:
+            return [dict(point) for point in field_points]
+        rng = np.random.default_rng(self._scenario_seed(scenario, 'sparse-noise'))
+        noisy: list[dict[str, float]] = []
+        for point in field_points:
+            sample = dict(point)
+            sample['ux'] *= 1 + float(rng.normal(0, noise_pct * 0.35))
+            sample['uy'] *= 1 + float(rng.normal(0, noise_pct * 0.35))
+            sample['p'] *= 1 + float(rng.normal(0, noise_pct * 0.2))
+            sample['speed'] = math.hypot(sample['ux'], sample['uy'])
+            noisy.append(sample)
+        return noisy
+
     def _sample_sparse_points(self, scenario: dict[str, Any], frame_star: pd.DataFrame, field_physical: list[dict[str, float]]) -> list[dict[str, float]]:
         sample_rate = max(1, int(round(len(field_physical) * float(scenario['sparse']['sampleRatePct']) / 100.0)))
         rng = np.random.default_rng(20260402)
@@ -726,6 +835,26 @@ class ScenarioEngine:
                 point['speed'] = math.hypot(point['ux'], point['uy'])
             sparse_points.append(point)
         return sparse_points
+
+    @staticmethod
+    def _point_key(point: dict[str, float]) -> tuple[float, float]:
+        return (round(float(point['x']), 6), round(float(point['y']), 6))
+
+    @staticmethod
+    def _fit_affine_delta(
+        prior: np.ndarray,
+        observed: np.ndarray,
+        *,
+        scale_ridge: float,
+        bias_ridge: float,
+    ) -> tuple[float, float]:
+        if len(prior) == 0 or len(observed) == 0:
+            return 1.0, 0.0
+        design = np.column_stack([prior, np.ones_like(prior)])
+        rhs = observed - prior
+        lhs = design.T @ design + np.diag([max(scale_ridge, 1.0e-9), max(bias_ridge, 1.0e-9)])
+        coeff = np.linalg.solve(lhs, design.T @ rhs)
+        return 1.0 + float(coeff[0]), float(coeff[1])
 
     @staticmethod
     def _nearest_sparse_points(
@@ -856,6 +985,125 @@ class ScenarioEngine:
             )
         return reconstruction
 
+    def _inverse_reconstruct_result(
+        self,
+        scenario: dict[str, Any],
+        *,
+        resolution: str = 'preview',
+    ) -> dict[str, Any]:
+        target_frame_star, _, _ = self._build_target_frame_star(scenario, resolution=resolution)
+        candidate_frame_star = self._build_observation_candidate_frame_star(scenario, resolution=resolution)
+        sparse_frame_star = self._sample_sparse_frame_star(scenario, target_frame_star, candidate_frame_star)
+
+        sparse_truth_star = self._predict_frame_star(scenario, sparse_frame_star)
+        sparse_truth = self._star_to_physical_points(scenario, sparse_truth_star)
+        sparse_points = self._apply_sparse_noise(scenario, sparse_truth)
+
+        prior_sparse_star = self._predict_frame_star(scenario, sparse_frame_star)
+        prior_sparse = self._star_to_physical_points(scenario, prior_sparse_star)
+        prior_field_star = self._predict_frame_star(scenario, target_frame_star)
+        prior_field = self._star_to_physical_points(scenario, prior_field_star)
+
+        prior_sparse_ux = np.array([point['ux'] for point in prior_sparse], dtype=np.float64)
+        prior_sparse_uy = np.array([point['uy'] for point in prior_sparse], dtype=np.float64)
+        prior_sparse_p = np.array([point['p'] for point in prior_sparse], dtype=np.float64)
+        observed_ux = np.array([point['ux'] for point in sparse_points], dtype=np.float64)
+        observed_uy = np.array([point['uy'] for point in sparse_points], dtype=np.float64)
+        observed_p = np.array([point['p'] for point in sparse_points], dtype=np.float64)
+
+        ux_scale, ux_bias = self._fit_affine_delta(prior_sparse_ux, observed_ux, scale_ridge=2.5e-2, bias_ridge=1.0e-8)
+        uy_scale, uy_bias = self._fit_affine_delta(prior_sparse_uy, observed_uy, scale_ridge=2.5e-2, bias_ridge=1.0e-8)
+        p_scale, p_bias = self._fit_affine_delta(prior_sparse_p, observed_p, scale_ridge=3.0e-2, bias_ridge=1.0e-8)
+
+        corrected_sparse_ux = prior_sparse_ux * ux_scale + ux_bias
+        corrected_sparse_uy = prior_sparse_uy * uy_scale + uy_bias
+        corrected_sparse_p = prior_sparse_p * p_scale + p_bias
+
+        residuals = [
+            {
+                'x': float(point['x']),
+                'y': float(point['y']),
+                'dux': float(observed_ux[idx] - corrected_sparse_ux[idx]),
+                'duy': float(observed_uy[idx] - corrected_sparse_uy[idx]),
+                'dp': float(observed_p[idx] - corrected_sparse_p[idx]),
+            }
+            for idx, point in enumerate(sparse_points)
+        ]
+        anchor_points = self._select_anchor_points(sparse_points, max_anchors=48)
+
+        width_um = float(scenario['geometry']['wUm'])
+        velocity_radius = max(width_um * 1.05, 30.0)
+        pressure_radius = max(width_um * 1.55, 42.0)
+        velocity_ridge = 1.8e-2
+        pressure_ridge = 3.0e-2
+
+        if anchor_points and residuals:
+            sparse_xy = np.array([[item['x'], item['y']] for item in residuals], dtype=np.float64)
+            anchor_xy = np.array([[float(point['x']), float(point['y'])] for point in anchor_points], dtype=np.float64)
+            field_xy = np.array([[float(point['x']), float(point['y'])] for point in prior_field], dtype=np.float64)
+
+            vel_kernel_obs = self._rbf_kernel(sparse_xy, anchor_xy, velocity_radius)
+            vel_kernel_field = self._rbf_kernel(field_xy, anchor_xy, velocity_radius)
+            p_kernel_obs = self._rbf_kernel(sparse_xy, anchor_xy, pressure_radius)
+            p_kernel_field = self._rbf_kernel(field_xy, anchor_xy, pressure_radius)
+
+            dux_obs = np.array([item['dux'] for item in residuals], dtype=np.float64)
+            duy_obs = np.array([item['duy'] for item in residuals], dtype=np.float64)
+            dp_obs = np.array([item['dp'] for item in residuals], dtype=np.float64)
+
+            dux_weights = self._solve_ridge_weights(vel_kernel_obs, dux_obs, velocity_ridge)
+            duy_weights = self._solve_ridge_weights(vel_kernel_obs, duy_obs, velocity_ridge)
+            dp_weights = self._solve_ridge_weights(p_kernel_obs, dp_obs, pressure_ridge)
+
+            dux_field = vel_kernel_field @ dux_weights
+            duy_field = vel_kernel_field @ duy_weights
+            dp_field = p_kernel_field @ dp_weights
+            vel_confidence = np.clip(np.sum(vel_kernel_field, axis=1) / 3.4, 0.0, 1.0)
+            p_confidence = np.clip(np.sum(p_kernel_field, axis=1) / 3.9, 0.0, 1.0)
+        else:
+            dux_field = np.zeros(len(prior_field), dtype=np.float64)
+            duy_field = np.zeros(len(prior_field), dtype=np.float64)
+            dp_field = np.zeros(len(prior_field), dtype=np.float64)
+            vel_confidence = np.zeros(len(prior_field), dtype=np.float64)
+            p_confidence = np.zeros(len(prior_field), dtype=np.float64)
+
+        if 'wall_distance_star' in target_frame_star.columns:
+            wall_distance = target_frame_star['wall_distance_star'].to_numpy(dtype=np.float64)
+            wall_blend = np.clip(wall_distance / 0.08, 0.0, 1.0)
+        else:
+            wall_blend = np.ones(len(prior_field), dtype=np.float64)
+
+        sparse_lookup = {self._point_key(point): point for point in sparse_points}
+        reconstruction: list[dict[str, float]] = []
+        for idx, prior_point in enumerate(prior_field):
+            exact_match = sparse_lookup.get(self._point_key(prior_point))
+            if exact_match is not None:
+                reconstruction.append(dict(exact_match))
+                continue
+            ux = float(prior_point['ux']) * ux_scale + ux_bias * float(wall_blend[idx])
+            uy = float(prior_point['uy']) * uy_scale + uy_bias * float(wall_blend[idx])
+            p = float(prior_point['p']) * p_scale + p_bias
+            ux += float(dux_field[idx]) * float(vel_confidence[idx]) * float(wall_blend[idx])
+            uy += float(duy_field[idx]) * float(vel_confidence[idx]) * float(wall_blend[idx])
+            p += float(dp_field[idx]) * float(p_confidence[idx])
+            reconstruction.append(
+                {
+                    **prior_point,
+                    'ux': float(ux),
+                    'uy': float(uy),
+                    'p': float(p),
+                    'speed': float(math.hypot(ux, uy)),
+                }
+            )
+
+        return {
+            'field': prior_field,
+            'sparsePoints': sparse_points,
+            'reconstruction': reconstruction,
+            'metrics': self._compute_metrics(scenario, reconstruction),
+            'baselineMetrics': self._compute_metrics(scenario, prior_field),
+        }
+
     @staticmethod
     def _compute_metrics(
         scenario: dict[str, Any],
@@ -960,14 +1208,7 @@ class ScenarioEngine:
         return self._star_to_physical_points(scenario, pred)[0]
 
     def reconstruct(self, scenario: dict[str, Any]) -> dict[str, Any]:
-        return self.simulate(
-            scenario,
-            resolution='preview',
-            include_streamlines=False,
-            include_probes=False,
-            include_sparse=True,
-            include_reconstruction=True,
-        )
+        return self._inverse_reconstruct_result(scenario, resolution='preview')
 
     def streamlines(self, scenario: dict[str, Any], resolution: str = 'preview') -> dict[str, Any]:
         result = self.simulate(

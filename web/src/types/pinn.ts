@@ -3,7 +3,7 @@ export type InletProfile = 'parabolic' | 'blunted' | 'skewed_top' | 'skewed_bott
 export type FluidPreset = 'water' | 'glycerol10' | 'glycerol30' | 'custom';
 export type SparseStrategy = 'region_aware' | 'uniform';
 export type SweepVariable = 'meanVelocity' | 'viscosity';
-export type FieldLayer = 'speed' | 'ux' | 'uy' | 'axial' | 'pressure' | 'streamline';
+export type FieldLayer = 'speed' | 'ux' | 'uy' | 'axial' | 'pressure';
 export type FieldResolution = 'preview' | 'full';
 export type SectionKey =
   | 'overview'
@@ -78,6 +78,7 @@ export interface ScenarioResult {
   sparsePoints?: FieldPoint[];
   reconstruction?: FieldPoint[];
   metrics: ScenarioMetrics;
+  baselineMetrics?: ScenarioMetrics;
   probes?: ScenarioProbes;
 }
 

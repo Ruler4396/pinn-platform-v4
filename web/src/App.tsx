@@ -7,7 +7,7 @@ import { defaultScenario, demoPresets } from './lib/presets';
 import { formatTimestamp, hashScenario } from './lib/utils';
 import type { ActionStatus, DemoPreset, FieldLayer, FieldPoint, ScenarioInput, ScenarioResult } from './types/pinn';
 
-type StatusKey = 'simulate' | 'reconstruct' | 'probe' | 'streamlines';
+type StatusKey = 'simulate' | 'reconstruct' | 'probe';
 
 const emptyStatus = (label: string): ActionStatus => ({
   label,
@@ -19,15 +19,13 @@ const emptyStatus = (label: string): ActionStatus => ({
 const createInitialStatuses = (): Record<StatusKey, ActionStatus> => ({
   simulate: emptyStatus('simulate'),
   reconstruct: emptyStatus('reconstruct'),
-  probe: emptyStatus('probe'),
-  streamlines: emptyStatus('streamlines')
+  probe: emptyStatus('probe')
 });
 
 const statusTitles: Record<StatusKey, string> = {
   simulate: '流场计算',
   reconstruct: '稀疏重建',
-  probe: '点位查询',
-  streamlines: '流线加载'
+  probe: '点位查询'
 };
 
 function statusHeadline(status: ActionStatus): string {
@@ -79,6 +77,20 @@ function formatPressure(value: number): string {
   return `${value.toFixed(3)} Pa`;
 }
 
+function formatDeltaVelocity(value: number): string {
+  if (value >= 1e-4) {
+    return `${(value * 1000).toFixed(3)} mm/s`;
+  }
+  return `${value.toExponential(2)} m/s`;
+}
+
+function formatDeltaPressure(value: number): string {
+  if (value >= 1e-3) {
+    return `${value.toFixed(4)} Pa`;
+  }
+  return `${value.toExponential(2)} Pa`;
+}
+
 function formatGeometryType(type: ScenarioInput['geometry']['type']): string {
   return type === 'contraction' ? '收缩流道' : '弯曲流道';
 }
@@ -98,10 +110,8 @@ function layerLabel(layer: FieldLayer): string {
     case 'axial':
       return '局部轴向';
     case 'pressure':
-      return '压力';
-    case 'streamline':
     default:
-      return '流线';
+      return '压力';
   }
 }
 
@@ -178,9 +188,8 @@ export default function App() {
   const [fieldLayer, setFieldLayer] = useState<FieldLayer>('speed');
   const [result, setResult] = useState<ScenarioResult | null>(null);
   const [reconstructionResult, setReconstructionResult] = useState<ScenarioResult | null>(null);
-  const [showReconstruction, setShowReconstruction] = useState(false);
+  const [viewMode, setViewMode] = useState<'field' | 'reconstruction' | 'difference'>('field');
   const [previewCacheState, setPreviewCacheState] = useState<'idle' | 'hit' | 'miss'>('idle');
-  const [streamlineLoadState, setStreamlineLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [probeInput, setProbeInput] = useState({ x: 0, y: 0 });
   const [probeResult, setProbeResult] = useState<FieldPoint | null>(null);
   const [statuses, setStatuses] = useState<Record<StatusKey, ActionStatus>>(createInitialStatuses);
@@ -237,9 +246,8 @@ export default function App() {
   );
   const simulateBusy = statuses.simulate.state === 'running' || statuses.simulate.state === 'retrying';
   const reconstructBusy = statuses.reconstruct.state === 'running' || statuses.reconstruct.state === 'retrying';
-  const streamlinesBusy = statuses.streamlines.state === 'running' || statuses.streamlines.state === 'retrying';
   const activeBusyStatus = useMemo(() => {
-    const ordered = ['simulate', 'reconstruct', 'streamlines'].map((key) => statuses[key as StatusKey]);
+    const ordered = ['simulate', 'reconstruct'].map((key) => statuses[key as StatusKey]);
     return ordered.find((status) => status.state === 'running' || status.state === 'retrying') ?? null;
   }, [statuses]);
   const activeStatusClass = activeBusyStatus ? `hero-progress hero-progress-inset hero-progress-${statusTone(activeBusyStatus)}` : '';
@@ -350,39 +358,11 @@ export default function App() {
       setSolvedScenario(normalizedInput);
       setResult(next);
       setReconstructionResult(null);
-      setShowReconstruction(false);
+      setViewMode('field');
       setPreviewCacheState('miss');
-      setStreamlineLoadState('idle');
       setProbeResult(null);
-      if (fieldLayer === 'streamline') {
-        void handleLoadStreamlines(normalizedInput);
-      }
     } catch (error) {
       publishStatus('simulate', 'error', error instanceof Error ? error.message : '计算失败');
-    }
-  };
-
-  const handleLoadStreamlines = async (input = solvedScenario) => {
-    if (streamlineLoadState === 'loading') {
-      return;
-    }
-    setStreamlineLoadState('loading');
-    publishStatus('streamlines', 'running', '正在生成流线，可继续查看热力图。');
-    try {
-      const streamlines = await adapter.loadStreamlines(input, { resolution: 'preview' });
-      setResult((current) =>
-        current
-          ? {
-              ...current,
-              streamlines
-            }
-          : current
-      );
-      setStreamlineLoadState('ready');
-      publishStatus('streamlines', 'success', '流线已加载。');
-    } catch {
-      setStreamlineLoadState('error');
-      publishStatus('streamlines', 'error', '流线加载失败，请稍后重试。');
     }
   };
 
@@ -420,37 +400,77 @@ export default function App() {
       setSolvedScenario(normalizedScenario);
       setResult({
         field: next.field,
-        metrics: next.metrics
+        metrics: next.baselineMetrics ?? next.metrics,
+        baselineMetrics: next.baselineMetrics
       });
       setReconstructionResult(next);
-      setShowReconstruction(true);
-      setStreamlineLoadState('idle');
+      setViewMode('reconstruction');
       setProbeResult(null);
-      if (fieldLayer === 'streamline') {
-        void handleLoadStreamlines(normalizedScenario);
-      }
     } catch (error) {
       publishStatus('reconstruct', 'error', error instanceof Error ? error.message : '重建失败');
     }
   };
 
-  const activeResult = showReconstruction && reconstructionResult ? reconstructionResult : result;
-  const displayStreamlines = activeResult?.streamlines ?? result?.streamlines;
+  const differenceBundle = useMemo(() => {
+    if (!reconstructionResult?.reconstruction?.length) {
+      return null;
+    }
+    const baselineField = reconstructionResult.field;
+    const reconstructionLookup = new Map(
+      reconstructionResult.reconstruction.map((point) => [`${point.x.toFixed(6)}:${point.y.toFixed(6)}`, point])
+    );
+    const differenceField = baselineField.map((point) => {
+      const reconstructionPoint =
+        reconstructionLookup.get(`${point.x.toFixed(6)}:${point.y.toFixed(6)}`) ?? point;
+      return {
+        x: point.x,
+        y: point.y,
+        ux: reconstructionPoint.ux - point.ux,
+        uy: reconstructionPoint.uy - point.uy,
+        p: Math.abs(reconstructionPoint.p - point.p),
+        speed: Math.abs(reconstructionPoint.speed - point.speed)
+      };
+    });
+    const maxSpeedDiff = differenceField.reduce((best, point) => Math.max(best, point.speed), 0);
+    const maxPressureDiff = differenceField.reduce((best, point) => Math.max(best, point.p), 0);
+    const meanPressureDiff =
+      differenceField.reduce((sum, point) => sum + point.p, 0) / Math.max(differenceField.length, 1);
+    const meanSpeedDiff =
+      differenceField.reduce((sum, point) => sum + point.speed, 0) / Math.max(differenceField.length, 1);
+    const differenceResult: ScenarioResult = {
+      field: differenceField,
+      metrics: reconstructionResult.metrics
+    };
+    return {
+      result: differenceResult,
+      summary: {
+        maxSpeedDiff,
+        maxPressureDiff,
+        meanPressureDiff,
+        meanSpeedDiff,
+        sparseCount: reconstructionResult.sparsePoints?.length ?? 0
+      }
+    };
+  }, [reconstructionResult]);
+
+  const activeResult =
+    viewMode === 'difference' && differenceBundle
+      ? differenceBundle.result
+      : viewMode === 'reconstruction' && reconstructionResult
+        ? reconstructionResult
+        : result;
   const activeSparsePoints =
-    showReconstruction && reconstructionResult?.sparsePoints
+    viewMode !== 'field' && reconstructionResult?.sparsePoints
       ? reconstructionResult.sparsePoints
       : result?.sparsePoints;
   const activeReconstruction =
-    showReconstruction && reconstructionResult?.reconstruction
+    viewMode === 'reconstruction' && reconstructionResult?.reconstruction
       ? reconstructionResult.reconstruction
       : undefined;
-  const currentMetrics = activeResult?.metrics;
+  const currentMetrics = viewMode === 'difference' ? null : activeResult?.metrics;
 
   const handleLayerChange = (nextLayer: FieldLayer) => {
     setFieldLayer(nextLayer);
-    if (nextLayer === 'streamline' && !displayStreamlines?.length) {
-      void handleLoadStreamlines();
-    }
   };
 
   return (
@@ -471,36 +491,56 @@ export default function App() {
           </div>
         </div>
         <div className="hero-actions">
-          <div className="hero-select-field">
-            <select
-              aria-label="案例预设"
-              value={activePresetId}
-              onChange={(event) => handleApplyPreset(event.target.value)}
-              disabled={simulateBusy || reconstructBusy}
-            >
-              {demoPresets.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.name}
-                </option>
-              ))}
-              <option value={customPresetIds.contraction}>自定义收缩流道</option>
-              <option value={customPresetIds.bend}>自定义弯曲流道</option>
-            </select>
+          <div className="hero-toolbar">
+            <div className="hero-select-field">
+              <select
+                aria-label="案例预设"
+                value={activePresetId}
+                onChange={(event) => handleApplyPreset(event.target.value)}
+                disabled={simulateBusy || reconstructBusy}
+              >
+                {demoPresets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.name}
+                  </option>
+                ))}
+                <option value={customPresetIds.contraction}>自定义收缩流道</option>
+                <option value={customPresetIds.bend}>自定义弯曲流道</option>
+              </select>
+            </div>
+            <button type="button" className="primary" onClick={() => void handleSimulate()} disabled={simulateBusy || reconstructBusy}>
+              {simulateBusy ? '计算中…' : scenarioDirty ? '更新流场' : '重新计算'}
+            </button>
+            <button type="button" className="secondary" onClick={() => void handleReconstruct()} disabled={simulateBusy || reconstructBusy}>
+              {reconstructBusy ? '重建中…' : '稀疏重建'}
+            </button>
           </div>
-          <button type="button" className="primary" onClick={() => void handleSimulate()} disabled={simulateBusy || reconstructBusy}>
-            {simulateBusy ? '计算中…' : scenarioDirty ? '更新流场' : '重新计算'}
-          </button>
-          <button type="button" className="secondary" onClick={() => void handleReconstruct()} disabled={simulateBusy || reconstructBusy}>
-            {reconstructBusy ? '重建中…' : '稀疏重建'}
-          </button>
-          <button
-            type="button"
-            className={showReconstruction ? 'secondary active' : 'secondary'}
-            onClick={() => setShowReconstruction((value) => !value)}
-            disabled={!reconstructionResult || simulateBusy || reconstructBusy}
-          >
-            {showReconstruction ? '显示基准场' : '显示重建场'}
-          </button>
+          <div className="hero-view-switch" role="tablist" aria-label="结果显示模式">
+            <button
+              type="button"
+              className={viewMode === 'field' ? 'secondary segment active' : 'secondary segment'}
+              onClick={() => setViewMode('field')}
+              disabled={!result || simulateBusy || reconstructBusy}
+            >
+              完整场
+            </button>
+            <button
+              type="button"
+              className={viewMode === 'reconstruction' ? 'secondary segment active' : 'secondary segment'}
+              onClick={() => setViewMode('reconstruction')}
+              disabled={!reconstructionResult || simulateBusy || reconstructBusy}
+            >
+              重建场
+            </button>
+            <button
+              type="button"
+              className={viewMode === 'difference' ? 'secondary segment active' : 'secondary segment'}
+              onClick={() => setViewMode('difference')}
+              disabled={!differenceBundle || simulateBusy || reconstructBusy}
+            >
+              差异场
+            </button>
+          </div>
           {activeBusyStatus ? (
             <div className={activeStatusClass} aria-live="polite">
               <div className="hero-progress-copy">
@@ -560,49 +600,72 @@ export default function App() {
                 >
                   压力场
                 </button>
-                <button
-                  type="button"
-                  className={fieldLayer === 'streamline' ? 'mini-toggle active' : 'mini-toggle'}
-                  onClick={() => handleLayerChange('streamline')}
-                  disabled={streamlinesBusy}
-                >
-                  {streamlinesBusy ? '流线加载中…' : '流线'}
-                </button>
               </div>
 
               <div className="stage-stats">
-                <div>
-                  <span>峰值速度</span>
-                  <strong>{currentMetrics ? formatVelocity(currentMetrics.maxSpeed) : '—'}</strong>
-                </div>
-                <div>
-                  <span>平均压降</span>
-                  <strong>{currentMetrics ? formatPressure(currentMetrics.avgPressureDrop) : '—'}</strong>
-                </div>
-                <div>
-                  <span>当前图层</span>
-                  <strong>{layerLabel(fieldLayer)}</strong>
-                </div>
-                <div>
-                  <span>Re</span>
-                  <strong>{currentMetrics ? currentMetrics.reynolds.toFixed(3) : '—'}</strong>
-                </div>
-                <div>
-                  <span>壁面代理</span>
-                  <strong>{currentMetrics ? currentMetrics.wallShearProxy.toExponential(2) : '—'}</strong>
-                </div>
-                <div>
-                  <span>曲率代理</span>
-                  <strong>{currentMetrics ? currentMetrics.streamlineCurvatureProxy.toFixed(3) : '—'}</strong>
-                </div>
+                {viewMode === 'difference' && differenceBundle ? (
+                  <>
+                    <div>
+                      <span>最大速度差</span>
+                      <strong>{formatDeltaVelocity(differenceBundle.summary.maxSpeedDiff)}</strong>
+                    </div>
+                    <div>
+                      <span>最大压差</span>
+                      <strong>{formatDeltaPressure(differenceBundle.summary.maxPressureDiff)}</strong>
+                    </div>
+                    <div>
+                      <span>当前图层</span>
+                      <strong>{layerLabel(fieldLayer)}</strong>
+                    </div>
+                    <div>
+                      <span>稀疏点数</span>
+                      <strong>{differenceBundle.summary.sparseCount}</strong>
+                    </div>
+                    <div>
+                      <span>平均速度差</span>
+                      <strong>{formatDeltaVelocity(differenceBundle.summary.meanSpeedDiff)}</strong>
+                    </div>
+                    <div>
+                      <span>平均压差</span>
+                      <strong>{formatDeltaPressure(differenceBundle.summary.meanPressureDiff)}</strong>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <span>峰值速度</span>
+                      <strong>{currentMetrics ? formatVelocity(currentMetrics.maxSpeed) : '—'}</strong>
+                    </div>
+                    <div>
+                      <span>平均压降</span>
+                      <strong>{currentMetrics ? formatPressure(currentMetrics.avgPressureDrop) : '—'}</strong>
+                    </div>
+                    <div>
+                      <span>当前图层</span>
+                      <strong>{layerLabel(fieldLayer)}</strong>
+                    </div>
+                    <div>
+                      <span>Re</span>
+                      <strong>{currentMetrics ? currentMetrics.reynolds.toFixed(3) : '—'}</strong>
+                    </div>
+                    <div>
+                      <span>壁面代理</span>
+                      <strong>{currentMetrics ? currentMetrics.wallShearProxy.toExponential(2) : '—'}</strong>
+                    </div>
+                    <div>
+                      <span>曲率代理</span>
+                      <strong>{currentMetrics ? currentMetrics.streamlineCurvatureProxy.toFixed(3) : '—'}</strong>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
             <FieldCanvas
               input={solvedScenario}
               result={activeResult}
-              streamlines={displayStreamlines}
               layer={fieldLayer}
+              displayMode={viewMode === 'difference' ? 'difference' : 'field'}
               reconstruction={activeReconstruction}
               sparsePoints={activeSparsePoints}
               probe={probeResult}
