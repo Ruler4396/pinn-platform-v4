@@ -70,6 +70,50 @@ def savefig(fig, path: Path) -> str:
     return path.name
 
 
+def pct_label(value: float, digits: int = 2) -> str:
+    return f"{value * 100:.{digits}f}%"
+
+
+def rel_label(value: float, digits: int = 3) -> str:
+    return f"{value:.{digits}f}"
+
+
+def add_point_labels(ax, xs, ys, *, fmt=pct_label, dy: float | None = None, fontsize: int = 8) -> None:
+    ys = list(ys)
+    if not ys:
+        return
+    offset = dy if dy is not None else max(ys) * 0.035
+    for x, y in zip(xs, ys):
+        ax.text(x, y + offset, fmt(float(y)), ha="center", va="bottom", fontsize=fontsize)
+
+
+def add_bar_labels(ax, bars, *, fmt=pct_label, log_scale: bool = False, fontsize: int = 8) -> None:
+    heights = [bar.get_height() for bar in bars]
+    if not heights:
+        return
+    ymax = max(heights)
+    for bar in bars:
+        value = float(bar.get_height())
+        y = value * 1.18 if log_scale else value + ymax * 0.035
+        ax.text(bar.get_x() + bar.get_width() / 2, y, fmt(value), ha="center", va="bottom", fontsize=fontsize)
+
+
+def add_final_label(ax, xs, ys, *, fmt=pct_label, color: str | None = None, fontsize: int = 8) -> None:
+    xs = list(xs)
+    ys = list(ys)
+    if not xs:
+        return
+    ax.annotate(
+        fmt(float(ys[-1])),
+        xy=(xs[-1], ys[-1]),
+        xytext=(6, 0),
+        textcoords="offset points",
+        va="center",
+        fontsize=fontsize,
+        color=color,
+    )
+
+
 def plot_bend_sparse_rate(sec: Path) -> list[str]:
     rates = [1, 5, 10, 15]
     rows = []
@@ -91,11 +135,14 @@ def plot_bend_sparse_rate(sec: Path) -> list[str]:
     fig, ax = plt.subplots(figsize=(7.4, 4.6))
     ax.plot(df["rate"], df["speed"], marker="o", label="速度Rel-L2", color="#0f766e")
     ax.plot(df["rate"], df["pressure"], marker="s", label="压力Rel-L2", color="#c2410c")
+    add_point_labels(ax, df["rate"], df["speed"], fmt=pct_label)
+    add_point_labels(ax, df["rate"], df["pressure"], fmt=pct_label)
     ax.set_xlabel("采样率/%")
     ax.set_ylabel("验证集Rel-L2")
     ax.set_title("严格稀疏设置下不同采样率的重建误差")
     ax.grid(alpha=0.25, linestyle=":")
     ax.legend(frameon=False)
+    ax.set_ylim(0, max(df["speed"].max(), df["pressure"].max()) * 1.32)
     files.append(savefig(fig, sec / "strict_sparse_rate_summary.png"))
 
     fig, ax = plt.subplots(figsize=(8.0, 4.8))
@@ -146,9 +193,11 @@ def plot_region_uniform(sec: Path) -> list[str]:
         for strategy, color in [("分区感知", "#0f766e"), ("均匀采样", "#f59e0b")]:
             sub = df[df["strategy"] == strategy]
             ax.plot(sub["rate"], sub[col], marker="o", label=strategy, color=color)
+            add_point_labels(ax, sub["rate"], sub[col], fmt=pct_label)
         ax.set_title(title)
         ax.set_xlabel("采样率/%")
         ax.grid(alpha=0.25, linestyle=":")
+        ax.set_ylim(0, df[col].max() * 1.35)
     axes[0].set_ylabel("验证集Rel-L2")
     axes[1].legend(frameon=False)
     fig.suptitle("严格稀疏设置下采样策略与采样率的影响", y=1.02)
@@ -169,14 +218,17 @@ def plot_region_uniform(sec: Path) -> list[str]:
         ]
     x = np.arange(len(labels))
     width = 0.34
-    ax.bar(x - width / 2, vals["分区感知"], width=width, label="分区感知", color="#0f766e")
-    ax.bar(x + width / 2, vals["均匀采样"], width=width, label="均匀采样", color="#f59e0b")
+    b1 = ax.bar(x - width / 2, vals["分区感知"], width=width, label="分区感知", color="#0f766e")
+    b2 = ax.bar(x + width / 2, vals["均匀采样"], width=width, label="均匀采样", color="#f59e0b")
+    add_bar_labels(ax, b1, fmt=pct_label)
+    add_bar_labels(ax, b2, fmt=pct_label)
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("Rel-L2")
     ax.set_title("5%预算下严格稀疏采样策略对比")
     ax.grid(axis="y", alpha=0.25, linestyle=":")
     ax.legend(frameon=False)
+    ax.set_ylim(0, max(vals["分区感知"] + vals["均匀采样"]) * 1.28)
     files.append(savefig(fig, sec / "strict_region_uniform_5pct_metrics.png"))
 
     for run, case, subdir in [
@@ -208,14 +260,17 @@ def plot_noise(sec: Path) -> list[str]:
     x = np.arange(len(labels))
     width = 0.34
     fig, ax = plt.subplots(figsize=(8.4, 4.8))
-    ax.bar(x - width / 2, clean_vals, width=width, label="5%无噪声", color="#0f766e")
-    ax.bar(x + width / 2, noise_vals, width=width, label="5%+3%噪声", color="#c2410c")
+    b1 = ax.bar(x - width / 2, clean_vals, width=width, label="5%无噪声", color="#0f766e")
+    b2 = ax.bar(x + width / 2, noise_vals, width=width, label="5%+3%噪声", color="#c2410c")
+    add_bar_labels(ax, b1, fmt=pct_label)
+    add_bar_labels(ax, b2, fmt=pct_label)
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("指标值")
     ax.set_title("严格稀疏设置下3%噪声影响")
     ax.grid(axis="y", alpha=0.25, linestyle=":")
     ax.legend(frameon=False)
+    ax.set_ylim(0, max(clean_vals + noise_vals) * 1.28)
     files.append(savefig(fig, sec / "strict_noise3_summary.png"))
     files.extend(
         export_maps(
@@ -245,14 +300,18 @@ def plot_generalization_and_ablation(sec: Path) -> list[str]:
     fig, ax = plt.subplots(figsize=(7.8, 4.8))
     x = np.arange(len(labels))
     width = 0.34
-    ax.bar(x - width / 2, bvals, width=width, label="basic", color="#f59e0b")
-    ax.bar(x + width / 2, gvals, width=width, label="geometry", color="#0f766e")
+    b1 = ax.bar(x - width / 2, bvals, width=width, label="基础输入", color="#f59e0b")
+    b2 = ax.bar(x + width / 2, gvals, width=width, label="几何增强", color="#0f766e")
+    add_bar_labels(ax, b1, fmt=rel_label, log_scale=True)
+    add_bar_labels(ax, b2, fmt=rel_label, log_scale=True)
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("Rel-L2")
     ax.set_title("严格稀疏设置下几何增强编码消融")
+    ax.set_yscale("log")
     ax.grid(axis="y", alpha=0.25, linestyle=":")
     ax.legend(frameon=False)
+    ax.set_ylim(min(gvals + bvals) * 0.45, max(gvals + bvals) * 2.2)
     files.append(savefig(fig, sec / "strict_geometry_encoding_ablation.png"))
     return files
 
