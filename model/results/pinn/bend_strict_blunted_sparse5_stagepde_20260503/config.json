@@ -1,0 +1,154 @@
+{
+  "family": "bend_2d",
+  "data_subdir": "bend_2d",
+  "feature_mode": "geometry",
+  "base_feature_cols": [
+    "x_star",
+    "y_star",
+    "rc_over_w",
+    "theta_over_90",
+    "wall_distance_frac",
+    "region_id_norm",
+    "eta_norm_star",
+    "axial_frac_star",
+    "inlet_profile_star",
+    "tangent_x_star",
+    "tangent_y_star",
+    "segment_id_norm",
+    "center_proximity_star",
+    "wall_proximity_star",
+    "curvature_star"
+  ],
+  "drop_features": [
+    "inlet_profile_star"
+  ],
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "rc_over_w",
+    "theta_over_90",
+    "wall_distance_frac",
+    "region_id_norm",
+    "eta_norm_star",
+    "axial_frac_star",
+    "tangent_x_star",
+    "tangent_y_star",
+    "segment_id_norm",
+    "center_proximity_star",
+    "wall_proximity_star",
+    "curvature_star"
+  ],
+  "train_cases": [
+    "B-base__ip_blunted",
+    "B-train-1__ip_blunted",
+    "B-train-2__ip_blunted",
+    "B-train-3__ip_blunted"
+  ],
+  "val_cases": [
+    "B-val__ip_blunted"
+  ],
+  "train_velocity_source": "obs_sparse_5pct",
+  "val_velocity_source": "obs_sparse_5pct",
+  "train_pressure_source": "obs_sparse_5pct",
+  "val_pressure_source": "obs_sparse_5pct",
+  "device": "cpu",
+  "velocity_hidden_layers": [
+    128,
+    128,
+    128
+  ],
+  "pressure_hidden_layers": [
+    128,
+    128,
+    128
+  ],
+  "activation": "silu",
+  "epochs": {
+    "速度模型": 200,
+    "压力模型": 200,
+    "交替耦合": 80
+  },
+  "学习率": {
+    "速度模型": 0.0006,
+    "压力模型": 0.0006,
+    "耦合_速度模型": 0.0001,
+    "耦合_压力模型": 0.0001
+  },
+  "权重": {
+    "壁面": 0.0,
+    "入口流量": 0.0,
+    "连续性": 0.1,
+    "速度阶段连续性": 0.3,
+    "速度阶段动量": 0.0,
+    "出口压力": 0.0,
+    "压降": 0.0,
+    "压力阶段动量": 0.5,
+    "耦合动量": 10.0,
+    "耦合连续性": 0.1,
+    "耦合速度监督": 1.0,
+    "耦合压力监督": 1.0
+  },
+  "速度壁面约束": {
+    "mode": "hard",
+    "hard_wall_sharpness": 12.0
+  },
+  "max_physics_points": 512,
+  "seed": 42,
+  "max_retries": 1,
+  "runtime_guard": {
+    "max_retries": 1
+  },
+  "strict_sparse_scalers": true,
+  "输入标准化": {
+    "x_mean": [
+      6.579818248748779,
+      3.4645278453826904,
+      5.297133445739746,
+      1.0,
+      0.4879314601421356,
+      0.5498897433280945,
+      0.020691508427262306,
+      0.27063044905662537,
+      0.5309979915618896,
+      0.5857611894607544,
+      0.538313090801239,
+      0.4879314601421356,
+      0.512068510055542,
+      0.08351708948612213
+    ],
+    "x_std": [
+      3.095573902130127,
+      3.75952410697937,
+      0.8176812529563904,
+      1.0,
+      0.27997666597366333,
+      0.3841792643070221,
+      0.5832434892654419,
+      0.1833813488483429,
+      0.4378993511199951,
+      0.4279826283454895,
+      0.37352225184440613,
+      0.27997666597366333,
+      0.27997666597366333,
+      0.09739013016223907
+    ]
+  },
+  "速度标准化": {
+    "mean": [
+      0.5277198553085327,
+      0.5815215110778809
+    ],
+    "std": [
+      0.5186068415641785,
+      0.5207630395889282
+    ]
+  },
+  "压力标准化": {
+    "mean": [
+      113.6519775390625
+    ],
+    "std": [
+      66.66966247558594
+    ]
+  }
+}

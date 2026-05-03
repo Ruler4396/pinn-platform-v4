@@ -1,0 +1,82 @@
+{
+  "family": "bend_2d",
+  "run_name": "bend_strict_blunted_sparse15_stagepde_20260503",
+  "split_name": "test_dense",
+  "eval_cases": [
+    "B-test-1__ip_blunted"
+  ],
+  "eval_source": "dense",
+  "feature_mode": "geometry",
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "rc_over_w",
+    "theta_over_90",
+    "wall_distance_frac",
+    "region_id_norm",
+    "eta_norm_star",
+    "axial_frac_star",
+    "tangent_x_star",
+    "tangent_y_star",
+    "segment_id_norm",
+    "center_proximity_star",
+    "wall_proximity_star",
+    "curvature_star"
+  ],
+  "summary": {
+    "num_cases": 1,
+    "mean_rel_l2_u": 0.047390714287757874,
+    "max_rel_l2_u": 0.047390714287757874,
+    "mean_rel_l2_v": 0.023984311148524284,
+    "max_rel_l2_v": 0.023984311148524284,
+    "mean_rel_l2_p": 0.053200580179691315,
+    "max_rel_l2_p": 0.053200580179691315,
+    "mean_rel_l2_speed": 0.02634408511221409,
+    "max_rel_l2_speed": 0.02634408511221409,
+    "mean_mae_u": 0.024327391758561134,
+    "max_mae_u": 0.024327391758561134,
+    "mean_mae_v": 0.013997077941894531,
+    "max_mae_v": 0.013997077941894531,
+    "mean_mae_p": 5.030065536499023,
+    "max_mae_p": 5.030065536499023,
+    "mean_pressure_drop_rel_error": 0.02910286165421995,
+    "max_pressure_drop_rel_error": 0.02910286165421995,
+    "mean_wall_max_abs_u_pred": 6.125961954239756e-05,
+    "max_wall_max_abs_u_pred": 6.125961954239756e-05,
+    "mean_wall_max_abs_v_pred": 5.7823875977192074e-05,
+    "max_wall_max_abs_v_pred": 5.7823875977192074e-05
+  },
+  "global_metrics": {
+    "rel_l2_u": 0.047390714287757874,
+    "rel_l2_v": 0.023984311148524284,
+    "rel_l2_p": 0.053200580179691315,
+    "rel_l2_speed": 0.02634408511221409,
+    "max_speed_err_over_speed_max": 0.14585736393928528,
+    "max_p_err_over_p_range": 0.06783267855644226,
+    "p95_speed_err_over_speed_max": 0.0337279848754406,
+    "p95_p_err_over_p_range": 0.051593028008937836
+  },
+  "case_metrics": [
+    {
+      "case_id": "B-test-1__ip_blunted",
+      "num_points": 8015,
+      "rel_l2_u": 0.047390714287757874,
+      "rel_l2_v": 0.023984311148524284,
+      "rel_l2_p": 0.053200580179691315,
+      "rel_l2_speed": 0.02634408511221409,
+      "mae_u": 0.024327391758561134,
+      "mae_v": 0.013997077941894531,
+      "mae_p": 5.030065536499023,
+      "wall_max_abs_u_pred": 6.125961954239756e-05,
+      "wall_max_abs_v_pred": 5.7823875977192074e-05,
+      "pressure_drop_truth": 178.37290954589844,
+      "pressure_drop_pred": 183.56407165527344,
+      "pressure_drop_rel_error": 0.02910286165421995,
+      "inlet_flux_truth": 0.9986742110685451,
+      "inlet_flux_pred": 0.9688181266903486,
+      "outlet_flux_truth": 0.9992261489309442,
+      "outlet_flux_pred": 0.9957677054262497
+    }
+  ],
+  "source_run_config": "/root/dev/pinn-platform-v4/model/results/pinn/bend_strict_blunted_sparse15_stagepde_20260503/config.json"
+}

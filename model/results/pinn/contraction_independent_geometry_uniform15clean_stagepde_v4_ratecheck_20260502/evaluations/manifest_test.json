@@ -1,0 +1,14 @@
+{
+  "family": "contraction_2d",
+  "run_name": "contraction_independent_geometry_uniform15clean_stagepde_v4_ratecheck_20260502",
+  "split_name": "test",
+  "eval_cases": [
+    "C-test-1",
+    "C-test-2"
+  ],
+  "eval_source": "dense",
+  "device": "cpu",
+  "max_retries": 1,
+  "metrics_file": "/root/dev/pinn-platform-v4/model/results/pinn/contraction_independent_geometry_uniform15clean_stagepde_v4_ratecheck_20260502/evaluations/metrics_test.json",
+  "predictions_dir": "/root/dev/pinn-platform-v4/model/results/pinn/contraction_independent_geometry_uniform15clean_stagepde_v4_ratecheck_20260502/evaluations/predictions_test"
+}

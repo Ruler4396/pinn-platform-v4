@@ -1,0 +1,73 @@
+[skip-train] contraction_strict_geometry_sparse5_stagepde_20260503
+[eval-val] contraction_strict_geometry_sparse5_stagepde_20260503
+[done] metrics=/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_geometry_sparse5_stagepde_20260503/evaluations/metrics_val_dense.json
+predictions_dir=/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_geometry_sparse5_stagepde_20260503/evaluations/predictions_val_dense
+{
+  "num_cases": 1,
+  "mean_rel_l2_u": 0.03208569064736366,
+  "max_rel_l2_u": 0.03208569064736366,
+  "mean_rel_l2_v": 0.09887264668941498,
+  "max_rel_l2_v": 0.09887264668941498,
+  "mean_rel_l2_p": 0.0725301206111908,
+  "max_rel_l2_p": 0.0725301206111908,
+  "mean_rel_l2_speed": 0.03208403289318085,
+  "max_rel_l2_speed": 0.03208403289318085,
+  "mean_mae_u": 0.031609244644641876,
+  "max_mae_u": 0.031609244644641876,
+  "mean_mae_v": 0.0010029535042122006,
+  "max_mae_v": 0.0010029535042122006,
+  "mean_mae_p": 56.38229751586914,
+  "max_mae_p": 56.38229751586914,
+  "mean_pressure_drop_rel_error": 0.10933745315055146,
+  "max_pressure_drop_rel_error": 0.10933745315055146,
+  "mean_wall_max_abs_u_pred": 3.8395846786443144e-05,
+  "max_wall_max_abs_u_pred": 3.8395846786443144e-05,
+  "mean_wall_max_abs_v_pred": 1.1878220220751246e-06,
+  "max_wall_max_abs_v_pred": 1.1878220220751246e-06
+}
+{
+  "rel_l2_u": 0.03208569064736366,
+  "rel_l2_v": 0.09887264668941498,
+  "rel_l2_p": 0.0725301206111908,
+  "rel_l2_speed": 0.03208403289318085,
+  "max_speed_err_over_speed_max": 0.07908979803323746,
+  "max_p_err_over_p_range": 0.09432952851057053,
+  "p95_speed_err_over_speed_max": 0.03768038749694824,
+  "p95_p_err_over_p_range": 0.08338270336389542
+}
+[eval-test] contraction_strict_geometry_sparse5_stagepde_20260503
+[done] metrics=/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_geometry_sparse5_stagepde_20260503/evaluations/metrics_test_dense.json
+predictions_dir=/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_geometry_sparse5_stagepde_20260503/evaluations/predictions_test_dense
+{
+  "num_cases": 2,
+  "mean_rel_l2_u": 0.03902699798345566,
+  "max_rel_l2_u": 0.06128605827689171,
+  "mean_rel_l2_v": 0.09808512404561043,
+  "max_rel_l2_v": 0.12494593858718872,
+  "mean_rel_l2_p": 0.15155059564858675,
+  "max_rel_l2_p": 0.27220919728279114,
+  "mean_rel_l2_speed": 0.03902499284595251,
+  "max_rel_l2_speed": 0.061283621937036514,
+  "mean_mae_u": 0.037799465470016,
+  "max_mae_u": 0.059456661343574524,
+  "mean_mae_v": 0.0009929304360412061,
+  "max_mae_v": 0.0014702753396704793,
+  "mean_mae_p": 212.77611589431763,
+  "max_mae_p": 411.9891662597656,
+  "mean_pressure_drop_rel_error": 0.20774572963774576,
+  "max_pressure_drop_rel_error": 0.3799906726596074,
+  "mean_wall_max_abs_u_pred": 5.72654498682823e-05,
+  "max_wall_max_abs_u_pred": 6.889645010232925e-05,
+  "mean_wall_max_abs_v_pred": 1.2385601735331875e-06,
+  "max_wall_max_abs_v_pred": 1.4322237120723003e-06
+}
+{
+  "rel_l2_u": 0.04711649939417839,
+  "rel_l2_v": 0.1097772940993309,
+  "rel_l2_p": 0.25852084159851074,
+  "rel_l2_speed": 0.047114867717027664,
+  "max_speed_err_over_speed_max": 0.11899814754724503,
+  "max_p_err_over_p_range": 0.3020285665988922,
+  "p95_speed_err_over_speed_max": 0.05883469805121422,
+  "p95_p_err_over_p_range": 0.27918046712875366
+}

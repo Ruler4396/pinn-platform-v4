@@ -1,0 +1,30 @@
+[epoch 1] train=2.0635e+00 val=4.2934e+00 val_u=5.5995e-01 val_v=1.0006e+00 val_p=6.5723e-01 val_max_speed=5.5075e-01 val_max_p=6.9187e-01
+[epoch 50] train=1.0588e-01 val=7.8149e-01 val_u=1.7418e-01 val_v=5.9825e-01 val_p=4.8324e-01 val_max_speed=2.8629e-01 val_max_p=5.7759e-01
+[epoch 100] train=1.8314e-02 val=3.3742e-01 val_u=1.1549e-01 val_v=4.4179e-01 val_p=1.9701e-01 val_max_speed=1.9436e-01 val_max_p=3.4369e-01
+[epoch 150] train=8.9810e-03 val=2.4271e-01 val_u=8.6242e-02 val_v=4.0708e-01 val_p=1.5614e-01 val_max_speed=1.5192e-01 val_max_p=3.6436e-01
+[epoch 200] train=5.7232e-03 val=2.2534e-01 val_u=7.7302e-02 val_v=4.0759e-01 val_p=1.3845e-01 val_max_speed=1.3418e-01 val_max_p=3.6231e-01
+[epoch 250] train=4.0711e-03 val=2.2236e-01 val_u=7.3563e-02 val_v=4.1481e-01 val_p=1.2093e-01 val_max_speed=1.2836e-01 val_max_p=3.2989e-01
+[epoch 300] train=3.8108e-03 val=2.2127e-01 val_u=7.1257e-02 val_v=4.2069e-01 val_p=1.0472e-01 val_max_speed=1.2564e-01 val_max_p=2.9543e-01
+[epoch 350] train=2.2413e-03 val=2.2025e-01 val_u=6.9600e-02 val_v=4.2452e-01 val_p=9.1018e-02 val_max_speed=1.2383e-01 val_max_p=2.6519e-01
+[epoch 400] train=1.7185e-03 val=2.1629e-01 val_u=6.7851e-02 val_v=4.2397e-01 val_p=8.0619e-02 val_max_speed=1.2193e-01 val_max_p=2.3690e-01
+[epoch 450] train=1.3297e-03 val=2.1072e-01 val_u=6.6137e-02 val_v=4.2068e-01 val_p=7.3271e-02 val_max_speed=1.1993e-01 val_max_p=2.1419e-01
+[epoch 500] train=1.0298e-03 val=2.0397e-01 val_u=6.4485e-02 val_v=4.1530e-01 val_p=6.8359e-02 val_max_speed=1.1783e-01 val_max_p=1.9727e-01
+[epoch 550] train=8.4465e-04 val=1.9737e-01 val_u=6.2824e-02 val_v=4.0978e-01 val_p=6.4843e-02 val_max_speed=1.1522e-01 val_max_p=1.8678e-01
+[epoch 600] train=6.2487e-04 val=1.9015e-01 val_u=6.1468e-02 val_v=4.0264e-01 val_p=6.2686e-02 val_max_speed=1.1351e-01 val_max_p=1.7749e-01
+[epoch 650] train=4.9407e-04 val=1.8424e-01 val_u=6.0170e-02 val_v=3.9702e-01 val_p=6.0400e-02 val_max_speed=1.1155e-01 val_max_p=1.7025e-01
+[epoch 700] train=3.9522e-04 val=1.7883e-01 val_u=5.8940e-02 val_v=3.9180e-01 val_p=5.8408e-02 val_max_speed=1.0955e-01 val_max_p=1.6492e-01
+[epoch 750] train=3.2164e-04 val=1.7402e-01 val_u=5.7803e-02 val_v=3.8714e-01 val_p=5.6559e-02 val_max_speed=1.0770e-01 val_max_p=1.6094e-01
+[epoch 800] train=1.6920e-03 val=1.7043e-01 val_u=5.6465e-02 val_v=3.8440e-01 val_p=5.4826e-02 val_max_speed=1.0503e-01 val_max_p=1.5921e-01
+[epoch 850] train=2.3076e-04 val=1.6588e-01 val_u=5.5745e-02 val_v=3.7924e-01 val_p=5.3525e-02 val_max_speed=1.0453e-01 val_max_p=1.5833e-01
+[epoch 900] train=1.9866e-04 val=1.6309e-01 val_u=5.4948e-02 val_v=3.7664e-01 val_p=5.1939e-02 val_max_speed=1.0340e-01 val_max_p=1.5613e-01
+[epoch 950] train=1.7566e-04 val=1.6040e-01 val_u=5.4140e-02 val_v=3.7415e-01 val_p=5.0693e-02 val_max_speed=1.0227e-01 val_max_p=1.5524e-01
+[epoch 1000] train=1.5694e-04 val=1.5801e-01 val_u=5.3379e-02 val_v=3.7196e-01 val_p=4.9623e-02 val_max_speed=1.0129e-01 val_max_p=1.5484e-01
+[epoch 1050] train=1.4128e-04 val=1.5591e-01 val_u=5.2673e-02 val_v=3.7007e-01 val_p=4.8716e-02 val_max_speed=1.0042e-01 val_max_p=1.5468e-01
+[epoch 1100] train=1.2978e-04 val=1.5395e-01 val_u=5.2016e-02 val_v=3.6827e-01 val_p=4.7967e-02 val_max_speed=9.9644e-02 val_max_p=1.5466e-01
+[epoch 1150] train=1.6589e-04 val=1.5215e-01 val_u=5.1369e-02 val_v=3.6663e-01 val_p=4.7531e-02 val_max_speed=9.8710e-02 val_max_p=1.5751e-01
+[epoch 1200] train=1.0696e-04 val=1.5108e-01 val_u=5.0897e-02 val_v=3.6582e-01 val_p=4.6870e-02 val_max_speed=9.8481e-02 val_max_p=1.5614e-01
+[done] output_dir=/root/dev/pinn-platform-v4/model/results/supervised/contraction_single_mlp_geometry_sparse5_20260502
+best_epoch=1198 best_val_total=1.510588e-01
+stop_epoch=1200
+train_cases=C-base,C-train-1,C-train-2,C-train-3,C-train-4,C-train-5
+val_cases=C-val

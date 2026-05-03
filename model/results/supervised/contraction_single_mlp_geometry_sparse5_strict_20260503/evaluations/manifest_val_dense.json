@@ -1,0 +1,31 @@
+{
+  "family": "contraction_2d",
+  "run_name": "contraction_single_mlp_geometry_sparse5_strict_20260503",
+  "split_name": "val_dense",
+  "eval_cases": [
+    "C-val"
+  ],
+  "device": "cpu",
+  "max_retries": 1,
+  "checkpoint_epoch": 1183,
+  "feature_mode": "geometry",
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "beta",
+    "lc_over_w",
+    "wall_distance_frac",
+    "region_id_norm",
+    "eta_norm_star",
+    "axial_frac_star",
+    "segment_id_norm",
+    "center_proximity_star",
+    "wall_proximity_star",
+    "half_width_ratio_star",
+    "inv_half_width_ratio_star",
+    "contraction_rate_star"
+  ],
+  "source_run_config": "/root/dev/pinn-platform-v4/model/results/supervised/contraction_single_mlp_geometry_sparse5_strict_20260503/config.json",
+  "metrics_file": "/root/dev/pinn-platform-v4/model/results/supervised/contraction_single_mlp_geometry_sparse5_strict_20260503/evaluations/metrics_val_dense.json",
+  "predictions_dir": "/root/dev/pinn-platform-v4/model/results/supervised/contraction_single_mlp_geometry_sparse5_strict_20260503/evaluations/predictions_val_dense"
+}

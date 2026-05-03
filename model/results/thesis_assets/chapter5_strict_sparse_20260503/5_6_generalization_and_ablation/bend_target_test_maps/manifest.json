@@ -1,0 +1,21 @@
+{
+  "run_name": "",
+  "split_name": "test",
+  "predictions_dir": "/root/dev/pinn-platform-v4/model/results/pinn/bend_strict_blunted_sparse5_stagepde_20260503/evaluations/predictions_test_dense",
+  "output_dir": "/root/dev/pinn-platform-v4/model/results/thesis_assets/chapter5_strict_sparse_20260503/5_6_generalization_and_ablation/bend_target_test_maps",
+  "cases": [
+    "B-test-1__ip_blunted"
+  ],
+  "files": [
+    "/root/dev/pinn-platform-v4/model/results/thesis_assets/chapter5_strict_sparse_20260503/5_6_generalization_and_ablation/bend_target_test_maps/B-test-1__ip_blunted_speed_truth_pred_rel_error_pct.png",
+    "/root/dev/pinn-platform-v4/model/results/thesis_assets/chapter5_strict_sparse_20260503/5_6_generalization_and_ablation/bend_target_test_maps/B-test-1__ip_blunted_pressure_truth_pred_rel_error_pct.png",
+    "/root/dev/pinn-platform-v4/model/results/thesis_assets/chapter5_strict_sparse_20260503/5_6_generalization_and_ablation/bend_target_test_maps/B-test-1__ip_blunted_speed_pressure_truth_pred_rel_error_pct.png"
+  ],
+  "panel_layout": "stack",
+  "colorbar_orientation": "horizontal",
+  "error_mode": "rel",
+  "relative_floor_ratio": 0.01,
+  "percent_scale": true,
+  "mask_outside_geometry": true,
+  "max_retries": 1
+}

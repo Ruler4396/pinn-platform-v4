@@ -1,0 +1,93 @@
+{
+  "family": "contraction_2d",
+  "run_name": "contraction_strict_basic_sparse5_stagepde_20260503",
+  "split_name": "test_dense",
+  "eval_cases": [
+    "C-test-1",
+    "C-test-2"
+  ],
+  "eval_source": "dense",
+  "feature_mode": "basic",
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "beta",
+    "lc_over_w"
+  ],
+  "summary": {
+    "num_cases": 2,
+    "mean_rel_l2_u": 0.5611701309680939,
+    "max_rel_l2_u": 0.6074659824371338,
+    "mean_rel_l2_v": 1.4373684525489807,
+    "max_rel_l2_v": 1.5159801244735718,
+    "mean_rel_l2_p": 11.759770393371582,
+    "max_rel_l2_p": 15.509459495544434,
+    "mean_rel_l2_speed": 0.561208963394165,
+    "max_rel_l2_speed": 0.6074820756912231,
+    "mean_mae_u": 0.7138065695762634,
+    "max_mae_u": 0.8694456219673157,
+    "mean_mae_v": 0.01836774405092001,
+    "max_mae_v": 0.02103358879685402,
+    "mean_mae_p": 4480.8111572265625,
+    "max_mae_p": 5472.294921875,
+    "mean_pressure_drop_rel_error": 32.441369863071984,
+    "max_pressure_drop_rel_error": 42.46821438863579,
+    "mean_wall_max_abs_u_pred": 1.7826565504074097,
+    "max_wall_max_abs_u_pred": 1.9384078979492188,
+    "mean_wall_max_abs_v_pred": 0.04779636859893799,
+    "max_wall_max_abs_v_pred": 0.057131532579660416
+  },
+  "global_metrics": {
+    "rel_l2_u": 0.5683996677398682,
+    "rel_l2_v": 1.413831114768982,
+    "rel_l2_p": 9.03770923614502,
+    "rel_l2_speed": 0.5684348344802856,
+    "max_speed_err_over_speed_max": 0.540134072303772,
+    "max_p_err_over_p_range": 22.38373374938965,
+    "p95_speed_err_over_speed_max": 0.47403156757354736,
+    "p95_p_err_over_p_range": 13.327855110168457
+  },
+  "case_metrics": [
+    {
+      "case_id": "C-test-1",
+      "num_points": 1900,
+      "rel_l2_u": 0.514874279499054,
+      "rel_l2_v": 1.5159801244735718,
+      "rel_l2_p": 15.509459495544434,
+      "rel_l2_speed": 0.5149358510971069,
+      "mae_u": 0.5581675171852112,
+      "mae_v": 0.015701899304986,
+      "mae_p": 3489.327392578125,
+      "wall_max_abs_u_pred": 1.6269052028656006,
+      "wall_max_abs_v_pred": 0.03846120461821556,
+      "pressure_drop_truth": 638.3499755859375,
+      "pressure_drop_pred": 27747.93359375,
+      "pressure_drop_rel_error": 42.46821438863579,
+      "inlet_flux_truth": 0.9993342202681574,
+      "inlet_flux_pred": 1.4327984661341093,
+      "outlet_flux_truth": 0.9985988031622166,
+      "outlet_flux_pred": 0.9674553979408896
+    },
+    {
+      "case_id": "C-test-2",
+      "num_points": 1545,
+      "rel_l2_u": 0.6074659824371338,
+      "rel_l2_v": 1.3587567806243896,
+      "rel_l2_p": 8.01008129119873,
+      "rel_l2_speed": 0.6074820756912231,
+      "mae_u": 0.8694456219673157,
+      "mae_v": 0.02103358879685402,
+      "mae_p": 5472.294921875,
+      "wall_max_abs_u_pred": 1.9384078979492188,
+      "wall_max_abs_v_pred": 0.057131532579660416,
+      "pressure_drop_truth": 1957.869873046875,
+      "pressure_drop_pred": 45842.59375,
+      "pressure_drop_rel_error": 22.41452533750818,
+      "inlet_flux_truth": 0.9993339531855148,
+      "inlet_flux_pred": 1.46769774536432,
+      "outlet_flux_truth": 0.9985859180816705,
+      "outlet_flux_pred": 0.6198143602705044
+    }
+  ],
+  "source_run_config": "/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_basic_sparse5_stagepde_20260503/config.json"
+}

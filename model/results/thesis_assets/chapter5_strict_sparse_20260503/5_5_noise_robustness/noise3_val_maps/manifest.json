@@ -1,0 +1,21 @@
+{
+  "run_name": "",
+  "split_name": "test",
+  "predictions_dir": "/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_geometry_sparse5noise3_stagepde_20260503/evaluations/predictions_val_dense",
+  "output_dir": "/root/dev/pinn-platform-v4/model/results/thesis_assets/chapter5_strict_sparse_20260503/5_5_noise_robustness/noise3_val_maps",
+  "cases": [
+    "C-val"
+  ],
+  "files": [
+    "/root/dev/pinn-platform-v4/model/results/thesis_assets/chapter5_strict_sparse_20260503/5_5_noise_robustness/noise3_val_maps/C-val_speed_truth_pred_rel_error_pct.png",
+    "/root/dev/pinn-platform-v4/model/results/thesis_assets/chapter5_strict_sparse_20260503/5_5_noise_robustness/noise3_val_maps/C-val_pressure_truth_pred_rel_error_pct.png",
+    "/root/dev/pinn-platform-v4/model/results/thesis_assets/chapter5_strict_sparse_20260503/5_5_noise_robustness/noise3_val_maps/C-val_speed_pressure_truth_pred_rel_error_pct.png"
+  ],
+  "panel_layout": "stack",
+  "colorbar_orientation": "horizontal",
+  "error_mode": "rel",
+  "relative_floor_ratio": 0.01,
+  "percent_scale": true,
+  "mask_outside_geometry": true,
+  "max_retries": 1
+}

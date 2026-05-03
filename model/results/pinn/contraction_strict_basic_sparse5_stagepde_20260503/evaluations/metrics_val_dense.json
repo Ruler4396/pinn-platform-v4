@@ -1,0 +1,72 @@
+{
+  "family": "contraction_2d",
+  "run_name": "contraction_strict_basic_sparse5_stagepde_20260503",
+  "split_name": "val_dense",
+  "eval_cases": [
+    "C-val"
+  ],
+  "eval_source": "dense",
+  "feature_mode": "basic",
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "beta",
+    "lc_over_w"
+  ],
+  "summary": {
+    "num_cases": 1,
+    "mean_rel_l2_u": 0.5360893607139587,
+    "max_rel_l2_u": 0.5360893607139587,
+    "mean_rel_l2_v": 1.3515280485153198,
+    "max_rel_l2_v": 1.3515280485153198,
+    "mean_rel_l2_p": 12.733195304870605,
+    "max_rel_l2_p": 12.733195304870605,
+    "mean_rel_l2_speed": 0.536128580570221,
+    "max_rel_l2_speed": 0.536128580570221,
+    "mean_mae_u": 0.6598252654075623,
+    "max_mae_u": 0.6598252654075623,
+    "mean_mae_v": 0.016500264406204224,
+    "max_mae_v": 0.016500264406204224,
+    "mean_mae_p": 4662.85986328125,
+    "max_mae_p": 4662.85986328125,
+    "mean_pressure_drop_rel_error": 34.175995910781104,
+    "max_pressure_drop_rel_error": 34.175995910781104,
+    "mean_wall_max_abs_u_pred": 1.7674999237060547,
+    "max_wall_max_abs_u_pred": 1.7674999237060547,
+    "mean_wall_max_abs_v_pred": 0.04402993246912956,
+    "max_wall_max_abs_v_pred": 0.04402993246912956
+  },
+  "global_metrics": {
+    "rel_l2_u": 0.5360893607139587,
+    "rel_l2_v": 1.3515280485153198,
+    "rel_l2_p": 12.733195304870605,
+    "rel_l2_speed": 0.536128580570221,
+    "max_speed_err_over_speed_max": 0.5892449021339417,
+    "max_p_err_over_p_range": 33.623634338378906,
+    "p95_speed_err_over_speed_max": 0.5433358550071716,
+    "p95_p_err_over_p_range": 31.4661922454834
+  },
+  "case_metrics": [
+    {
+      "case_id": "C-val",
+      "num_points": 1689,
+      "rel_l2_u": 0.5360893607139587,
+      "rel_l2_v": 1.3515280485153198,
+      "rel_l2_p": 12.733195304870605,
+      "rel_l2_speed": 0.536128580570221,
+      "mae_u": 0.6598252654075623,
+      "mae_v": 0.016500264406204224,
+      "mae_p": 4662.85986328125,
+      "wall_max_abs_u_pred": 1.7674999237060547,
+      "wall_max_abs_v_pred": 0.04402993246912956,
+      "pressure_drop_truth": 1069.1700439453125,
+      "pressure_drop_pred": 37609.12109375,
+      "pressure_drop_rel_error": 34.175995910781104,
+      "inlet_flux_truth": 0.9993339531855148,
+      "inlet_flux_pred": 1.429972596741229,
+      "outlet_flux_truth": 0.9985914423065942,
+      "outlet_flux_pred": 0.7887954770239488
+    }
+  ],
+  "source_run_config": "/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_basic_sparse5_stagepde_20260503/config.json"
+}

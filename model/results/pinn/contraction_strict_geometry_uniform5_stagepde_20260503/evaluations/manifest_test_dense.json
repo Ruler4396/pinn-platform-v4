@@ -1,0 +1,14 @@
+{
+  "family": "contraction_2d",
+  "run_name": "contraction_strict_geometry_uniform5_stagepde_20260503",
+  "split_name": "test_dense",
+  "eval_cases": [
+    "C-test-1",
+    "C-test-2"
+  ],
+  "eval_source": "dense",
+  "device": "cpu",
+  "max_retries": 1,
+  "metrics_file": "/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_geometry_uniform5_stagepde_20260503/evaluations/metrics_test_dense.json",
+  "predictions_dir": "/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_geometry_uniform5_stagepde_20260503/evaluations/predictions_test_dense"
+}

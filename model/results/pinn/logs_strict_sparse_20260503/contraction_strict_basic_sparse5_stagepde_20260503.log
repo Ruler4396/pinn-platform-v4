@@ -1,0 +1,101 @@
+[train] contraction_strict_basic_sparse5_stagepde_20260503
+[第一阶段_速度模型 第1轮] 总损失=2.0209e+00 验证速度相对二范数=5.8673e-01 验证压力相对二范数=6.7599e-01 验证最大速度误差=5.7673e-01 验证最大压力误差=7.0025e-01
+[第一阶段_速度模型 第40轮] 总损失=1.5361e+00 验证速度相对二范数=5.4641e-01 验证压力相对二范数=6.7599e-01 验证最大速度误差=5.5889e-01 验证最大压力误差=7.0025e-01
+[第一阶段_速度模型 第80轮] 总损失=9.4336e-01 验证速度相对二范数=4.0178e-01 验证压力相对二范数=6.7599e-01 验证最大速度误差=4.8014e-01 验证最大压力误差=7.0025e-01
+[第一阶段_速度模型 第120轮] 总损失=8.1784e-01 验证速度相对二范数=3.6535e-01 验证压力相对二范数=6.7599e-01 验证最大速度误差=4.7400e-01 验证最大压力误差=7.0025e-01
+[第一阶段_速度模型 第160轮] 总损失=6.6976e-01 验证速度相对二范数=3.2697e-01 验证压力相对二范数=6.7599e-01 验证最大速度误差=4.3978e-01 验证最大压力误差=7.0025e-01
+[第一阶段_速度模型 第200轮] 总损失=5.6828e-01 验证速度相对二范数=2.8201e-01 验证压力相对二范数=6.7599e-01 验证最大速度误差=3.9058e-01 验证最大压力误差=7.0025e-01
+[第二阶段_压力模型 第1轮] 总损失=8.8848e+02 验证速度相对二范数=2.8201e-01 验证压力相对二范数=6.7019e-01 验证最大速度误差=3.9058e-01 验证最大压力误差=6.8748e-01
+[第二阶段_压力模型 第40轮] 总损失=8.6886e+02 验证速度相对二范数=2.8201e-01 验证压力相对二范数=1.0183e+00 验证最大速度误差=3.9058e-01 验证最大压力误差=1.5161e+00
+[第二阶段_压力模型 第80轮] 总损失=8.6069e+02 验证速度相对二范数=2.8201e-01 验证压力相对二范数=1.6185e+00 验证最大速度误差=3.9058e-01 验证最大压力误差=3.4670e+00
+[第二阶段_压力模型 第120轮] 总损失=8.5271e+02 验证速度相对二范数=2.8201e-01 验证压力相对二范数=2.1315e+00 验证最大速度误差=3.9058e-01 验证最大压力误差=5.2502e+00
+[第二阶段_压力模型 第160轮] 总损失=8.3799e+02 验证速度相对二范数=2.8201e-01 验证压力相对二范数=3.1344e+00 验证最大速度误差=3.9058e-01 验证最大压力误差=8.5501e+00
+[第二阶段_压力模型 第200轮] 总损失=7.9667e+02 验证速度相对二范数=2.8201e-01 验证压力相对二范数=5.8729e+00 验证最大速度误差=3.9058e-01 验证最大压力误差=1.7862e+01
+[第三阶段_交替耦合 第1轮] 总损失=3.0236e+04 验证速度相对二范数=2.8337e-01 验证压力相对二范数=5.9937e+00 验证最大速度误差=3.9401e-01 验证最大压力误差=1.8169e+01
+[第三阶段_交替耦合 第40轮] 总损失=9.8593e+03 验证速度相对二范数=4.0514e-01 验证压力相对二范数=1.0383e+01 验证最大速度误差=5.0712e-01 验证最大压力误差=2.8563e+01
+[第三阶段_交替耦合 第80轮] 总损失=3.5052e+03 验证速度相对二范数=5.3613e-01 验证压力相对二范数=1.2733e+01 验证最大速度误差=5.8924e-01 验证最大压力误差=3.3624e+01
+[完成] 输出目录=/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_basic_sparse5_stagepde_20260503
+{
+  "最终验证指标": {
+    "rel_l2_u": 0.5360893607139587,
+    "rel_l2_v": 1.3515280485153198,
+    "rel_l2_p": 12.733195304870605,
+    "rel_l2_speed": 0.536128580570221,
+    "max_speed_err_over_speed_max": 0.5892449021339417,
+    "max_p_err_over_p_range": 33.623634338378906,
+    "p95_speed_err_over_speed_max": 0.5433358550071716,
+    "p95_p_err_over_p_range": 31.4661922454834
+  }
+}
+[eval-val] contraction_strict_basic_sparse5_stagepde_20260503
+[done] metrics=/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_basic_sparse5_stagepde_20260503/evaluations/metrics_val_dense.json
+predictions_dir=/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_basic_sparse5_stagepde_20260503/evaluations/predictions_val_dense
+{
+  "num_cases": 1,
+  "mean_rel_l2_u": 0.5360893607139587,
+  "max_rel_l2_u": 0.5360893607139587,
+  "mean_rel_l2_v": 1.3515280485153198,
+  "max_rel_l2_v": 1.3515280485153198,
+  "mean_rel_l2_p": 12.733195304870605,
+  "max_rel_l2_p": 12.733195304870605,
+  "mean_rel_l2_speed": 0.536128580570221,
+  "max_rel_l2_speed": 0.536128580570221,
+  "mean_mae_u": 0.6598252654075623,
+  "max_mae_u": 0.6598252654075623,
+  "mean_mae_v": 0.016500264406204224,
+  "max_mae_v": 0.016500264406204224,
+  "mean_mae_p": 4662.85986328125,
+  "max_mae_p": 4662.85986328125,
+  "mean_pressure_drop_rel_error": 34.175995910781104,
+  "max_pressure_drop_rel_error": 34.175995910781104,
+  "mean_wall_max_abs_u_pred": 1.7674999237060547,
+  "max_wall_max_abs_u_pred": 1.7674999237060547,
+  "mean_wall_max_abs_v_pred": 0.04402993246912956,
+  "max_wall_max_abs_v_pred": 0.04402993246912956
+}
+{
+  "rel_l2_u": 0.5360893607139587,
+  "rel_l2_v": 1.3515280485153198,
+  "rel_l2_p": 12.733195304870605,
+  "rel_l2_speed": 0.536128580570221,
+  "max_speed_err_over_speed_max": 0.5892449021339417,
+  "max_p_err_over_p_range": 33.623634338378906,
+  "p95_speed_err_over_speed_max": 0.5433358550071716,
+  "p95_p_err_over_p_range": 31.4661922454834
+}
+[eval-test] contraction_strict_basic_sparse5_stagepde_20260503
+[done] metrics=/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_basic_sparse5_stagepde_20260503/evaluations/metrics_test_dense.json
+predictions_dir=/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_basic_sparse5_stagepde_20260503/evaluations/predictions_test_dense
+{
+  "num_cases": 2,
+  "mean_rel_l2_u": 0.5611701309680939,
+  "max_rel_l2_u": 0.6074659824371338,
+  "mean_rel_l2_v": 1.4373684525489807,
+  "max_rel_l2_v": 1.5159801244735718,
+  "mean_rel_l2_p": 11.759770393371582,
+  "max_rel_l2_p": 15.509459495544434,
+  "mean_rel_l2_speed": 0.561208963394165,
+  "max_rel_l2_speed": 0.6074820756912231,
+  "mean_mae_u": 0.7138065695762634,
+  "max_mae_u": 0.8694456219673157,
+  "mean_mae_v": 0.01836774405092001,
+  "max_mae_v": 0.02103358879685402,
+  "mean_mae_p": 4480.8111572265625,
+  "max_mae_p": 5472.294921875,
+  "mean_pressure_drop_rel_error": 32.441369863071984,
+  "max_pressure_drop_rel_error": 42.46821438863579,
+  "mean_wall_max_abs_u_pred": 1.7826565504074097,
+  "max_wall_max_abs_u_pred": 1.9384078979492188,
+  "mean_wall_max_abs_v_pred": 0.04779636859893799,
+  "max_wall_max_abs_v_pred": 0.057131532579660416
+}
+{
+  "rel_l2_u": 0.5683996677398682,
+  "rel_l2_v": 1.413831114768982,
+  "rel_l2_p": 9.03770923614502,
+  "rel_l2_speed": 0.5684348344802856,
+  "max_speed_err_over_speed_max": 0.540134072303772,
+  "max_p_err_over_p_range": 22.38373374938965,
+  "p95_speed_err_over_speed_max": 0.47403156757354736,
+  "p95_p_err_over_p_range": 13.327855110168457
+}

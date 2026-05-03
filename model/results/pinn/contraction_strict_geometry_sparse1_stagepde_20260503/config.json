@@ -1,0 +1,156 @@
+{
+  "family": "contraction_2d",
+  "data_subdir": "contraction_2d",
+  "feature_mode": "geometry",
+  "base_feature_cols": [
+    "x_star",
+    "y_star",
+    "beta",
+    "lc_over_w",
+    "wall_distance_frac",
+    "region_id_norm",
+    "eta_norm_star",
+    "axial_frac_star",
+    "inlet_profile_star",
+    "segment_id_norm",
+    "center_proximity_star",
+    "wall_proximity_star",
+    "half_width_ratio_star",
+    "inv_half_width_ratio_star",
+    "contraction_rate_star"
+  ],
+  "drop_features": [
+    "inlet_profile_star"
+  ],
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "beta",
+    "lc_over_w",
+    "wall_distance_frac",
+    "region_id_norm",
+    "eta_norm_star",
+    "axial_frac_star",
+    "segment_id_norm",
+    "center_proximity_star",
+    "wall_proximity_star",
+    "half_width_ratio_star",
+    "inv_half_width_ratio_star",
+    "contraction_rate_star"
+  ],
+  "train_cases": [
+    "C-base",
+    "C-train-1",
+    "C-train-2",
+    "C-train-3",
+    "C-train-4",
+    "C-train-5"
+  ],
+  "val_cases": [
+    "C-val"
+  ],
+  "train_velocity_source": "obs_sparse_1pct",
+  "val_velocity_source": "obs_sparse_1pct",
+  "train_pressure_source": "obs_sparse_1pct",
+  "val_pressure_source": "obs_sparse_1pct",
+  "device": "cpu",
+  "velocity_hidden_layers": [
+    128,
+    128,
+    128
+  ],
+  "pressure_hidden_layers": [
+    128,
+    128,
+    128
+  ],
+  "activation": "silu",
+  "epochs": {
+    "速度模型": 200,
+    "压力模型": 200,
+    "交替耦合": 80
+  },
+  "学习率": {
+    "速度模型": 0.0006,
+    "压力模型": 0.0006,
+    "耦合_速度模型": 0.0001,
+    "耦合_压力模型": 0.0001
+  },
+  "权重": {
+    "壁面": 0.0,
+    "入口流量": 0.0,
+    "连续性": 0.1,
+    "速度阶段连续性": 0.3,
+    "速度阶段动量": 0.0,
+    "出口压力": 0.0,
+    "压降": 0.0,
+    "压力阶段动量": 0.5,
+    "耦合动量": 10.0,
+    "耦合连续性": 0.1,
+    "耦合速度监督": 1.0,
+    "耦合压力监督": 1.0
+  },
+  "速度壁面约束": {
+    "mode": "hard",
+    "hard_wall_sharpness": 12.0
+  },
+  "max_physics_points": 512,
+  "seed": 42,
+  "max_retries": 1,
+  "runtime_guard": {
+    "max_retries": 1
+  },
+  "strict_sparse_scalers": true,
+  "输入标准化": {
+    "x_mean": [
+      7.2213664054870605,
+      0.03359905257821083,
+      0.726262629032135,
+      4.646464824676514,
+      0.5305399894714355,
+      0.5858585834503174,
+      0.08141673356294632,
+      0.4332398772239685,
+      0.4545454680919647,
+      0.5305399894714355,
+      0.46946001052856445,
+      0.8614201545715332,
+      1.1936488151550293,
+      0.03922473266720772
+    ],
+    "x_std": [
+      4.103233337402344,
+      0.23053422570228577,
+      0.114667609333992,
+      0.9354211688041687,
+      0.274654746055603,
+      0.3556215465068817,
+      0.5377724766731262,
+      0.24454687535762787,
+      0.4979296028614044,
+      0.274654746055603,
+      0.274654746055603,
+      0.13208450376987457,
+      0.2189101129770279,
+      0.06270352751016617
+    ]
+  },
+  "速度标准化": {
+    "mean": [
+      1.250585913658142,
+      0.0002316331519978121
+    ],
+    "std": [
+      0.4621571898460388,
+      0.015297835692763329
+    ]
+  },
+  "压力标准化": {
+    "mean": [
+      317.6154479980469
+    ],
+    "std": [
+      239.9786834716797
+    ]
+  }
+}

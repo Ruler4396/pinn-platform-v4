@@ -1,0 +1,113 @@
+{
+  "family": "contraction_2d",
+  "data_subdir": "contraction_2d",
+  "feature_mode": "basic",
+  "base_feature_cols": [
+    "x_star",
+    "y_star",
+    "beta",
+    "lc_over_w"
+  ],
+  "drop_features": [],
+  "feature_cols": [
+    "x_star",
+    "y_star",
+    "beta",
+    "lc_over_w"
+  ],
+  "train_cases": [
+    "C-base",
+    "C-train-1",
+    "C-train-2",
+    "C-train-3",
+    "C-train-4",
+    "C-train-5"
+  ],
+  "val_cases": [
+    "C-val"
+  ],
+  "train_velocity_source": "obs_sparse_5pct",
+  "val_velocity_source": "obs_sparse_5pct",
+  "train_pressure_source": "obs_sparse_5pct",
+  "val_pressure_source": "obs_sparse_5pct",
+  "device": "cpu",
+  "velocity_hidden_layers": [
+    128,
+    128,
+    128
+  ],
+  "pressure_hidden_layers": [
+    128,
+    128,
+    128
+  ],
+  "activation": "silu",
+  "epochs": {
+    "速度模型": 200,
+    "压力模型": 200,
+    "交替耦合": 80
+  },
+  "学习率": {
+    "速度模型": 0.0006,
+    "压力模型": 0.0006,
+    "耦合_速度模型": 0.0001,
+    "耦合_压力模型": 0.0001
+  },
+  "权重": {
+    "壁面": 0.0,
+    "入口流量": 0.0,
+    "连续性": 0.1,
+    "速度阶段连续性": 0.3,
+    "速度阶段动量": 0.0,
+    "出口压力": 0.0,
+    "压降": 0.0,
+    "压力阶段动量": 0.5,
+    "耦合动量": 10.0,
+    "耦合连续性": 0.1,
+    "耦合速度监督": 1.0,
+    "耦合压力监督": 1.0
+  },
+  "速度壁面约束": {
+    "mode": "soft",
+    "hard_wall_sharpness": 12.0
+  },
+  "max_physics_points": 512,
+  "seed": 42,
+  "max_retries": 1,
+  "runtime_guard": {
+    "max_retries": 1
+  },
+  "strict_sparse_scalers": true,
+  "输入标准化": {
+    "x_mean": [
+      6.834566593170166,
+      0.014057926833629608,
+      0.7267137169837952,
+      4.64919376373291
+    ],
+    "x_std": [
+      4.577192306518555,
+      0.24854262173175812,
+      0.11538456380367279,
+      0.9364479780197144
+    ]
+  },
+  "速度标准化": {
+    "mean": [
+      1.2191853523254395,
+      -0.0005182254826650023
+    ],
+    "std": [
+      0.4999905228614807,
+      0.015165685676038265
+    ]
+  },
+  "压力标准化": {
+    "mean": [
+      325.3484191894531
+    ],
+    "std": [
+      245.8936004638672
+    ]
+  }
+}

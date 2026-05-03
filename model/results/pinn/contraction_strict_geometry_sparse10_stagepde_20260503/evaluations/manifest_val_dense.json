@@ -1,0 +1,13 @@
+{
+  "family": "contraction_2d",
+  "run_name": "contraction_strict_geometry_sparse10_stagepde_20260503",
+  "split_name": "val_dense",
+  "eval_cases": [
+    "C-val"
+  ],
+  "eval_source": "dense",
+  "device": "cpu",
+  "max_retries": 1,
+  "metrics_file": "/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_geometry_sparse10_stagepde_20260503/evaluations/metrics_val_dense.json",
+  "predictions_dir": "/root/dev/pinn-platform-v4/model/results/pinn/contraction_strict_geometry_sparse10_stagepde_20260503/evaluations/predictions_val_dense"
+}
