@@ -8,6 +8,8 @@
 - `5_3_sparse_rate/B-val__ip_blunted_pressure_truth_pred_rel_error_pct.png`
 - `5_3_sparse_rate/B-val__ip_blunted_speed_pressure_truth_pred_rel_error_pct.png`
 - `5_3_sparse_rate/B-val__ip_blunted_speed_truth_pred_rel_error_pct.png`
+- `5_3_sparse_rate/B-val__ip_blunted_speed_dense_focused.png`
+- `5_3_sparse_rate/B-val__ip_blunted_speed_focused.png`
 
 ## 5_4_region_vs_uniform
 - `5_4_region_vs_uniform/strict_region_uniform_rate_comparison.png`
@@ -35,6 +37,7 @@
 - `5_6_generalization_and_ablation/B-test-1__ip_blunted_pressure_truth_pred_rel_error_pct.png`
 - `5_6_generalization_and_ablation/B-test-1__ip_blunted_speed_pressure_truth_pred_rel_error_pct.png`
 - `5_6_generalization_and_ablation/B-test-1__ip_blunted_speed_truth_pred_rel_error_pct.png`
+- `5_6_generalization_and_ablation/B-test-1__ip_blunted_speed_focused.png`
 - `5_6_generalization_and_ablation/strict_geometry_encoding_ablation.png`
 
 ## 5_8_model_structure

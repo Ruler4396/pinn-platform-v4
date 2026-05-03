@@ -19,6 +19,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.utils.plotting import 配置中文绘图
+from scripts.export_field_maps import (
+    构造三角剖分,
+    构造几何对象,
+    构造几何裁剪路径,
+    绘制几何边界,
+    规则网格插值,
+    计算相对误差,
+)
 
 OUT = PROJECT_ROOT / "results" / "thesis_assets" / "chapter5_strict_sparse_20260503"
 
@@ -60,6 +68,67 @@ def export_maps(predictions_dir: Path, cases: list[str], output_dir: Path, layou
     ]
     subprocess.run(cmd, cwd=str(PROJECT_ROOT), check=True)
     return sorted(p.name for p in output_dir.glob("*.png"))
+
+
+def export_focused_speed_map(prediction_csv: Path, output_path: Path, *, title_prefix: str) -> str:
+    from matplotlib.ticker import MaxNLocator
+
+    配置中文绘图(prefer_serif=False)
+    frame = pd.read_csv(prediction_csv)
+    case_id = str(frame["case_id"].iloc[0])
+    x = frame["x_star"].to_numpy(dtype=float)
+    y = frame["y_star"].to_numpy(dtype=float)
+    geometry = 构造几何对象(case_id)
+    triang = 构造三角剖分(x, y, case_id, mask_outside_geometry=True)
+
+    speed_true = np.sqrt(frame["u_true"].to_numpy(dtype=float) ** 2 + frame["v_true"].to_numpy(dtype=float) ** 2)
+    speed_pred = np.sqrt(frame["u_pred"].to_numpy(dtype=float) ** 2 + frame["v_pred"].to_numpy(dtype=float) ** 2)
+    speed_scale = max(float(np.nanmax(speed_true)), 1.0e-12)
+    speed_err = 计算相对误差(speed_pred, speed_true, 0.01 * speed_scale) * 100.0
+
+    vmin = float(min(speed_true.min(), speed_pred.min()))
+    vmax = float(max(speed_true.max(), speed_pred.max()))
+    # Near-wall low-speed cells can inflate relative error by the denominator;
+    # cap the display range so the map shows spatial structure rather than a few outliers.
+    err_vmax = min(max(float(np.nanpercentile(speed_err, 99.0)), 1.0e-12), 12.0)
+
+    fig, axes = plt.subplots(3, 1, figsize=(5.8, 10.4), constrained_layout=True)
+    panels = [
+        (speed_true, "真值", "turbo", vmin, vmax, "速度模值"),
+        (speed_pred, "预测", "turbo", vmin, vmax, "速度模值"),
+        (speed_err, "相对误差", "magma", 0.0, err_vmax, "相对误差（%）"),
+    ]
+    for ax, (values, title, cmap, cmin, cmax, cbar_label) in zip(axes, panels):
+        cmap_obj = plt.get_cmap(cmap).copy()
+        cmap_obj.set_bad(alpha=0.0)
+        grid_values, extent = 规则网格插值(triang, values, geometry, x, y)
+        artist = ax.imshow(
+            np.ma.masked_invalid(grid_values),
+            extent=extent,
+            origin="lower",
+            interpolation="bicubic",
+            cmap=cmap_obj,
+            vmin=cmin,
+            vmax=cmax,
+            aspect="auto",
+        )
+        artist.set_clip_path(构造几何裁剪路径(ax, geometry))
+        绘制几何边界(ax, geometry)
+        ax.set_title(title, fontsize=11, pad=2)
+        ax.set_xlabel("x*", fontsize=9)
+        ax.set_ylabel("y*", fontsize=9)
+        ax.set_aspect("equal", adjustable="box")
+        ax.tick_params(axis="both", labelsize=8, pad=1)
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=5))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
+        cbar = fig.colorbar(artist, ax=ax, orientation="vertical", fraction=0.028, pad=0.012)
+        cbar.set_label(cbar_label, fontsize=8)
+        cbar.ax.tick_params(labelsize=7)
+    fig.suptitle(title_prefix, fontsize=12, y=1.01)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=240, bbox_inches="tight")
+    plt.close(fig)
+    return output_path.name
 
 
 def savefig(fig, path: Path) -> str:
@@ -139,7 +208,7 @@ def plot_bend_sparse_rate(sec: Path) -> list[str]:
     add_point_labels(ax, df["rate"], df["pressure"], fmt=pct_label)
     ax.set_xlabel("采样率/%")
     ax.set_ylabel("验证集Rel-L2")
-    ax.set_title("严格稀疏设置下不同采样率的重建误差")
+    ax.set_title("稀疏观测下不同采样率的重建误差")
     ax.grid(alpha=0.25, linestyle=":")
     ax.legend(frameon=False)
     ax.set_ylim(0, max(df["speed"].max(), df["pressure"].max()) * 1.32)
@@ -153,7 +222,7 @@ def plot_bend_sparse_rate(sec: Path) -> list[str]:
         ax.plot(x, stage["验证_rel_l2_speed"], label=f"{rate}%")
     ax.set_xlabel("耦合阶段记录点")
     ax.set_ylabel("验证速度Rel-L2")
-    ax.set_title("严格稀疏设置下速度误差收敛过程")
+    ax.set_title("稀疏观测下速度误差收敛过程")
     ax.grid(alpha=0.25, linestyle=":")
     ax.legend(frameon=False, ncol=4)
     files.append(savefig(fig, sec / "strict_sparse_rate_convergence.png"))
@@ -163,6 +232,31 @@ def plot_bend_sparse_rate(sec: Path) -> list[str]:
             PROJECT_ROOT / "results" / "pinn" / "bend_strict_blunted_sparse5_stagepde_20260503" / "evaluations" / "predictions_val_dense",
             ["B-val__ip_blunted"],
             sec / "bend_sparse5_val_maps",
+        )
+    )
+    files.append(
+        export_focused_speed_map(
+            PROJECT_ROOT
+            / "results"
+            / "pinn"
+            / "bend_independent_blunted_geometry_notemplate_medium_v1_20260401"
+            / "predictions"
+            / "B-val__ip_blunted_predictions.csv",
+            sec / "bend_sparse5_val_maps" / "B-val__ip_blunted_speed_dense_focused.png",
+            title_prefix="弯曲流道B-val稠密配置速度场重建",
+        )
+    )
+    files.append(
+        export_focused_speed_map(
+            PROJECT_ROOT
+            / "results"
+            / "pinn"
+            / "bend_strict_blunted_sparse5_stagepde_20260503"
+            / "evaluations"
+            / "predictions_val_dense"
+            / "B-val__ip_blunted_predictions.csv",
+            sec / "bend_sparse5_val_maps" / "B-val__ip_blunted_speed_focused.png",
+            title_prefix="弯曲流道B-val 5%稀疏观测速度场重建",
         )
     )
     return files
@@ -200,7 +294,7 @@ def plot_region_uniform(sec: Path) -> list[str]:
         ax.set_ylim(0, df[col].max() * 1.35)
     axes[0].set_ylabel("验证集Rel-L2")
     axes[1].legend(frameon=False)
-    fig.suptitle("严格稀疏设置下采样策略与采样率的影响", y=1.02)
+    fig.suptitle("稀疏观测下采样策略与采样率的影响", y=1.02)
     files.append(savefig(fig, sec / "strict_region_uniform_rate_comparison.png"))
 
     fig, ax = plt.subplots(figsize=(8.6, 4.8))
@@ -225,7 +319,7 @@ def plot_region_uniform(sec: Path) -> list[str]:
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("Rel-L2")
-    ax.set_title("5%预算下严格稀疏采样策略对比")
+    ax.set_title("5%观测预算下采样策略对比")
     ax.grid(axis="y", alpha=0.25, linestyle=":")
     ax.legend(frameon=False)
     ax.set_ylim(0, max(vals["分区感知"] + vals["均匀采样"]) * 1.28)
@@ -267,7 +361,7 @@ def plot_noise(sec: Path) -> list[str]:
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("指标值")
-    ax.set_title("严格稀疏设置下3%噪声影响")
+    ax.set_title("5%稀疏观测下3%噪声影响")
     ax.grid(axis="y", alpha=0.25, linestyle=":")
     ax.legend(frameon=False)
     ax.set_ylim(0, max(clean_vals + noise_vals) * 1.28)
@@ -291,6 +385,19 @@ def plot_generalization_and_ablation(sec: Path) -> list[str]:
             sec / "bend_target_test_maps",
         )
     )
+    files.append(
+        export_focused_speed_map(
+            PROJECT_ROOT
+            / "results"
+            / "pinn"
+            / "bend_strict_blunted_sparse5_stagepde_20260503"
+            / "evaluations"
+            / "predictions_test_dense"
+            / "B-test-1__ip_blunted_predictions.csv",
+            sec / "bend_target_test_maps" / "B-test-1__ip_blunted_speed_focused.png",
+            title_prefix="弯曲流道B-test-1速度场重建",
+        )
+    )
 
     basic = metric("contraction_strict_basic_sparse5_stagepde_20260503", "test_dense")["summary"]
     geom = metric("contraction_strict_geometry_sparse5_stagepde_20260503", "test_dense")["summary"]
@@ -307,7 +414,7 @@ def plot_generalization_and_ablation(sec: Path) -> list[str]:
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("Rel-L2")
-    ax.set_title("严格稀疏设置下几何增强编码消融")
+    ax.set_title("稀疏观测下几何增强编码消融")
     ax.set_yscale("log")
     ax.grid(axis="y", alpha=0.25, linestyle=":")
     ax.legend(frameon=False)
@@ -338,7 +445,7 @@ def plot_model_structure(sec: Path) -> list[str]:
     single_wall = [single_case["wall_max_abs_u_pred"]]
     dual_wall = [dual_case["wall_max_abs_u_pred"]]
 
-    fig, axes = plt.subplots(2, 1, figsize=(9.2, 6.2), gridspec_kw={"height_ratios": [2.1, 1.2]})
+    fig, axes = plt.subplots(2, 1, figsize=(9.2, 6.0), gridspec_kw={"height_ratios": [2.2, 1.0]})
     width = 0.34
     x = np.arange(len(err_labels))
     b1 = axes[0].bar(x - width / 2, single_err, width=width, label="单网络MLP", color="#f59e0b")
@@ -355,21 +462,21 @@ def plot_model_structure(sec: Path) -> list[str]:
     axes[0].legend(frameon=False, ncol=2, loc="upper left")
     axes[0].set_ylim(0, ymax * 1.30)
 
-    x2 = np.arange(len(wall_labels))
-    b3 = axes[1].bar(x2 - width / 2, single_wall, width=width, label="单网络MLP", color="#f59e0b")
-    b4 = axes[1].bar(x2 + width / 2, dual_wall, width=width, label="双模型PDE耦合", color="#0f766e")
+    wall_y = np.arange(2)
+    wall_vals = [single_wall[0], dual_wall[0]]
+    wall_names = ["单网络MLP", "双模型PDE耦合"]
+    wall_colors = ["#f59e0b", "#0f766e"]
+    b_wall = axes[1].barh(wall_y, wall_vals, height=0.48, color=wall_colors)
     wall_max = max(single_wall + dual_wall)
-    for bars in (b3, b4):
-        for bar in bars:
-            v = bar.get_height()
-            label = "<0.01%" if 0 < v * 100 < 0.01 else f"{v * 100:.2f}%"
-            axes[1].text(bar.get_x() + bar.get_width() / 2, v + wall_max * 0.055, label, ha="center", va="bottom", fontsize=8)
-    axes[1].set_xticks(x2)
-    axes[1].set_xticklabels(wall_labels)
-    axes[1].set_ylabel("壁面残余")
-    axes[1].grid(axis="y", alpha=0.25, linestyle=":")
-    axes[1].set_ylim(0, wall_max * 1.35)
-    fig.suptitle("严格稀疏设置下单网络与双模型对比", y=1.01)
+    for bar, value in zip(b_wall, wall_vals):
+        label = "<0.01%" if 0 < value * 100 < 0.01 else f"{value * 100:.2f}%"
+        axes[1].text(value + wall_max * 0.035, bar.get_y() + bar.get_height() / 2, label, va="center", fontsize=8)
+    axes[1].set_yticks(wall_y)
+    axes[1].set_yticklabels(wall_names)
+    axes[1].set_xlabel("壁面u残余")
+    axes[1].grid(axis="x", alpha=0.25, linestyle=":")
+    axes[1].set_xlim(0, wall_max * 1.22)
+    fig.suptitle("5%稀疏观测下单网络与双模型对比", y=1.01)
     files.append(savefig(fig, sec / "strict_single_vs_dual_comparison.png"))
 
     hist = pd.read_csv(PROJECT_ROOT / "results" / "pinn" / "contraction_strict_geometry_sparse5_stagepde_20260503" / "history.csv")
@@ -384,7 +491,7 @@ def plot_model_structure(sec: Path) -> list[str]:
         ax.grid(alpha=0.25, linestyle=":")
     axes[0].set_ylabel("验证Rel-L2")
     axes[1].legend(frameon=False, fontsize=8)
-    fig.suptitle("严格稀疏双模型训练过程", y=1.02)
+    fig.suptitle("双模型训练过程", y=1.02)
     files.append(savefig(fig, sec / "strict_dual_model_training_curve.png"))
     return files
 
