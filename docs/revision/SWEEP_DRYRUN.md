@@ -126,7 +126,8 @@ python3 scripts/train_velocity_pressure_independent_strict_sparse.py --family co
 ## 6. 本机没验证到的（不猜，留给实例）
 
 1. `analyze_sweep.py --self-test` 与任何 `--paired`：本机**没有 scipy**，只验证到"明确报错、不降级手算"这条行为（`rc=1` + 提示要装支持 numpy 2.x 的 scipy；**具体最低版本我未核**，以实例上 pip 的解析结果为准）。真实 Wilcoxon/t 值必须在实例上出。
-2. `generate_observations_seeded.py` 的实际写文件与 `--verify-committed`（本机无 pandas/numpy，只验证了 `--dry-run` 与种子/命名断言）。
+2. ~~`generate_observations_seeded.py` 的实际写文件与 `--verify-committed`（本机无 pandas/numpy，只验证了 `--dry-run` 与种子/命名断言）。~~
+   **已更新（9/24 第二轮）**：这两条分支现在本机也过（用桩化 pandas，见 §8）。仍然只剩一件事要在实例上做：**真 pandas + 真抽样函数**下跑 `--verify-committed`，即"obs_seed=0 逐位复现已入库点位"这条数值等价断言。
 3. 弯曲族单价：`BEND_UNIT_SEC` 未标定，脚本按 78 s 估并打印 `ESTIMATED=1`。标前所有弯曲 ETA 不可信。
 4. 新增 run 的产物体积与 push/tar 耗时：实测一个 strict run 目录 = **1.05 MB**（best.ckpt 288 KB + history.csv 173 KB + evaluations 477 KB），107 run ⇒ **≈113 MB** 要回传。`tar` 与 push 吃不吃得住，只能在实例上看。
 5. 真实 `progress.jsonl` 与 `segment_NN.tar.gz` 的回传链路（对账逻辑已用合成账本验过，但"真跑一段→tar→push→实例回收→重新 clone 校验"这条闭环只能在实例上过一次）。
@@ -135,3 +136,70 @@ python3 scripts/train_velocity_pressure_independent_strict_sparse.py --family co
 
 - **主矩阵 n=5 只做 mean±std，不做显著性声称**：配对 Wilcoxon 在 n=5 时最小可达双侧 p = 2/2⁵ = **0.0625 > 0.05**，数学上不可能显著。`analyze_sweep.py` 每次配对都打印 `本组最小可达双侧 p`，n<6 时额外警告。显著性只由 T6 的 n=8（最小可达 p = 0.0078）承担。
 - **两套口径都要出、且标明哪个进表**：`mean_of_cases`（逐工况先算再对工况取均值 = 论文表现用口径）与 `pooled`（`evaluations/metrics_*.json#global_metrics`）。二者在 test 上实测差 1.2 倍（0.0390 vs 0.0471），必须分列，否则自动核对闸门会产生假红。
+
+## 8. obs 生成器在实例上崩溃的修复 + 本地不依赖实例的验证法（9/24 第二轮）
+
+### 8.1 崩溃根因（不是环境问题，是我写死的一个不存在的键）
+
+实例上 `--verify-committed` 报 `KeyError: '_n_points'`。查源码：`budget_check()` 读 `job["_n_points"]`，
+而**全仓库没有任何一处写这个键**（抽样分支 `job.update(meta)` 写的是 `n_points`）。所以这不是 verify 独有的坑：
+真跑一次普通写入（T6 那条路）会在**同一行**崩。我本地当时只测了 `--dry-run`，而 dry-run 在 `budget_check`
+之前就 `return`，所以这道闸从未被本地跑到过 —— 漏测原因是"测试用的分支恰好绕过了坏分支"。
+
+### 8.2 修法（断言一条没删，只把读数换成可信来源）
+
+| 位置 | 改动 |
+| --- | --- |
+| `budget_check()` | `job["_n_points"]` → `job.get("n_points")`；**没有读数的作业直接算一条 problem**（"没有 n_points ⇒ 预算断言没测到东西"），只有一臂读数的组合也算 problem（"预算对齐没法判"）。原来这两条路会静默少一行表格，等于闸门空跑。 |
+| 新增 `committed_stats()` | 纯 stdlib（`csv.DictReader`）数出已入库 CSV 的**行数、`region_id` 直方图、`sample_id` 序列**；缺 `sample_id` 列直接 `SystemExit`。 |
+| 新增 `committed_path()` | 按 obs_seed=0 的命名规则定位已入库文件，verify 与 budget-only 共用一条路径推导，避免两处命名各写一遍。 |
+| `--verify-committed` 分支 | 点数与区域直方图**覆盖为 `committed_stats()` 的读数**，重算值另存 `regen_n_points`。理由：拿我自己重算出来的数去断言"两臂预算相同"是循环论证 —— 抽样语义若真被动过，两臂会一起错、断言照样绿。现在断言量的是"训练实际吃到的那份 CSV"。 |
+| 新增 `--budget-only` | 只读已入库 CSV 跑同一条预算断言：**不 import numpy/pandas、不写文件**，因此本地和实例都能跑。这条是"不依赖实例验证"的落点。 |
+| `--allow-existing` | 从"报错前先看一眼"改成真跳过（`[skip-obs]`），并且**点数从磁盘上的现存文件读**；否则续跑时另一臂没读数，会触发 §8.2 第 1 行的"缺读数"红灯。 |
+| `disp()` | `[obs]`/`[skip-obs]` 打印改用容错的相对路径。桩化自测里暴露出来的：`--write-root` 指到仓库外时 `relative_to()` 抛 `ValueError` 会打断正在写的作业 —— 同类"打印把主流程搞挂"的隐患，顺手补掉。 |
+| 空写占位 | 删掉 `out_path.write_text("")` 那行占位写；它在写到一半崩溃时会把已有 CSV 清成 0 字节。 |
+
+verify 汇总现在还额外执行 `problems`（预算不对齐也 `exit 1`），不再只报 verify 标签。
+
+### 8.3 本地怎么验（一条命令，不连实例）
+
+**`python3 model/scripts/selftest_observations.py`** —— 这条自测已随仓库提交，13 例全绿 rc=0。
+它做三件事：A) 对 `budget_check` 打 6 条正/负对照（点数相等=绿、不等/缺臂/缺读数/跨 obs_seed 比=红）；
+B) 用**桩化 pandas + 受控假抽样**把 §8.1 崩过的两条分支（写入、`--verify-committed`）端到端跑完，
+含 3 条故意注入污染的负对照；C) 对两族全部已入库 CSV 跑纯 stdlib 的 `--budget-only`。
+写-root 指到系统临时目录，`cases/` 只读不写。换一族工况同样通过：
+`--family bend_2d --case B-val__ip_blunted --rate 0.05` ⇒ 同一行结论 rc=0。
+
+配套的三条独立命令（本机实测尾行）：
+
+```bash
+cd pinn-platform-v4
+python3 model/scripts/selftest_observations.py
+# 结论：全部相符 ⇒ 记账与闸门可信（抽样数值等价仍须实例 --verify-committed）      SELFTEST_RC=0
+python3 model/scripts/generate_observations_seeded.py --family contraction_2d,bend_2d --budget-only
+# [OK] budget-only：60 个 (工况×采样率) 组合的两臂点数全部相同 … 'region': 96, 'uniform': 96   RC=0
+python3 model/scripts/generate_observations_seeded.py --family contraction_2d,bend_2d --obs-seeds 0,1,2,3 --dry-run
+# [dry-run] 480 个观测文件将被生成；抽样函数与种子推导规则不改                        RC=0
+python3 model/scripts/generate_observations_seeded.py --family contraction_2d,bend_2d --verify-committed
+# ModuleNotFoundError: No module named 'pandas'                                  RC=1  ← 诚实红灯
+```
+
+最后一条是本机的**边界声明**：没有 pandas 时 verify 只能这样红给你看，不许装绿。
+所以自测里 verify 那条绿是"桩化重放"（真数据来自已入库 CSV，抽样函数被替换）——
+它证明记账与判定链正确，**不证明** obs_seed=0 能逐位复现真抽样；那一条仍要在实例上跑一次
+`--verify-committed`（期望 `'"identical": N'` 且 N=n_jobs）。负对照实测：点位换序判
+`SAME-SET-DIFF-ORDER`、少抽一点判 `DIFFERENT`、两臂点数不同判"观测预算不对齐 {'region': 63, 'uniform': 62}"。
+
+### 8.4 T5 主矩阵与这个生成器的依赖关系（已核，含证据）
+
+`sweep_t5.sh:111-120`：`generate_obs()` 第一行 `[[ "${RUN_T6}" == 1 ]] || return 0`，循环里再
+`[[ "${s}" == "0" ]] && continue`。实测 dry-run：
+
+| 命令 | `[dry-run][obs]` 行数 | 结论 |
+| --- | --- | --- |
+| `bash model/scripts/sweep_t5.sh --t5 --dry-run`（默认 `--obs-seeds 0 1 2 3`） | 0 | **`--t5` 无论传什么 obs_seed 都不碰生成器** |
+| `bash model/scripts/sweep_t5.sh --t5 --obs-seeds 0 --dry-run` | 0（95 条训练 argv=15 稠密+80 strict，另 95 条评估 argv，rc=0） | 同上 |
+| `bash model/scripts/sweep_t5.sh --dry-run`（T5+T6 同开） | 3（seed 1/2/3，各一次） | 只有这条依赖生成器；生成器坏时 T6 会在开跑前 `[FAIL] 观测生成失败，停止` |
+
+⇒ **T5 主矩阵 19 格 × 5 `train_seed`、`obs_seed=0` 全程只吃 `cases/**/obs_*.csv` 已入库文件**，
+与本次修复无关，在跑的这段不用停。生成器的坑只影响 T6（`obs_seed=1..3`），且已修 + 桩化验过。

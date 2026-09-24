@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -95,6 +96,44 @@ def file_stem(strategy: str, pct: int, obs_seed: int, noise_pct: int | None) -> 
     if obs_seed != 0:
         stem = f"{stem}__s{obs_seed}"
     return stem
+
+
+def committed_path(job: dict) -> Path:
+    """该 job 对应的**已入库**观测文件名（obs_seed=0 的命名，不带 __s 后缀）。"""
+    stem = file_stem(job["strategy"], job["pct"], 0, job["noise_pct"])
+    return (PROJECT_ROOT / "cases" / FAMILY_SUBDIR[job["family"]] / "data"
+            / job["case_id"] / f"{stem}.csv")
+
+
+def disp(path: Path) -> str:
+    """打印用相对路径；--write-root 指到仓库外时不能因为 relative_to 抛错而中断正在写的作业。"""
+    try:
+        return str(path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def committed_stats(path: Path) -> dict:
+    """纯 stdlib 读已入库 CSV ⇒ 行数、区域直方图、sample_id 序列。
+
+    预算对齐断言的**权威依据就是这里**：它量的是"实际被训练吃到的那份 CSV"，
+    不是"我以为抽样会产生的数"。verify 与 --budget-only 两条路都用它填 job["n_points"]。
+    """
+    rows = 0
+    hist: dict[str, int] = {}
+    ids: list[str] = []
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None or "sample_id" not in reader.fieldnames:
+            raise SystemExit(f"已入库观测文件缺 sample_id 列：{path}")
+        for row in reader:
+            rows += 1
+            ids.append(row["sample_id"])
+            if "region_id" in row and row["region_id"] not in ("", None):
+                key = str(int(float(row["region_id"])))
+                hist[key] = hist.get(key, 0) + 1
+    return {"n_points": rows, "region_hist": dict(sorted(hist.items())), "sample_ids": ids}
+
 
 
 def build_one(
@@ -189,21 +228,31 @@ def resolve_path(job: dict, *, write_root: Path | None = None) -> Path:
 
 
 def budget_check(jobs: list[dict]) -> tuple[list[str], list[dict]]:
-    """同 (family, case, rate, obs_seed) 下各策略总点数必须相等；返回 (违规消息, 预算表)。"""
+    """同 (family, case, rate, obs_seed) 下两臂**总点数**必须相同。
+
+    不断言区域配额相同：配额正是分层 vs 均匀的被试变量（实测 C-val 5%
+    分层 13/28/22、均匀 21/18/24），若配额也相同则两臂变成同一策略，比较失效。
+    """
     buckets: dict[tuple, dict[str, int]] = {}
+    problems: list[str] = []
     for job in jobs:
         if job["noise_pct"] is not None:
             continue
+        count = job.get("n_points")
+        if count is None:                      # 计数没算出来 = 闸门没跑到，不是"通过"
+            problems.append("作业 %s/%s %s%% 没有 n_points ⇒ 预算断言没测到东西"
+                            % (job["family"], job["case_id"], job["pct"]))
+            continue
         key = (job["family"], job["case_id"], job["pct"], job["obs_seed"])
-        buckets.setdefault(key, {})[job["strategy"]] = job["_n_points"]
-    problems: list[str] = []
+        buckets.setdefault(key, {})[job["strategy"]] = int(count)
     table: list[dict] = []
     for key, per_strategy in sorted(buckets.items()):
-        counts = set(per_strategy.values())
         row = {"family": key[0], "case_id": key[1], "rate_pct": key[2], "obs_seed": key[3], **per_strategy}
         table.append(row)
-        if len(counts) != 1:
-            problems.append(f"观测预算不对齐 {key}: {per_strategy}")
+        if len(per_strategy) < 2:
+            problems.append("预算对齐没法判 %s：只有一臂有读数 %s" % (key, per_strategy))
+        elif len(set(per_strategy.values())) != 1:
+            problems.append("观测预算不对齐 %s: %s" % (key, per_strategy))
     return problems, table
 
 
@@ -218,15 +267,22 @@ def main() -> None:
     parser.add_argument("--base-seed", dest="base_seed", type=int, default=42, help="obs_seed=0 时的 base seed（须与 meta.json#sampling.seed 一致）")
     parser.add_argument("--seed-stride", dest="seed_stride", type=int, default=1000, help="相邻 obs_seed 的 base seed 间隔")
     parser.add_argument("--dry-run", action="store_true", help="只打印作业表与将要写出的路径，不读数据不写文件")
-    parser.add_argument("--verify-committed", action="store_true", help="用 obs_seed=0 重算点位并与已入库 CSV 比对 sample_id 集合")
+    parser.add_argument("--verify-committed", action="store_true", help="用 obs_seed=0 重算点位并与已入库 CSV 比对 sample_id 序列与取值（需 numpy/pandas）")
+    parser.add_argument("--budget-only", action="store_true",
+                        help="只读已入库 CSV 算点数/区域直方图并跑两臂预算断言：纯 stdlib，本地与实例都可跑，不 import numpy/pandas、不写文件")
     parser.add_argument("--write-root", dest="write_root", default="", help="改写输出根目录（默认 cases/<family>/data）")
     parser.add_argument("--manifest", default="", help="把作业表+点数+区域直方图+sha256 写到此 JSON")
     parser.add_argument("--allow-existing", action="store_true", help="目标文件已存在时跳过而非报错")
     args = parser.parse_args()
 
     requested_seeds = [int(x) for x in args.obs_seeds.split(",") if x.strip()]
-    if 0 in requested_seeds and not (args.verify_committed or args.dry_run):
-        raise SystemExit("obs_seed=0 不允许写入 cases/（会覆盖已入库点位）。要用 --verify-committed 校验，或只传 --obs-seeds 1,2,3")
+    if (args.verify_committed or args.budget_only) and requested_seeds != [0]:
+        # 否则会把 obs_seed=1 的抽样结果拿去和 obs_seed=0 的已入库文件比，必然"不一致"——假红
+        print("[note] --verify-committed/--budget-only 只校验已入库点位，obs_seeds 已被强制为 0（原请求 %s）"
+              % args.obs_seeds)
+        args.obs_seeds = "0"
+    if 0 in requested_seeds and not (args.verify_committed or args.budget_only or args.dry_run):
+        raise SystemExit("obs_seed=0 不允许写入 cases/（会覆盖已入库点位）。要用 --verify-committed/--budget-only 校验，或只传 --obs-seeds 1,2,3")
 
     jobs = plan_jobs(args)
 
@@ -236,6 +292,42 @@ def main() -> None:
                               "noise_pct", "seed", "noise_seed") if k in j}
             | {"out": str(resolve_path(j))} for j in jobs]}, ensure_ascii=False, indent=1))
         print(f"[dry-run] {len(jobs)} 个观测文件将被生成；抽样函数与种子推导规则不改")
+        return
+
+    if args.budget_only:
+        # 只读已入库 CSV ⇒ 用 stdlib 数出行数与区域直方图，喂给同一个 budget_check。
+        # 这条路的断言对象是"训练真正吃到的那份数据"，所以它也是 verify 的预算依据来源。
+        for job in jobs:
+            path = committed_path(job)
+            if not path.exists():
+                job["budget_problem"] = f"缺已入库文件 {path}"
+                continue
+            stats = committed_stats(path)
+            job["n_points"] = stats["n_points"]
+            job["region_hist"] = stats["region_hist"]
+            job["n_points_source"] = "committed-csv"
+        missing = [j["budget_problem"] for j in jobs if "budget_problem" in j]
+        problems, table = budget_check(jobs)
+        print(json.dumps({"mode": "budget-only", "n_jobs": len(jobs),
+                          "n_points_source": "committed-csv（stdlib 数行 + region_id 直方图）",
+                          "budget_table": table[:6], "table_rows": len(table),
+                          "missing_files": missing[:5]}, ensure_ascii=False, indent=1))
+        if missing:
+            print("[FAIL] %d 个已入库观测文件读不到 ⇒ 预算断言没测到东西" % len(missing), file=sys.stderr)
+            raise SystemExit(1)
+        if problems:
+            print("[FAIL] 观测预算不对齐：", file=sys.stderr)
+            for item in problems:
+                print("  " + item, file=sys.stderr)
+            raise SystemExit(1)
+        print("[OK] budget-only：%d 个 (工况×采样率) 组合的两臂点数全部相同；"
+              "区域配额按设计不同（那是被试变量），例：%s" % (len(table), table[0] if table else {}))
+        if args.manifest:
+            Path(args.manifest).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.manifest).write_text(json.dumps({"jobs": jobs, "budget_table": table},
+                                                      ensure_ascii=False, indent=1), encoding="utf-8")
+            json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+            print("[manifest] %s 已写并读回校验" % args.manifest)
         return
 
     import pandas as pd  # 真正执行才需要 numpy/pandas
@@ -258,12 +350,18 @@ def main() -> None:
         job.update(meta)
 
         if args.verify_committed:
-            committed = case_dir / f"{'obs_sparse' if job['strategy'].startswith('region') else 'obs_uniform'}_{job['pct']}pct.csv"
-            if job["noise_pct"] is not None:
-                committed = case_dir / f"obs_sparse_5pct_noise_{job['noise_pct']}pct.csv"
+            committed = committed_path(job)
             if not committed.exists():
                 job["verify"] = "NO-COMMITTED-FILE"
                 continue
+            # 预算读数一律以**已入库 CSV** 为准（stdlib 数行 + region_id 直方图）。
+            # 用我自己重算的数去断言"两臂预算相同"是循环论证：抽样语义若被动过，
+            # 两臂会一起错，断言照样通过。所以这里把 job 的计数覆盖回真实数据。
+            real = committed_stats(committed)
+            job["n_points"] = real["n_points"]
+            job["region_hist"] = real["region_hist"]
+            job["n_points_source"] = "committed-csv"
+            job["regen_n_points"] = int(meta["n_points"])
             old_ids = pd.read_csv(committed)["sample_id"].tolist()
             new_ids = frame["sample_id"].tolist()
             same_order = old_ids == new_ids
@@ -275,25 +373,45 @@ def main() -> None:
             continue
 
         out_path = resolve_path(job, write_root=Path(args.write_root) if args.write_root else None)
-        if out_path.exists() and not args.allow_existing:
-            raise SystemExit(f"目标已存在，拒绝覆盖（要跳过请加 --allow-existing）：{out_path}")
+        if out_path.exists():
+            if not args.allow_existing:
+                raise SystemExit(f"目标已存在，拒绝覆盖（要跳过请加 --allow-existing）：{out_path}")
+            # 真跳过：不重写文件；点数从磁盘上的文件读，保证续跑后两臂都有读数、断言不缺臂
+            stats = committed_stats(out_path)
+            job["n_points"] = stats["n_points"]
+            job["region_hist"] = stats["region_hist"]
+            job["n_points_source"] = "existing-file"
+            job["sha256"] = sha256_of(out_path)
+            print(f"[skip-obs] {disp(out_path)} 已存在 n={stats['n_points']}（不重写）")
+            continue
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text("", encoding="utf-8")  # 占位，随后写 CSV
         frame.to_csv(out_path, index=False)
         job["sha256"] = sha256_of(out_path)
-        print(f"[obs] {out_path.relative_to(PROJECT_ROOT)} n={job['n_points']} seed={job['seed']} 区域={job['region_hist']}")
+        job["n_points_source"] = "regenerated"
+        print(f"[obs] {disp(out_path)} n={job['n_points']} seed={job['seed']} 区域={job['region_hist']}")
 
     problems, table = budget_check(jobs)
     if args.verify_committed:
         bad = [j for j in jobs if j.get("verify") not in ("IDENTICAL",)]
         print(json.dumps({"mode": "verify-committed", "n_jobs": len(jobs),
                           "identical": len(jobs) - len(bad),
+                          "n_points_source": "committed-csv（stdlib 数行 + region_id 直方图）",
+                          "budget_table": table[:6], "table_rows": len(table),
                           "not_identical": [{k: j[k] for k in ("family", "case_id", "stem", "verify")} for j in bad]},
                          ensure_ascii=False, indent=1))
+        rc = 0
         if bad:
-            print("[FAIL] obs_seed=0 未能逐位复现已入库点位 ⇒ 抽样语义已被改动，停止使用本脚本产物")
-            raise SystemExit(1)
-        print("[OK] obs_seed=0 逐位复现已入库点位（sample_id 顺序与取值全同）")
+            print("[FAIL] obs_seed=0 未能逐位复现已入库点位 ⇒ 抽样语义已被改动，停止使用本脚本产物",
+                  file=sys.stderr)
+            rc = 1
+        if problems:
+            print("[FAIL] 观测预算不对齐（按已入库 CSV 判）：", file=sys.stderr)
+            for item in problems:
+                print("  " + item, file=sys.stderr)
+            rc = 1
+        if rc:
+            raise SystemExit(rc)
+        print("[OK] obs_seed=0 逐位复现已入库点位；两臂预算按真实 CSV 判定对齐（区域配额不同属被试变量）")
     else:
         if problems:
             print("[FAIL] 观测预算不对齐：\n  " + "\n  ".join(problems))
