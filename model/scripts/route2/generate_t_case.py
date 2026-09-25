@@ -59,8 +59,22 @@ STATION_STEP = 0.25
 
 
 # ----------------------------------------------------------------- FreeFEM text
+def precision_prefix(var: str, digits: int) -> list[str]:
+    """One statement per stream setting full coordinate precision, or nothing at all.
+
+    digits == 0 falls back to FreeFEM's default (~6 significant digits, which is what
+    made boundary nodes look outside the domain).  Kept switchable because the EDP
+    parser's support for `setprecision` is not verifiable on this laptop; if it is
+    refused, rerun with --coord-precision 0 and read `coordinate_digits` back from the
+    artefact instead of guessing.
+    """
+    if digits <= 0:
+        return []
+    return [f"  {var} << setprecision({digits});"]
+
+
 def render_edp(geom: tg.TGeometry, case: tg.TCase, level: dict, out_dir: Path,
-               section_eta_step: float = 0.02) -> str:
+               section_eta_step: float = 0.02, coord_digits: int = 17) -> str:
     spacing = level["spacing"]
     counts = level["counts"]
     jx, jy = geom.j_point
@@ -131,6 +145,7 @@ def render_edp(geom: tg.TGeometry, case: tg.TCase, level: dict, out_dir: Path,
     a("")
     prefix = out_dir / f"{case.case_id}_{level['name']}"
     a(f'ofstream fr("{prefix.as_posix()}_raw.csv");')
+    o.extend(precision_prefix("fr", coord_digits))
     a('fr << "x_star,y_star,u_star,v_star,p_star,bc_tag" << endl;')
     a("for (int i = 0; i < Th.nv; ++i) {")
     a("  real xx = Th(i).x; real yy = Th(i).y;")
@@ -154,16 +169,17 @@ def render_edp(geom: tg.TGeometry, case: tg.TCase, level: dict, out_dir: Path,
     for key in (tg.STEM, tg.UP, tg.DOWN):
         for mult, tag in ((1.0, "h"), (2.0, "h2")):
             o.extend(_emit_branch_grid(geom, geom.branch_grid(key, spacing * mult),
-                                       prefix, case, tag))
+                                       prefix, case, tag, coord_digits))
     for mult, tag in ((1.0, "h"), (2.0, "h2")):
-        o.extend(_emit_junction_grid(geom, geom.junction_grid(spacing * mult), prefix, case, tag))
-    o.extend(_emit_sections(geom, prefix, case, section_eta_step))
+        o.extend(_emit_junction_grid(geom, geom.junction_grid(spacing * mult), prefix, case,
+                                  tag, coord_digits))
+    o.extend(_emit_sections(geom, prefix, case, section_eta_step, coord_digits))
     a('cout << "done" << endl;')
     return "\n".join(o) + "\n"
 
 
 def _emit_branch_grid(geom: tg.TGeometry, spec: dict, prefix: Path, case: tg.TCase,
-                      tag: str) -> List[str]:
+                      tag: str, digits: int = 17) -> List[str]:
     path = Path(prefix.as_posix() + f"_samples_{spec['branch']}_{tag}.csv")
     n_xi, n_eta = spec["n_xi"], spec["n_eta"]
     d_xi = (spec["xi1"] - spec["xi0"]) / max(n_xi - 1, 1)
@@ -173,6 +189,7 @@ def _emit_branch_grid(geom: tg.TGeometry, spec: dict, prefix: Path, case: tg.TCa
     return [
         "{",
         f'  ofstream fo("{path.as_posix()}");',
+        *precision_prefix("fo", digits),
         f'  fo << "{SAMPLE_HEADER}" << endl;',
         f"  int NX = {n_xi}; int NE = {n_eta};",
         f'  real XI0 = {spec["xi0"]:.12g}; real DXI = {d_xi:.12g};',
@@ -196,13 +213,14 @@ def _emit_branch_grid(geom: tg.TGeometry, spec: dict, prefix: Path, case: tg.TCa
 
 
 def _emit_junction_grid(geom: tg.TGeometry, spec: dict, prefix: Path, case: tg.TCase,
-                        tag: str) -> List[str]:
+                        tag: str, digits: int = 17) -> List[str]:
     path = Path(prefix.as_posix() + f"_samples_junction_{tag}.csv")
     n_x = max(3, int(round((spec["x1"] - spec["x0"]) / spec["spacing"])) + 1)
     n_y = max(3, int(round((spec["y1"] - spec["y0"]) / spec["spacing"])) + 1)
     return [
         "{",
         f'  ofstream fo("{path.as_posix()}");',
+        *precision_prefix("fo", digits),
         f'  fo << "{SAMPLE_HEADER}" << endl;',
         f"  int NX = {n_x}; int NY = {n_y};",
         f'  real X0 = {spec["x0"]:.12g}; real DX = {(spec["x1"] - spec["x0"]) / (n_x - 1):.12g};',
@@ -225,11 +243,12 @@ def _emit_junction_grid(geom: tg.TGeometry, spec: dict, prefix: Path, case: tg.T
 
 
 def _emit_sections(geom: tg.TGeometry, prefix: Path, case: tg.TCase,
-                   eta_step: float) -> List[str]:
+                   eta_step: float, digits: int = 17) -> List[str]:
     """Cross-section profiles -> Q(xi) per branch, centreline p(xi), mass closure."""
     path = Path(prefix.as_posix() + "_sections.csv")
     o: List[str] = ["{",
                     f'  ofstream fo("{path.as_posix()}");',
+                    *precision_prefix("fo", digits),
                     f'  fo << "{SECTION_HEADER}" << endl;',
                     f"  int NE = {int(round(2.0 * geom.max_half_width() / eta_step)) + 1};",
                     f"  real DETA = {eta_step:.12g};"]
@@ -297,6 +316,40 @@ def assert_edp_clean(text: str, name: str) -> None:
     problems = lint_edp(text)
     if problems:
         raise ValueError(f"{name} failed the .edp lint:\n  " + "\n  ".join(problems[:12]))
+
+
+def coordinate_digits_used(rows: Sequence[Sequence[str]], cols: Sequence[str]) -> dict:
+    """How many significant digits does a raw CSV actually carry?  Read, not assumed.
+
+    Re-rounding a value to 6 significant digits and seeing no change is proof the file
+    was written at 6 digits; that single number tells us whether the setprecision fix
+    took effect, so the next report cannot be argued about.
+    """
+    def sig6(v: float) -> float:
+        if v == 0.0:
+            return 0.0
+        e = math.floor(math.log10(abs(v)))
+        q = 10.0 ** (e - 5)
+        return round(v / q) * q
+    out: dict = {}
+    for name in cols:
+        try:
+            i = list(rows[0]).index(name) if name in (rows[0] if rows else []) else cols.index(name)
+        except ValueError:
+            continue
+        vals = []
+        for r in rows[:4000]:
+            try:
+                vals.append(float(r[i]))
+            except (ValueError, IndexError):
+                continue
+        if not vals:
+            continue
+        unchanged = sum(1 for v in vals if v == sig6(v))
+        worst = max(abs(v - sig6(v)) for v in vals)
+        out[name] = {"share_unchanged_by_6sig_roundtrip": unchanged / len(vals),
+                     "max_abs_deviation_from_6sig": worst}
+    return out
 
 
 # ------------------------------------------------------------------- processing
@@ -458,7 +511,7 @@ def freefem_executable() -> str:
 
 
 def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
-             sigma: float = 0.15) -> dict:
+             sigma: float = 0.15, coord_digits: int = 17) -> dict:
     geom = tg.TGeometry(case)
     data_dir = out_root / "data" / case.case_id
     cfd_root = out_root / "cfd"
@@ -478,7 +531,9 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
         lvl_dir = cfd_root / f"{case.case_id}_{lvl['name']}"
         lvl_dir.mkdir(parents=True, exist_ok=True)
         edp = lvl_dir / f"{case.case_id}_{lvl['name']}.edp"
-        edp.write_text(render_edp(geom, case, lvl, lvl_dir), encoding="utf-8")
+        text = render_edp(geom, case, lvl, lvl_dir, coord_digits=coord_digits)
+        assert_edp_clean(text, edp.name)      # refuse to ship an .edp FreeFEM cannot eat
+        edp.write_text(text, encoding="utf-8")
         entry = {"level": lvl["name"], "spacing_star": lvl["spacing"], "graded": lvl["graded"],
                  "border_counts": lvl["counts"], "edp": edp.name,
                  "edp_sha256": art.sha256_file(edp),
@@ -506,6 +561,9 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
         if missing:
             raise FileNotFoundError("FreeFEM did not produce: " + ", ".join(missing))
         dense, stats = build_field_dense(raw, geom)
+        header_probe, probe_rows = art.read_csv_rows(raw)
+        stats["coordinate_precision_probe"] = coordinate_digits_used(
+            probe_rows, header_probe)
         last_dense = dense
         ints = section_integrals(sections, geom)
         jun = _read_p(lvl_dir / f"{case.case_id}_{lvl['name']}_samples_junction_h.csv")
@@ -587,6 +645,9 @@ def main() -> int:
     ap.add_argument("--levels", default="", help="comma list, e.g. h1,h2 (default all four)")
     ap.add_argument("--base-spacing", type=float, default=0.16)
     ap.add_argument("--blend-sigma", type=float, default=0.15)
+    ap.add_argument("--coord-precision", type=int, default=17,
+                    help="significant digits requested from FreeFEM's streams; 0 keeps "
+                         "FreeFEM's default (~6), which is what lost boundary nodes")
     ap.add_argument("--selfcheck-raw", default="",
                     help="run one real FreeFEM *_raw.csv through build_field_dense and "
                          "print the membership accounting; no solve, no writes")
@@ -595,9 +656,14 @@ def main() -> int:
     if args.selfcheck_raw:
         case = tg.case_by_id(args.case)
         geom = tg.TGeometry(case)
-        dense, stats = build_field_dense(Path(args.selfcheck_raw), geom)
-        print(json.dumps({"raw": args.selfcheck_raw, "stats": stats,
-                          "n_dense_rows": len(dense)}, ensure_ascii=False, indent=2))
+        raw = Path(args.selfcheck_raw)
+        dense, stats = build_field_dense(raw, geom)
+        header, rows = art.read_csv_rows(raw)
+        stats["coordinate_precision_probe"] = coordinate_digits_used(rows, header)
+        print(json.dumps({"raw": str(raw), "stats": stats,
+                          "n_dense_rows": len(dense),
+                          "absorb_tol_star_unchanged": tg.ABSORB_TOL},
+                         ensure_ascii=False, indent=2))
         return 0
     if not (0.02 <= args.blend_sigma <= 0.5):
         raise SystemExit(f"--blend-sigma out of range: {args.blend_sigma}")
@@ -625,7 +691,8 @@ def main() -> int:
                   f"Rerun with --dry-run only renders scripts.")
             return 3
         print(f"[gate] FreeFEM resolved to {exe}")
-    res = run_case(case, out_root, levels, execute, sigma=args.blend_sigma)
+    res = run_case(case, out_root, levels, execute, sigma=args.blend_sigma,
+                   coord_digits=args.coord_precision)
     plan = res["plan"]
     print(f"out_root={out_root}")
     for entry in plan["levels"]:

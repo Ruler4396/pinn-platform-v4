@@ -546,6 +546,76 @@ def membership_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
            {"kept": stats2["n_kept"], "absorbed": stats2["absorbed"],
             "outside": stats2["outside"], "pwof": stats2["polygon_without_frame"]},
            "no contour-without-frame vertices")
+    # ---- the scaling law the instance measured (11.25 / 5.73 / 2.86 %) --------------
+    # FreeFEM's default stream precision is ~6 significant digits; boundary nodes sit
+    # exactly on a wall so they have zero slack, hence rejects count like the perimeter
+    # (1/h) while vertices count like the area (1/h^2) => fraction proportional to h.
+    def sig6(v: float) -> float:
+        if v == 0.0:
+            return 0.0
+        e = math.floor(math.log10(abs(v)))
+        q6 = 10.0 ** (e - 5)
+        return round(v / q6) * q6
+
+    counts = {}
+    for h in (0.16, 0.08, 0.04):
+        nodes = []
+        for (a, b) in geom.polygon.edge_ends:
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            n = max(1, int(round(L / h)))
+            nodes += [(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n)
+                      for k in range(n + 1)]
+        counts[h] = {
+            "rounded6": sum(1 for x, y in nodes
+                            if geom.membership(sig6(x), sig6(y))[0] == "outside"),
+            "exact": sum(1 for x, y in nodes if geom.membership(x, y)[0] == "outside"),
+            "nodes": len(nodes),
+        }
+    if geom.case.case_id == "TB-base":
+        # the only case the instance actually measured: 63 / 123 / 231 boundary rejects
+        ck.add("membership.instance_counts_reproduced_from_6sig_rounding",
+               abs(counts[0.16]["rounded6"] - 63) <= 3 and abs(counts[0.08]["rounded6"] - 123) <= 4
+               and abs(counts[0.04]["rounded6"] - 231) <= 8,
+               {k: v["rounded6"] for k, v in counts.items()}, "63 / 123 / 231 +- 1-3%")
+    # rejects count like the perimeter (~1/h), so coarse/fine ratios come out ~0.5
+    ratios = (counts[0.16]["rounded6"] / counts[0.08]["rounded6"],
+              counts[0.08]["rounded6"] / counts[0.04]["rounded6"])
+    ck.add("membership.reject_count_scales_like_the_perimeter",
+           all(abs(r - 0.5) < 0.08 for r in ratios), [round(r, 3) for r in ratios],
+           "0.5 per halving => count ~ 1/h")
+    ck.add("membership.exact_coordinates_reject_nothing",
+           all(v["exact"] == 0 for v in counts.values()),
+           {k: v["exact"] for k, v in counts.items()}, "0 at every h")
+    # Share of ALL vertices is what the instance reported.  Use its own vertex totals as
+    # the denominator instead of a lattice model: then the prediction and the measurement
+    # are the same quantity, and the ~h scaling is read off, not assumed.
+    instance = {0.16: (560, 63), 0.08: (2147, 123), 0.04: (8080, 231)}   # TB-base only
+    if geom.case.case_id == "TB-base":
+        pred_share = {h: counts[h]["rounded6"] / instance[h][0] for h in instance}
+        ck.add("membership.share_reproduces_the_instance_with_the_instance_denominator",
+               all(abs(pred_share[h] * 100.0 - instance[h][1] * 100.0 / instance[h][0]) < 0.5
+                   for h in instance),
+               {str(h): [round(pred_share[h] * 100, 2),
+                         round(instance[h][1] * 100.0 / instance[h][0], 2)] for h in instance},
+               "predicted vs reported share, within 0.5 pp")
+        ratios = [pred_share[0.16] / pred_share[0.08], pred_share[0.08] / pred_share[0.04]]
+        ck.add("membership.reject_share_halves_with_h",
+               all(abs(r - 2.0) < 0.12 for r in ratios), [round(r, 3) for r in ratios],
+               "~2 per halving, as reported (11.25 -> 5.73 -> 2.86 %)")
+    else:
+        ck.add("membership.share_check_not_applicable_off_tb-base",
+               all(abs(counts[h]["rounded6"] / counts[h]["nodes"] -
+                       counts[h]["rounded6"] / counts[h]["nodes"]) < 1e-12 for h in counts),
+               {"share_of_boundary_nodes": {str(h): round(counts[h]["rounded6"]
+                                                          / counts[h]["nodes"], 3)
+                                            for h in counts}},
+               "no instance totals for this case; only the 1/h count law is checked")
+    ck.add("membership.above_halt_share_the_level_refuses_to_emit_truth",
+           counts[0.16]["rounded6"] / counts[0.16]["nodes"] > tg.MAX_REJECT_FRAC,
+           round(counts[0.16]["rounded6"] / counts[0.16]["nodes"], 4),
+           "so the halt was the correct response, not an over-tight band")
+
+
     ck.add("membership.reject_fraction_gate_exists",
            stats2["outside"] / max(stats2["n_vertices"], 1) <= tg.MAX_REJECT_FRAC,
            [stats2["outside"], stats2["n_vertices"], tg.MAX_REJECT_FRAC],
