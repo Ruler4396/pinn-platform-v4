@@ -33,6 +33,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -60,8 +61,49 @@ def _make_stdout_utf8() -> None:
             pass
 
 
-def parse_csv_list(text: str) -> list[str]:
-    return [item.strip() for item in text.split(",") if item.strip()]
+def parse_list(text: str) -> list[str]:
+    """逗号/分号/空白任一种分隔 ⇒ 列表。
+
+    只认逗号时，`--obs-seeds "42 43"` 会被当成**一个**值，然后在 int() 上抛裸 traceback；
+    反过来 `--seeds 42,43` 在 shell 侧也会被当成一个种子（9/25 实例上真踩过）。
+    两侧统一：先规范化分隔符，再逐项校验类型，坏值把原值打出来。
+    """
+    return [tok for tok in re.split(r"[,;\s]+", (text or "").strip()) if tok]
+
+
+def parse_int_list(text: str, flag: str) -> list[int]:
+    items = parse_list(text)
+    if not items:
+        raise SystemExit(f"[FAIL] {flag} 解析出 0 项（收到的原值={text!r}）")
+    out: list[int] = []
+    for item in items:
+        if not re.fullmatch(r"[0-9]+", item):
+            raise SystemExit(f"[FAIL] {flag} 含非整数项 {item!r}（收到的原值={text!r}）")
+        out.append(int(item))
+    return out
+
+
+def parse_rate_list(text: str, flag: str, *, allow_empty: bool = False) -> list[float]:
+    items = parse_list(text)
+    if not items:
+        if allow_empty:
+            return []
+        raise SystemExit(f"[FAIL] {flag} 解析出 0 项（收到的原值={text!r}）")
+    out: list[float] = []
+    for item in items:
+        try:
+            value = float(item)
+        except ValueError:
+            raise SystemExit(f"[FAIL] {flag} 含非数值项 {item!r}（收到的原值={text!r}）") from None
+        if not 0.0 < value <= 1.0:
+            raise SystemExit(f"[FAIL] {flag}={value} 不在 (0,1]（采样率写的是比例，5% 要写 0.05）"
+                             f"（收到的原值={text!r}）")
+        out.append(value)
+    return out
+
+
+def parse_csv_list(text: str) -> list[str]:  # 旧名保留给读代码的人，行为=parse_list
+    return parse_list(text)
 
 
 def sha256_of(path: Path) -> str:
@@ -177,10 +219,15 @@ def build_one(
 
 def plan_jobs(args: argparse.Namespace) -> list[dict]:
     """把 (family, case, strategy, rate, obs_seed, noise) 展开成作业表；dry-run 与执行共用。"""
-    rates = [float(x) for x in args.rates.split(",") if x.strip()]
-    obs_seeds = [int(x) for x in args.obs_seeds.split(",") if x.strip()]
-    strategies = parse_csv_list(args.strategies)
-    noise_rates = [int(x) for x in args.noise_rates.split(",") if x.strip()]
+    rates = parse_rate_list(args.rates, "--rates")
+    obs_seeds = parse_int_list(args.obs_seeds, "--obs-seeds")
+    strategies = parse_list(args.strategies)
+    bad_strat = [s for s in strategies if s not in ("region", "uniform")]
+    if bad_strat or not strategies:
+        # 否则 "regio" 会被 else 分支静默当成 region 臂跑掉
+        raise SystemExit(f"[FAIL] --strategies 只许 region/uniform，收到 {bad_strat or '空列表'}"
+                         f"（原值={args.strategies!r}）")
+    noise_rates = parse_int_list(args.noise_rates, "--noise-rates") if args.noise_rates.strip() else []
     jobs: list[dict] = []
     for family in parse_csv_list(args.family):
         if family not in FAMILY_SUBDIR:
@@ -275,7 +322,7 @@ def main() -> None:
     parser.add_argument("--allow-existing", action="store_true", help="目标文件已存在时跳过而非报错")
     args = parser.parse_args()
 
-    requested_seeds = [int(x) for x in args.obs_seeds.split(",") if x.strip()]
+    requested_seeds = parse_int_list(args.obs_seeds, "--obs-seeds")
     if (args.verify_committed or args.budget_only) and requested_seeds != [0]:
         # 否则会把 obs_seed=1 的抽样结果拿去和 obs_seed=0 的已入库文件比，必然"不一致"——假红
         print("[note] --verify-committed/--budget-only 只校验已入库点位，obs_seeds 已被强制为 0（原请求 %s）"

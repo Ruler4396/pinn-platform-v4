@@ -59,6 +59,35 @@ while [[ $# -gt 0 ]]; do
 done
 export SWEEP_DRY_RUN SEGMENT_TAG
 
+# ------------------------------------------------- 列表参数规范化（逗号/分号/空格都收）
+# 9/25 实例上 `--seeds 42,43,44,45,46` 被当成**一个**种子：plan 行显示"要训练=19"、
+# run 名变成 rev2609_t5c01__s42,43,...__o0、训练全失败，最后靠段末记账闸门才抱住。
+SEEDS_RAW="${SEEDS}"; OBS_SEEDS_RAW="${OBS_SEEDS}"; T6_SEEDS_RAW="${T6_SEEDS}"
+ONLY_CELLS_RAW="${ONLY_CELLS}"
+SEEDS="$(norm_list "${SEEDS}")"
+OBS_SEEDS="$(norm_list "${OBS_SEEDS}")"
+T6_SEEDS="$(norm_list "${T6_SEEDS}")"
+ONLY_CELLS="$(norm_list "${ONLY_CELLS}")"
+[[ -n "${ONLY_CELLS}" ]] && ONLY_CELLS="${ONLY_CELLS// /,}"   # cell_wanted 靠逗号包边匹配
+
+validate_sweep_lists() {
+  validate_int_list --seeds "${SEEDS_RAW}" "${SEEDS}" || return 1
+  validate_int_list --obs-seeds "${OBS_SEEDS_RAW}" "${OBS_SEEDS}" || return 1
+  validate_int_list --t6-seeds "${T6_SEEDS_RAW}" "${T6_SEEDS}" || return 1
+  if [[ -n "${ONLY_CELLS}" ]]; then
+    local -a toks=()
+    IFS=',' read -r -a toks <<<"${ONLY_CELLS}"
+    local tok
+    for tok in "${toks[@]}"; do
+      [[ "${tok}" == "t6" ]] && continue
+      [[ "${tok}" =~ ^([1-9]|1[0-9])$ ]] \
+        || { echo "[FAIL] --only-cells 只许 1..19 或 t6，收到 '${tok}'（原值='${ONLY_CELLS_RAW}'）" >&2; return 1; }
+    done
+  fi
+  echo "[args] seeds=[${SEEDS}] obs_seeds=[${OBS_SEEDS}] t6_seeds=[${T6_SEEDS}] only_cells=[${ONLY_CELLS}]"
+  return 0
+}
+
 CONTRA_TRAIN="C-base,C-train-1,C-train-2,C-train-3,C-train-4,C-train-5"
 CONTRA_VAL="C-val"
 CONTRA_TEST="C-test-1,C-test-2"

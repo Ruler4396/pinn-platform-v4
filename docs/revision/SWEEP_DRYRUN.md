@@ -228,3 +228,56 @@ python3 model/scripts/generate_observations_seeded.py --family contraction_2d,be
 
 注：本文件 §2 与 §8.3 的本地命令因此会把 dry-run 产物写到 `D:/PINN-restart/.scratch/sweep_out/`，
 不再写进仓库。
+
+## 10. 2026-09-25 · 列表参数误用的修复（`--seeds 42,43,…` 被当成一个种子）
+
+### 10.1 现场与根因
+
+实例上投主矩阵时传 `--seeds 42,43,44,45,46`：`SEEDS` 是"空格分词"的串，逗号写法整串变成**一个词** ⇒
+plan 行显示"实际要训练=19"（19 格 × 1 个"种子"），run 名 `rev2609_t5c01__s42,43,44,45,46__o0`（目录名带逗号），
+训练全部失败（无 metrics.json），`_progress_append` 里 `int(tseed)` 也吃不下。**最后是段末记账闸门抱住的**
+（`INVALID: 段 01 在账本里 0 行` + `[STOP]`），没有假装跑过 OK——这道闸今天第一次在现场起作用。
+
+### 10.2 修法（三档，全部不改判据、只把误用变成硬失败）
+
+| 位置 | 改动 |
+| --- | --- |
+| `sweep_lib.sh` 新增 `norm_list()` | 逗号/分号/Tab/换行 → 统一空格分隔、折叠重复空白；纯 bash 内建（不引外部命令、不触发 glob）。`sweep_t5.sh` 在读完参数后对 `--seeds/--obs-seeds/T6_SEEDS/--only-cells` 全部规范化，并保留原值用于报错。 |
+| `sweep_lib.sh` 新增 `validate_int_list()` | 逐项 `^[0-9]+$` 校验；**0 项也算错**（空矩阵不许当"没问题"跑过去）；不合格项连同**收到的原值**一起打印。由 `preflight()` 顶部的 `validate_sweep_lists` 钩子调用 ⇒ dry-run 同样受校验，且在 `mkdir` 之前，坏参数不会先造出目录。 |
+| `sweep_lib.sh` 新增 `assert_run_name()` | run 名字符集限定 `^[A-Za-z0-9_.-]+$`，出现在 `train_dual`/`eval_run`/`train_mlp` 三个执行入口的最前面 ⇒ 逗号/空格撑开的名字直接 `exit 1`，不会写出畸形目录。 |
+| `sweep_t5.sh` `[args]` 行 | 段首打印解析结果（`seeds=[42 43] obs_seeds=[0 1 2 3] …`），"你以为传了什么 vs 脚本实际读到什么"变成每条命令自己声明的。 |
+| `generate_observations_seeded.py` | `parse_list()` 同样支持逗号/分号/空白；`--obs-seeds` 逐项整数校验、`--rates` 校验落在 (0,1]（`--rates 5` 会被拒，而不是生成 500% 采样）、`--strategies` 只许 region/uniform（`regio` 以前会被 else 分支**静默当成 region**）。全部把原值打出来。 |
+| `--only-cells` | 逗号与空格都收，且只许 1..19 或 `t6`（`--only-cells 99` 以前会静默匹配不到任何格 ⇒ 一个单元都不跑还打印"完成"）。 |
+
+### 10.3 三行自测命令（本机实测，都不跑训练）
+
+```bash
+cd pinn-platform-v4
+bash model/scripts/sweep_t5.sh --t5 --seeds "42,43" --dry-run | grep -E "^\[args\]|实际要训练"
+bash model/scripts/sweep_t5.sh --t5 --seeds "42 43" --dry-run | grep -E "^\[args\]|实际要训练"
+# 两行输出必须逐字相同：[args] seeds=[42 43] … 与 [plan] … 实际要训练=38（19 格 × 2 种子；train 行也各 38）
+bash model/scripts/sweep_t5.sh --t5 --seeds "42,x,44" --dry-run
+# [FAIL] --seeds 含非整数项：x（收到的原值='42,x,44'）⇒ rc=1
+```
+
+同批负例（各自 rc=1，实测）：`--seeds ""` → `解析出 0 项`；`--only-cells 99` → `只许 1..19 或 t6`；
+`--prefix "rev26,09"` → `run 名不合法（只许 [A-Za-z0-9_.-]）：'rev26,09_t5c01__s42__o0'`；
+`--obs-seeds "1,x"` / `--rates 5` / `--strategies regio`（python 侧三条）。
+正例：`--obs-seeds "1 2"` 与 `"1,2"` 都排 4 个作业；回归 `--budget-only` 两族 60 组合仍 rc=0。
+
+### 10.4 「部分格完成」时 analyze_sweep.py 的行为（只核不改，探针在 `.scratch/plan_analyze_partial_probe.py`）
+
+用合成结果树（`--results-root` 指到仓外）跑 5 条断言，全部符合预期：
+
+| 输入 | 行为 |
+| --- | --- |
+| 前缀下 0 个 run | `INVALID：前缀 rev2609 在 …/pinn 下没有可解析的 run（不是'没有差异'，是根本没数据）` + rc=1 |
+| 格4 满 5 种子、格8 只有 2、格13 只有 1、另有一个 run 缺 `evaluations/` 产物 | 正常出表：`[load] 可解析 run=8，缺评估文件=1`，每格带 n 与 std，`n=1` 那格标 **`n=1 无任何统计强度`**；rc=0 |
+| 同上 + `--paired t5c04,t5c08`（本机无 scipy） | 聚合表先出，配对段明确报错要装 scipy，rc=1（不降级手算） |
+
+⇒ **可以降级出表，缺的格报 MISSING/警告而不是崩。**一处缺口要记账（本轮按"不碰其他脚本"没修）：
+`analyze_sweep.py:312` 的 `or cell_b not in grouped: continue` 会把**整臂一个 run 都没有**的那对对照
+静默跳过（实测判词只出 1 条而不是 2 条），`:162` 里 `judge()` 的"一格没有读数 ⇒ 不可判"分支因此不可达。
+中途看数的人可能把"这条没印"读成"没什么可报"。一行改法（等你点头再动）：
+把跳过条件收紧成"两臂都不在" —— `if (cell_a not in grouped and cell_b not in grouped): continue`，
+这样缺臂那对会走 `judge()` 印出「不可判：对照两臂里有一格没有读数」。

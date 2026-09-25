@@ -98,7 +98,56 @@ lint_no_recursive_delete() {  # $1=file → 命中则返回 1
   return 0
 }
 
+# ---------------------------------------------------------------- 参数规范化
+# 9/25 实例上的真实误用：`--seeds 42,43,44,45,46` 被当成**一个**种子 ⇒ plan 行显示
+# "实际要训练=19"、run 名里带逗号、训练全失败，最后靠段末记账闸门才抱住。
+# 这里做三件事：逗号/分号/空格一律规范化；逐个整数校验并把原值打出来；run 名字符集限定。
+norm_list() {  # $1=原始串 → 空格分隔、顺序保留、多空白折叠（纯 bash 内建，不碰 glob）
+  local raw="${1-}"
+  raw="${raw//,/ }"
+  raw="${raw//;/ }"
+  raw="${raw//$'\t'/ }"
+  raw="${raw//$'\n'/ }"
+  while [[ "${raw}" == *"  "* ]]; do raw="${raw//  / }"; done
+  raw="${raw# }"
+  raw="${raw% }"
+  printf '%s' "${raw}"
+}
+
+validate_int_list() {  # $1=旗标名 $2=收到的原值 $3=规范化后的列表；空列表也算错
+  local flag="$1" raw="$2" list="$3" tok bad=""
+  local -a toks=()
+  IFS=' ' read -r -a toks <<<"${list}"   # 用 read -a 拆，避免未展开变量被 glob 吃掉
+  if [[ ${#toks[@]} -eq 0 ]]; then
+    echo "[FAIL] ${flag} 解析出 0 项（收到的原值='${raw}'）⇒ 空矩阵不许当"没问题"跑过去" >&2
+    return 1
+  fi
+  for tok in "${toks[@]}"; do
+    [[ "${tok}" =~ ^[0-9]+$ ]] || bad="${bad}${bad:+ }${tok}"
+  done
+  if [[ -n "${bad}" ]]; then
+    echo "[FAIL] ${flag} 含非整数项：${bad}（收到的原值='${raw}'）" >&2
+    echo "       分隔符逗号/空格都支持，但每一项必须是不带符号的整数；不会把多值串当成单个值。" >&2
+    return 1
+  fi
+  return 0
+}
+
+assert_run_name() {  # $1=run 名：逗号/空格会把目录名与 JSONL 字段撑开，直接拒
+  local name="$1"
+  if [[ ! "${name}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    echo "[FAIL] run 名不合法（只许 [A-Za-z0-9_.-]）：'${name}' ⇒ 多半是种子/清单没被正确拆开" >&2
+    return 1
+  fi
+  return 0
+}
+
 preflight() {
+  # 参数校验必须在 mkdir 之前：坏参数不该先造出目录再报错。
+  # 具体清单由调用方定义（sweep_t5.sh 知道自己的 --seeds/--obs-seeds 是哪个变量）。
+  if declare -F validate_sweep_lists >/dev/null 2>&1; then
+    validate_sweep_lists || exit 1
+  fi
   mkdir -p "${OUT_DIR}" "${LOG_DIR}"
   local f
   for f in "${SWEEP_LIB_DIR}/sweep_t5.sh" "${SWEEP_LIB_DIR}/sweep_lib.sh"; do
@@ -230,6 +279,7 @@ train_dual() {  # $1..: name|family|train_cases|val_cases|src_train|src_val|feat
   local eval_val="$9" eval_test="${10}" cell="${11}" train_seed="${12}" obs_seed="${13}"
   local script="${14:-train_velocity_pressure_independent_strict_sparse.py}"
   local weights_preset="${15:-strict-sparse}"
+  assert_run_name "${run_name}" || exit 1
   local wall_mode="hard"
   local force_wall_mode="${16:-}"
   [[ -n "${force_wall_mode}" ]] && wall_mode="${force_wall_mode}"
@@ -312,6 +362,7 @@ train_dual() {  # $1..: name|family|train_cases|val_cases|src_train|src_val|feat
 eval_run() {  # family run_name eval_val eval_test cell train_seed obs_seed eval_source
   local family="$1" run_name="$2" eval_val="$3" eval_test="$4"
   local cell="$5" train_seed="$6" obs_seed="$7"
+  assert_run_name "${run_name}" || exit 1
   local run_dir="${PROJECT_ROOT}/results/pinn/${run_name}"
   local log="${LOG_DIR}/${run_name}_eval.log"
 
@@ -355,6 +406,7 @@ eval_run() {  # family run_name eval_val eval_test cell train_seed obs_seed eval
 # 纯监督 MLP（图5-18 的现有对照臂，只补种子与分区口径，不改结构）
 train_mlp() {
   local run_name="$1" family="$2" train_cases="$3" val_cases="$4" src="$5" cell="$6" train_seed="$7" obs_seed="$8"
+  assert_run_name "${run_name}" || exit 1
   local run_dir="${PROJECT_ROOT}/results/supervised/${run_name}"
   local log="${LOG_DIR}/${run_name}.log"
   if [[ "${SWEEP_DRY_RUN:-0}" == 1 ]]; then
