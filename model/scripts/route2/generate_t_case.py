@@ -317,19 +317,28 @@ def assert_edp_clean(text: str, name: str) -> None:
         raise ValueError(f"{name} failed the .edp lint:\n  " + "\n  ".join(problems[:12]))
 
 
+def significant_digit_roundtrip(value: float,
+                                digits: int = tg.FREEFEM_PRINT_DIGITS) -> float:
+    """The nearest double to `value` written with `digits` significant digits.
+
+    This is FreeFEM's own operation (`ofstream` ~ `%.*g`), and it must not be replaced by
+    `round(v/10**(e-d+1))*10**(e-d+1)`: multiplying back is inexact, and measured on
+    `contraction_2d/cfd/C-base/C-base_raw.csv` that variant calls only **58.5%** of the
+    `x_star` values 6-digit fixed points when the true share is **100.0%**
+    (max_dev 1.78e-15 vs 0.0 -- that artifact is the probe, not the file; 统括官 caught it
+    with `toPrecision(6)` on 2026-09-25 and his number is the one that stands).
+    """
+    return float("%.*g" % (digits, value))
+
+
 def coordinate_digits_used(rows: Sequence[Sequence[str]], cols: Sequence[str]) -> dict:
     """How many significant digits does a raw CSV actually carry?  Read, not assumed.
 
     Re-rounding a value to 6 significant digits and seeing no change is proof the file
-    was written at 6 digits; that single number tells us whether the setprecision fix
-    took effect, so the next report cannot be argued about.
+    was written at 6 digits; that single number tells us whether the precision question is
+    closed, so the next report cannot be argued about.
     """
-    def sig6(v: float) -> float:
-        if v == 0.0:
-            return 0.0
-        e = math.floor(math.log10(abs(v)))
-        q = 10.0 ** (e - 5)
-        return round(v / q) * q
+    sig6 = significant_digit_roundtrip
     out: dict = {}
     for name in cols:
         try:

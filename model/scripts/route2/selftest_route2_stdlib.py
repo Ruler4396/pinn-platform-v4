@@ -561,14 +561,9 @@ def membership_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
     # FreeFEM's ofstream prints 6 significant digits; a wall node has no slack to absorb
     # that, so nodes whose printed coordinate leaves the exact-geometry band are counted
     # as absorbed_print instead of being dropped.  Measured on our own repo file
-    # (model/cases/contraction_2d/cfd/C-base/C-base_raw.csv): 1236/2113 x_star values are
-    # fixed points of a 6-sig-digit round-trip, max |x - sig6(x)| = 1.8e-15.
-    def sig6(v: float, digits: int = 6) -> float:
-        if v == 0.0:
-            return 0.0
-        e = math.floor(math.log10(abs(v)))
-        q = 10.0 ** (e - digits + 1)
-        return round(v / q) * q
+    # (model/cases/contraction_2d/cfd/C-base/C-base_raw.csv): **all 2113/2113** x_star
+    # values are fixed points of a 6-sig-digit round trip, max |x - sig6(x)| = 0 exactly.
+    sig6 = gc.significant_digit_roundtrip
 
     def wall_nodes(h: float) -> list:
         out = []
@@ -1293,6 +1288,39 @@ def real_artefact_checks(ck: Check) -> None:
     ck.add("fixture.the_old_fixed_band_would_have_lost_them", lost == 4,
            {"outlets beyond 1e-6": lost},
            "4 of 4 real outlet nodes: the positive control for the same-ruler fix")
+
+    # ---- the digit probe, against the file that started the argument -----------------
+    # My first version of this read 58.5%; 统括官's toPrecision(6) read 100.0%.  Both were
+    # computed on the same file, and his is right: `round(v/q)*q` is not the same operation
+    # as printing 6 digits and parsing it back, and the difference is ~1e-15 of binary
+    # noise that a *fixed-point share* turns into a 41% error.  Pinned in both directions.
+    import generate_t_case as gc
+    cbase = HERE.parents[1] / "cases" / "contraction_2d" / "cfd" / "C-base" / "C-base_raw.csv"
+    ck.add("probe.the_paper_artefact_is_readable", cbase.is_file(), str(cbase),
+           "tracked file used as the 6-digit reference")
+    if cbase.is_file():
+        hdr_c, rows_c = art.read_csv_rows(cbase)
+        probe = gc.coordinate_digits_used(rows_c, hdr_c)
+        cols6 = ["x_star", "y_star", "u_star", "v_star", "p_star"]
+        all_one = all(probe[c]["share_unchanged_by_6sig_roundtrip"] == 1.0 for c in cols6)
+        zero_dev = max(probe[c]["max_abs_deviation_from_6sig"] for c in cols6) == 0.0
+        ck.add("probe.reads_100_percent_on_a_6_digit_file", all_one and zero_dev,
+               {c: probe[c]["share_unchanged_by_6sig_roundtrip"] for c in cols6},
+               "his 2113/2113 = 100.0%, max_dev 0.0 (my earlier 58.5% was the probe's own bug)")
+        # negative control, and it has to be a *different value*, not a different string:
+        # the comparison is on doubles, so printing 15.9813 as 17 digits still parses back
+        # to the same 6-digit-exact double.  pandas' own column is the honest opposite.
+        fdense = HERE.parents[1] / "cases" / "contraction_2d" / "data" / "C-base" / "field_dense.csv"
+        hdr_f, rows_f = art.read_csv_rows(fdense)
+        probe_f = gc.coordinate_digits_used(rows_f, hdr_f)
+        ck.add("probe.calls_the_pandas_column_not_6_digit",
+               probe_f["wall_distance_star"]["share_unchanged_by_6sig_roundtrip"] < 1.0
+               and probe_f["x_star"]["share_unchanged_by_6sig_roundtrip"] == 1.0,
+               {"wall_distance_star(pandas)":
+                    probe_f["wall_distance_star"]["share_unchanged_by_6sig_roundtrip"],
+                "x_star(copied from the solver)":
+                    probe_f["x_star"]["share_unchanged_by_6sig_roundtrip"]},
+               "same probe, same directory: solver text 1.0, computed column < 1.0")
 
 
 def _lens_area_note(geom: TGeometry) -> float:
