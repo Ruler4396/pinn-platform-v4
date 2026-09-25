@@ -43,7 +43,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
@@ -98,19 +98,36 @@ def load_lattice(case_root: Path, case_id: str, level: str, branch: str,
         table[(pos0[round(p[5], 9)], pos1[round(p[6], 9)])] = (p[2], p[3], p[4])
     if len(a0) < 3 or len(a1) < 3:
         raise ValueError(f"{path.name}: lattice {len(a0)}x{len(a1)} too small for FD")
-    h0 = _uniform_step(a0, path)
-    h1 = _uniform_step(a1, path)
+    h0, uni0 = _uniform_step(a0, path)
+    h1, uni1 = _uniform_step(a1, path)
     return {"branch": branch, "tag": tag, "path": path, "n0": len(a0), "n1": len(a1),
-            "h0": h0, "h1": h1, "table": table, "n_points": len(pts)}
+            "h0": h0, "h1": h1, "table": table, "n_points": len(pts),
+            "uniformity": {"xi": uni0, "eta": uni1}}
 
 
-def _uniform_step(values: Sequence[float], path: Path) -> float:
+def _uniform_step(values: Sequence[float], path: Path,
+                  tol: Optional[float] = None) -> Tuple[float, dict]:
+    """Step of a lattice axis, with uniformity judged by the file's own precision.
+
+    `tol=None` takes the derived printing bound (t_geometry.spacing_tolerance: 4 x
+    half-ulp at the largest magnitude present).  Pass `tol` explicitly only to prove the
+    guard still bites -- the self-test uses it to reject a genuine 1e-3 displacement, so
+    "we made room for rounding" can never quietly become "we stopped checking".
+    The measured spread and the bound travel with the lattice into `k0_verdict.json`.
+    """
     diffs = [b - a for a, b in zip(values, values[1:])]
     h = (values[-1] - values[0]) / (len(values) - 1)
-    if max(diffs) - min(diffs) > 1.0e-6 * max(h, 1.0e-12) + 1.0e-12:
-        raise ValueError(f"{path.name}: axis is not evenly spaced (min {min(diffs):.6g} "
-                         f"max {max(diffs):.6g}); central differences would be invalid")
-    return h
+    spread = max(diffs) - min(diffs)
+    bound = tg.spacing_tolerance(values) if tol is None else tol
+    if spread > bound:
+        raise ValueError(f"{path.name}: axis is not evenly spaced -- spread {spread:.3e} "
+                         f"exceeds the printing bound {bound:.3e} "
+                         f"(4 x half-ulp at |max|={max(abs(v) for v in values):.6g}); "
+                         f"min {min(diffs):.6g} max {max(diffs):.6g}. Central differences "
+                         f"would be invalid, so this is refused, not absorbed")
+    return h, {"step_star": h, "spread_star": spread, "printing_bound_star": bound,
+               "share_of_bound": spread / bound if bound > 0.0 else 0.0,
+               "n_nodes": len(values)}
 
 
 def lattice_residual(lat: dict, geom: tg.TGeometry) -> dict:
@@ -157,6 +174,7 @@ def lattice_residual(lat: dict, geom: tg.TGeometry) -> dict:
     if n == 0:
         raise ValueError(f"{lat['path'].name}: no usable FD stencil")
     return {"branch": lat["branch"], "tag": lat["tag"], "n_stencils": n,
+            "uniformity": lat.get("uniformity"),
             "spacing": [h0, h1], "n_points": lat["n_points"],
             "momentum_mse": mom / n, "continuity_mse": div / n,
             "lap_rms": math.sqrt(lap_sq / n), "gradp_rms": math.sqrt(grad_sq / n),
@@ -182,6 +200,13 @@ def truth_score(case_root: Path, case_id: str, level: str, geom: tg.TGeometry) -
         fine = lattice_residual(load_lattice(case_root, case_id, level, branch, "h"), geom)
         coarse = lattice_residual(load_lattice(case_root, case_id, level, branch, "h2"), geom)
         per[branch] = {"h": fine, "h2": coarse}
+    # The FD step gate below compares two scores computed on two *different* lattices
+    # (h vs 2h).  On a 6-significant-digit file the coordinates themselves carry up to
+    # 4 x half-ulp of jitter, so that comparison would mix "the stencil is right" with
+    # "the file is coarse"; publish the spread so nobody has to guess which one it saw.
+    uni = {f"{b}_{ax}_{tag}": per[b][tag]["uniformity"][ax]
+           for b in per for ax in ("xi", "eta") for tag in ("h", "h2")}
+    worst_key = max(uni, key=lambda k: uni[k]["share_of_bound"])
     w = {b: per[b]["h"]["n_stencils"] for b in per}
     tot = float(sum(w.values()))
     mom = sum(per[b]["h"]["momentum_mse"] * w[b] for b in per) / tot
@@ -192,6 +217,14 @@ def truth_score(case_root: Path, case_id: str, level: str, geom: tg.TGeometry) -
     return {"per_grid": per, "momentum_mse": mom, "continuity_mse": cont,
             "balance_ratio": math.sqrt(lap_sq / grad_sq) if grad_sq > 0 else float("inf"),
             "n_stencils": int(tot),
+            "fd_step_same_lattice": {"note": "h vs 2h are different lattices, so a change "
+                                   "here is not a pure convergence test; see axis_uniformity",
+                                     "fine_momentum_mse": mom, "coarse_momentum_mse": mom_coarse},
+            "axis_uniformity": uni,
+            "axis_uniformity_worst": {"which": worst_key,
+                                      "share_of_printing_bound": uni[worst_key]["share_of_bound"],
+                                      "spread_star": uni[worst_key]["spread_star"],
+                                      "printing_bound_star": uni[worst_key]["printing_bound_star"]},
             "fd_step_gate": rs.fd_step_convergence_gate([mom_coarse, mom])}
 
 

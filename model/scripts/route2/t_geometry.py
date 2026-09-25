@@ -655,3 +655,26 @@ def border_counts(geom: TGeometry, spacing: float, graded: bool) -> List[int]:
             n = max(8, int(round(n * 1.2)))
         counts.append(n)
     return counts
+
+
+def spacing_tolerance(values: Sequence[float],
+                      digits: int = FREEFEM_PRINT_DIGITS) -> float:
+    """The largest spread a *uniform* axis can show once it has been printed at `digits`.
+
+    Derivation, no free parameter: one printed coordinate carries at most
+    `half_ulp(|value|) = 0.5*10^(floor(log10|value|)-(digits-1))` of rounding error; a
+    spacing is the difference of two of them, so it carries at most 2*half_ulp; the spread
+    is the largest spacing minus the smallest, so its error is at most **4*half_ulp**
+    evaluated at the largest magnitude on the axis.  It is the same ruler as
+    `TGeometry.representation_bound` (which is the 2*half_ulp for one point-to-line gap)
+    times the one extra difference a spacing introduces -- hence floor at ABSORB_TOL too.
+
+    Measured, the reason this exists: the instance's `TB-base_h3_samples_branch_up_h.csv`
+    axis has min 0.0401 / max 0.040112 (spread **1.20e-05**) and the graded
+    `stem_h2` 0.16363/0.163641 (**1.10e-05**), reproduced on the laptop from the same
+    lattice; |xi|max = 4 gives 4*half_ulp = 2.0e-05 which covers both, while the test this
+    replaces demanded 4.0e-08 -- exactness a 6-digit file cannot carry, so it was reading a
+    representation artefact as "the mesh is not a lattice".
+    """
+    m = max((abs(float(v)) for v in values), default=0.0)
+    return max(ABSORB_TOL, 4.0 * TGeometry.half_ulp(m, digits))

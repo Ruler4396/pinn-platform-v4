@@ -911,7 +911,16 @@ def impedance_checks(ck: Check, summaries: Dict[str, dict], tmp: Path) -> None:
            "TB-asym = adversary table, TB-base = self-check")
 
 
-def k0_truth_side_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
+def _raises(fn) -> bool:
+    try:
+        fn()
+        return False
+    except ValueError:
+        return True
+
+
+def k0_truth_side_checks(
+        ck: Check, geom: TGeometry, tmp: Path) -> None:
     """Run the real K0 truth-half code on an exact Stokes solution written in S1 layout.
 
     The stem Poiseuille field u = 1.5(1-4y^2), v = 0, p = -12x is an exact solution of
@@ -980,6 +989,70 @@ def k0_truth_side_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
            plug["momentum_mse"] > 1.0e2, plug["momentum_mse"], "> 1e2 (|grad p| = 12)")
     ck.add("k0_truth_side.balance_ratio_flags_the_mismatch",
            abs(plug["balance_ratio"] - 1.0) > 0.5, plug["balance_ratio"], "far from 1")
+
+    # ---- the same gate against the artefact's own form: 6 significant digits ----------
+    # Everything above wrote full-precision floats, so K0 -- alone among the modules --
+    # never touched a file in the shape FreeFEM actually writes.  That is exactly how the
+    # instance found it: the 6-digit jitter on the station coordinates (spread 1.2e-5 on
+    # branch_up at h3, 1.1e-5 on the graded stem_h2) tripped `_uniform_step`, which asked
+    # for 4e-8.  So: rewrite every grid at the digits the solver prints, and let the
+    # numbers say what is representation and what is the method.
+    def rewrite_grids(digits: int) -> None:
+        def pr(v: float) -> str:
+            return "%.*g" % (digits, v)
+        for key in (STEM, UP, DOWN):
+            fr = geom.frames[key]
+            for mult, tag in ((0.05, "h"), (0.10, "h2")):
+                rows = []
+                for x, y in geom.grid_points(geom.branch_grid(key, mult)):
+                    u, v, p = field_global(x, y)
+                    xi, eta = fr.local(x, y)
+                    rows.append([pr(q) for q in (x, y, u, v, p, xi, eta)] + [fr.name])
+                art.write_csv(d / f"{case_id}_{level}_samples_{fr.name}_{tag}.csv",
+                              ["x_star", "y_star", "u_star", "v_star", "p_star", "xi",
+                               "eta", "branch"], rows)
+        for mult, tag in ((0.05, "h"), (0.10, "h2")):
+            rows = [[pr(q) for q in (x, y, *field_global(x, y), x, y)] + ["junction"]
+                    for x, y in geom.grid_points(geom.junction_grid(mult))]
+            art.write_csv(d / f"{case_id}_{level}_samples_junction_{tag}.csv",
+                          ["x_star", "y_star", "u_star", "v_star", "p_star", "xi", "eta",
+                           "branch"], rows)
+
+    rewrite_grids(6)
+    printed = kg.truth_score(root, case_id, level, geom)
+    worst = printed["axis_uniformity_worst"]
+    ck.add("k0_printed.six_digit_lattice_survives_the_uniformity_guard",
+           printed["n_stencils"] > 3000 and worst["share_of_printing_bound"] <= 1.0,
+           {"which": worst["which"], "spread": "%.2e" % worst["spread_star"],
+            "printing_bound": "%.1e" % worst["printing_bound_star"],
+            "share_of_bound": round(worst["share_of_printing_bound"], 3)},
+           "4 x half-ulp at |xi|max=4 is 2e-5; the instance saw spreads 1.2e-5 / 1.1e-5")
+    # the floor this file size implies: u is rounded to 6 digits, so the second difference
+    # carries ~4*half_ulp(u)/h^2 -- not a tuned number, and asserted below as a bound
+    rewrite_grids(7)
+    printed7 = kg.truth_score(root, case_id, level, geom)
+    ratio = printed["momentum_mse"] / max(printed7["momentum_mse"], 1e-300)
+    ck.add("k0_printed.residual_floor_is_the_printing_not_the_method",
+           printed["momentum_mse"] > 1.0e-18 and 60.0 < ratio < 170.0,
+           {"mse at 6 digits": "%.3e" % printed["momentum_mse"],
+            "mse at 7 digits": "%.3e" % printed7["momentum_mse"],
+            "ratio": round(ratio, 1),
+            "why 100": "error ~ delta_u/h^2, so mse falls 10^2 per extra printed digit"},
+           "a representation floor that falls 100x per digit is printing, not the stencil")
+    ck.add("k0_printed.guard_still_bites_a_real_displacement",
+           all(_raises(lambda vv=vals: kg._uniform_step(vv, Path("fake.csv")))
+               for vals in ([0.0, 0.05, 0.10 + 1.0e-3, 0.15],
+                            [0.0, 0.04, 0.08 - 2.0e-3, 0.12])),
+           "a 1e-3 node displacement (>> 4*half_ulp) must raise",
+           "positive control for the widened tolerance: it is derived, not loose")
+    ck.add("k0_printed.tolerance_is_the_derived_bound_not_a_fudge",
+           abs(tg.spacing_tolerance([0.0, 4.0]) - 2.0e-5) < 1e-20
+           and abs(tg.spacing_tolerance([0.0, 0.4]) - 2.0e-6) < 1e-25
+           and abs(tg.spacing_tolerance([0.0, 4.0], digits=17) - tg.ABSORB_TOL) < 1e-20,
+           {"|xi|max=4, 6 digits": tg.spacing_tolerance([0.0, 4.0]),
+            "|xi|=0.4, 6 digits": tg.spacing_tolerance([0.0, 0.4]),
+            "17 digits -> floor": tg.spacing_tolerance([0.0, 4.0], digits=17)},
+           "4*half_ulp per the derivation; at 17 digits it collapses to ABSORB_TOL")
 
 
 def meshing_checks(ck: Check, geom: TGeometry) -> None:
