@@ -292,6 +292,45 @@ class TGeometry:
     def frames_at(self, x: float, y: float, tol: float = ABSORB_TOL) -> List[int]:
         return [k for k, f in self.frames.items() if f.inside(x, y, tol=tol)]
 
+    # ------------------------------------------------- cross-section stations
+    # The .edp's section walk and the flux gate must agree on where the stations are, so
+    # the numbers are declared once, here, next to the test that decides which of them is
+    # a material cross-section.
+    STATION_STEP = 0.25
+    BRANCH_STATION_START = 0.25
+
+    def station_xis(self, key: int) -> List[float]:
+        fr = self.frames[key]
+        xi0 = 0.0 if fr.key == STEM else self.BRANCH_STATION_START
+        n = int(round((fr.length - xi0) / self.STATION_STEP)) + 1
+        return [xi0 + i * self.STATION_STEP for i in range(n)
+                if xi0 + i * self.STATION_STEP <= fr.length + 1e-12]
+
+    def section_is_material(self, key: int, xi: float, tol: float = 1.0e-9) -> bool:
+        """Is the `xi = const` segment of this frame a MATERIAL cross-section?
+
+        A section is material only when both its ends sit on a no-slip wall: then the
+        strip between two such sections is bounded by walls, and incompressibility forces
+        the flux through them to be equal.  Inside the junction the frame's rectangle is
+        still part of the union, but its side is *open into the other branch* -- the line
+        there is not a stream surface, so the flux through it legitimately differs from the
+        outlet value by an amount that no amount of mesh refinement removes.
+        """
+        fr = self.frames[key]
+        return (self.wall_distance_exact(*fr.global_xy(xi, fr.half_width)) <= tol
+                and self.wall_distance_exact(*fr.global_xy(xi, -fr.half_width)) <= tol)
+
+    def material_span_closed_form(self, key: int) -> Tuple[float, float]:
+        """The analytic [xi_lo, xi_hi] of material stations, to cross-check the geometric
+        test above: the stem ends where a branch's outer wall meets its wall line, and a
+        branch begins at the crotch where the two inner walls meet."""
+        fr = self.frames[key]
+        if fr.key == STEM:
+            return (0.0, min(self.a_outer[UP][0], self.a_outer[DOWN][0]))
+        xi_crotch = (self.frames[UP].half_width + self.frames[DOWN].half_width) \
+            * self.cos_t / (2.0 * self.sin_t)
+        return (xi_crotch, fr.length)
+
     def primary_frame(self, x: float, y: float, tol: float = ABSORB_TOL) -> int:
         """Deterministic frame assignment: the frame whose centreline is nearest.
 

@@ -63,9 +63,22 @@ class Check:
         flag = "PASS" if ok else "FAIL"
         print(f"[{flag}] {full}: value={_fmt(value)} limit={_fmt(limit)}")
 
+    def skip(self, name: str, value: object, limit: object = "") -> None:
+        """A check that could not run at all.  Counted and printed, never folded into PASS:
+        "229 green" and "223 green + 6 not attempted" are different claims, and the
+        instance/223-vs-229 gap was exactly that difference."""
+        full = self.prefix + name
+        self.rows.append({"check": full, "pass": True, "skipped": True,
+                          "value": value, "limit": limit})
+        print(f"[SKIP] {full}: value={_fmt(value)} limit={_fmt(limit)}")
+
     @property
     def failed(self) -> list[str]:
         return [r["check"] for r in self.rows if not r["pass"]]
+
+    @property
+    def skipped(self) -> list[str]:
+        return [r["check"] for r in self.rows if r.get("skipped")]
 
 
 def _fmt(v: object) -> str:
@@ -1227,6 +1240,19 @@ def runtime_path_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
                         .get("worst_rel_change"),
             "pass": plan.get("mesh_independence", {}).get("relative", {}).get("pass")},
            "the <10% gate actually computed over h1,h2")
+    q1 = plan.get("quantities_by_level", {}).get(plan["level_order"][0], {})
+    ck.add("runtime.quantities_report_gated_and_disclosed_flux",
+           q1.get("flux_stations_excluded", 0) >= 1
+           and set(q1.get("flux_per_branch", {})) == {"stem", "branch_up", "branch_down"}
+           and q1["flux_conservation_max_rel"]
+           <= q1["flux_conservation_all_stations_rel"] + 1e-15,
+           {"gated": q1.get("flux_conservation_max_rel"),
+            "all_stations": q1.get("flux_conservation_all_stations_rel"),
+            "n_gated": q1.get("flux_stations_gated"),
+            "n_excluded": q1.get("flux_stations_excluded"),
+            "excluded_xi": {b: v["excluded_xi"]
+                            for b, v in q1.get("flux_per_branch", {}).items()}},
+           "junction stations excluded from the gate, still reported per branch")
     ck.add("runtime.artefacts_landed_where_the_manifest_hashes_them",
            (out_root / "data" / geom.case.case_id / "field_dense.csv").is_file()
            and (out_root / "data" / geom.case.case_id / "mesh_independence.json").is_file()
@@ -1241,7 +1267,26 @@ def runtime_path_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
            "the column that answers 'was the 497 s process start-up' is populated")
 
 
-REAL_FIXTURE = HERE.parents[1] / "cases" / "tbif_2d" / "fixtures" / "TB-base_h1_real_rows.csv"
+def _find_tracked(name: str, *relatives: Path) -> Path:
+    """Locate a repo artefact without assuming the checkout took the whole repository.
+
+    The instance ran `git checkout <sha> -- model/scripts/route2` (my own delivery line),
+    so anything under `model/cases/` was simply not there: the fixture assertion went red
+    on Linux and 6 checks never registered (223/1 instead of 229).  The fix is to ship the
+    small artefact *inside* the delivered directory and to name, not hide, what is missing.
+    """
+    import os
+    env = Path(os.environ.get("ROUTE2_FIXTURES", "") or ".") / name
+    cands = [HERE / "fixtures" / name, env, *relatives]
+    for c in cands:
+        if c.is_file():
+            return c
+    return cands[0]
+
+
+REAL_FIXTURE_NAME = "TB-base_h1_real_rows.csv"
+CBASE_RAW_NAME = "C-base_raw.csv"
+FDENSE_NAME = "field_dense.csv"
 
 
 def real_artefact_checks(ck: Check) -> None:
@@ -1255,16 +1300,24 @@ def real_artefact_checks(ck: Check) -> None:
     """
     import generate_t_case as gc
     geom = TGeometry(case_by_id("TB-base"))
-    ck.add("fixture.solver_printed_rows_are_in_the_repository", REAL_FIXTURE.is_file(),
-           str(REAL_FIXTURE), "tracked artefact, readable on the instance")
-    if not REAL_FIXTURE.is_file():
+    REAL = _find_tracked(REAL_FIXTURE_NAME,
+                         HERE.parents[1] / "cases" / "tbif_2d" / "fixtures" / REAL_FIXTURE_NAME)
+    if not REAL.is_file():
+        ck.add("fixture.solver_printed_rows_are_in_the_repository", False, str(REAL),
+               "shipped inside model/scripts/route2/fixtures/ so the delivery line brings it")
+        for nm in ("fixture.every_token_is_a_6_significant_digit_fixed_point",
+                   "fixture.printed_outlet_vertices_are_classified_as_outlets",
+                   "fixture.the_old_fixed_band_would_have_lost_them"):
+            ck.skip(nm, "no fixture file", "cannot judge without the solver-printed rows")
         return
-    hdr, body = art.read_csv_rows(REAL_FIXTURE)
+    ck.add("fixture.solver_printed_rows_are_in_the_repository", True, str(REAL),
+           "shipped inside model/scripts/route2/fixtures/ so the delivery line brings it")
+    hdr, body = art.read_csv_rows(REAL)
     ck.add("fixture.every_token_is_a_6_significant_digit_fixed_point",
            all("%.6g" % float(t) == t for r in body for t in r if t.strip()),
            {"rows": len(body), "sample": body[0][:3]},
            "the file really is printed text, so memory floats cannot be involved")
-    dense, stats = gc.build_field_dense(REAL_FIXTURE, geom)
+    dense, stats = gc.build_field_dense(REAL, geom)
     kinds = {}
     for r in dense:
         kinds[r["boundary_type"]] = kinds.get(r["boundary_type"], 0) + 1
@@ -1294,10 +1347,19 @@ def real_artefact_checks(ck: Check) -> None:
     # computed on the same file, and his is right: `round(v/q)*q` is not the same operation
     # as printing 6 digits and parsing it back, and the difference is ~1e-15 of binary
     # noise that a *fixed-point share* turns into a 41% error.  Pinned in both directions.
-    import generate_t_case as gc
-    cbase = HERE.parents[1] / "cases" / "contraction_2d" / "cfd" / "C-base" / "C-base_raw.csv"
-    ck.add("probe.the_paper_artefact_is_readable", cbase.is_file(), str(cbase),
-           "tracked file used as the 6-digit reference")
+    cbase = _find_tracked(CBASE_RAW_NAME, HERE.parents[1] / "cases" / "contraction_2d"
+                          / "cfd" / "C-base" / CBASE_RAW_NAME)
+    if not cbase.is_file():
+        # the paper's own 2113-row artefact cannot be vendored into route2; say which
+        # checkout line brings it, and never fold "not attempted" into "passed"
+        for nm in ("probe.the_paper_artefact_is_readable",
+                   "probe.reads_100_percent_on_a_6_digit_file",
+                   "probe.calls_the_pandas_column_not_6_digit"):
+            ck.skip(nm, str(cbase),
+                    "git checkout <sha> -- model/cases/contraction_2d to run these two")
+        return
+    ck.add("probe.the_paper_artefact_is_readable", True, str(cbase),
+           "the 6-digit reference the argument was about")
     if cbase.is_file():
         hdr_c, rows_c = art.read_csv_rows(cbase)
         probe = gc.coordinate_digits_used(rows_c, hdr_c)
@@ -1310,7 +1372,12 @@ def real_artefact_checks(ck: Check) -> None:
         # negative control, and it has to be a *different value*, not a different string:
         # the comparison is on doubles, so printing 15.9813 as 17 digits still parses back
         # to the same 6-digit-exact double.  pandas' own column is the honest opposite.
-        fdense = HERE.parents[1] / "cases" / "contraction_2d" / "data" / "C-base" / "field_dense.csv"
+        fdense = _find_tracked(FDENSE_NAME, HERE.parents[1] / "cases" / "contraction_2d"
+                               / "data" / "C-base" / FDENSE_NAME)
+        if not fdense.is_file():
+            ck.skip("probe.calls_the_pandas_column_not_6_digit", str(fdense),
+                    "needs model/cases/contraction_2d/data as well")
+            return
         hdr_f, rows_f = art.read_csv_rows(fdense)
         probe_f = gc.coordinate_digits_used(rows_f, hdr_f)
         ck.add("probe.calls_the_pandas_column_not_6_digit",
@@ -1321,6 +1388,166 @@ def real_artefact_checks(ck: Check) -> None:
                 "x_star(copied from the solver)":
                     probe_f["x_star"]["share_unchanged_by_6sig_roundtrip"]},
                "same probe, same directory: solver text 1.0, computed column < 1.0")
+
+
+def flux_section_checks(ck: Check, geom: TGeometry) -> None:
+    """The `q'(xi) = 0` requirement, and which statistic sees which way of getting it wrong.
+
+    The instance read 0.1454 (TB-base) / 0.2164 (TB-asym) at the 1e-3 along-branch flux
+    gate, and the number did not shrink over four refinements -- that signature is a
+    definition, not a mesh.  Here the definition is pinned to machine precision, and the
+    two ways it can be broken (fixed axis component; junction stations) are made to fail
+    on purpose.
+    """
+    import generate_t_case as gc
+
+    c, s = geom.cos_t, geom.sin_t
+    hu, hd = geom.frames[UP].half_width, geom.frames[DOWN].half_width
+    means = {UP: 0.5, DOWN: 0.5} if geom.case.is_geometrically_symmetric else \
+        {UP: 0.55, DOWN: 0.45}
+    q_in = means[UP] * 2 * hu + means[DOWN] * 2 * hd
+    means[STEM] = q_in / (2 * geom.h_stem)
+    sol = {k: rs.Poiseuille(mean_velocity=means[k], half_width=geom.frames[k].half_width)
+           for k in (STEM, UP, DOWN)}
+
+    def section_q(key: int, xi: float, direction,
+                  eta_step: float = gc.SECTION_ETA_STEP) -> float:
+        """Q = integral of (u . direction) d eta over the section grid the .edp emits."""
+        fr = geom.frames[key]
+        etas = gc.section_eta_nodes(fr.half_width, eta_step)
+        vals = [sol[key].axial_velocity(e) * (direction[0] * fr.d[0]
+                                             + direction[1] * fr.d[1]) for e in etas]
+        return gc._trapz(vals, etas)
+
+    ck.add("flux.section_grid_ends_on_both_walls",
+           all(abs(gc.section_eta_nodes(geom.frames[k].half_width)[-1]
+                   - geom.frames[k].half_width) < 1e-15
+               and gc.section_eta_nodes(geom.frames[k].half_width)[0]
+               == -geom.frames[k].half_width
+               for k in (STEM, UP, DOWN)),
+           {geom.frames[k].name: [len(gc.section_eta_nodes(geom.frames[k].half_width)),
+                                  round(gc.section_eta_nodes(geom.frames[k].half_width)[1]
+                                        - geom.frames[k].half_width, 6)]
+            for k in (STEM, UP, DOWN)},
+           "last eta == +HW exactly (the 0.85W branch used to stop 0.01 short)")
+
+    # (1) orthonormal frame => eta really is arc length, and u.d really is the normal flux
+    ck.add("flux.frame_is_orthonormal_so_deta_is_arc_length",
+           abs(math.hypot(*geom.frames[UP].d) - 1.0) < 1e-15
+           and abs(math.hypot(*geom.frames[UP].m) - 1.0) < 1e-15
+           and abs(geom.frames[UP].d[0] * geom.frames[UP].m[0]
+                   + geom.frames[UP].d[1] * geom.frames[UP].m[1]) < 1e-15,
+           [geom.frames[UP].d, geom.frames[UP].m], "|d|=|m|=1, d.m=0 for every frame")
+
+    # (2) the geometric material test must agree with the closed-form junction geometry
+    agree, spans, excluded = True, {}, {}
+    for key in (STEM, UP, DOWN):
+        fr = geom.frames[key]
+        lo, hi = geom.material_span_closed_form(key)
+        mat = {xi: geom.section_is_material(key, xi) for xi in geom.station_xis(key)}
+        excluded[fr.name] = sorted(round(xi, 6) for xi, m in mat.items() if not m)
+        spans[fr.name] = [round(lo, 6), round(hi, 6),
+                          min([xi for xi, m in mat.items() if m], default=None),
+                          max([xi for xi, m in mat.items() if m], default=None)]
+        for xi, m in mat.items():
+            if m != (lo - 1e-12 <= xi <= hi + 1e-12):
+                agree = False
+    ck.add("flux.material_station_test_agrees_with_the_closed_form", agree,
+           {"span_and_witness": spans, "excluded_stations": excluded},
+           "geometric wall-distance test == analytic crotch / wall-end formula")
+    ck.add("flux.junction_stations_are_the_ones_excluded",
+           4.0 in excluded["stem"] and 0.25 in excluded["branch_up"]
+           and 0.25 in excluded["branch_down"]
+           and all(xi not in excluded["branch_up"] for xi in (0.5, 1.0, 4.0)),
+           excluded, "stem xi=4.0 (past the wall end) and branch xi=0.25 (before crotch)")
+
+    # (3) POSITIVE: on an exactly-conserving field, q is constant to machine precision
+    stats_all: Dict[str, dict] = {}
+    for key in (STEM, UP, DOWN):
+        fr = geom.frames[key]
+        xis = geom.station_xis(key)
+        q = {xi: section_q(key, xi, fr.d) for xi in xis}
+        flags = {xi: geom.section_is_material(key, xi) for xi in xis}
+        rel, worst = gc._conservation(q, flags)
+        rel_all, worst_all = gc._conservation(q, {xi: True for xi in xis})
+        stats_all[fr.name] = {"material": rel, "all": rel_all, "want": q[xis[-1]]}
+    ck.add("flux.q_is_constant_to_machine_precision_along_material_sections",
+           all(v["material"] < 1.0e-12 for v in stats_all.values()),
+           {k: "%.2e" % v["material"] for k, v in stats_all.items()},
+           "q'(xi)=0 within 1e-12 relative, per branch")
+
+    # (4) NEGATIVE 1: a fixed axis component instead of u.n.  This is what cos(theta) does
+    # to the branch fluxes -- it survives along-branch conservation (a constant factor) and
+    # is caught by the node closure instead, so the two statistics are pinned separately.
+    wrong_dir = (1.0, 0.0)
+    q_wrong = {fr: section_q(k, geom.station_xis(k)[-1], wrong_dir)
+               for k, fr in ((STEM, "stem"), (UP, "branch_up"), (DOWN, "branch_down"))}
+    closure_wrong = abs(q_wrong["stem"] - q_wrong["branch_up"] - q_wrong["branch_down"]) \
+        / abs(q_wrong["stem"])
+    along_wrong = 0.0
+    for key in (UP, DOWN):
+        xis = geom.station_xis(key)
+        along_wrong = max(along_wrong,
+                          gc._conservation({xi: section_q(key, xi, wrong_dir) for xi in xis},
+                                           {xi: True for xi in xis})[0])
+    right = [section_q(k, geom.station_xis(k)[-1], geom.frames[k].d)
+             for k in (STEM, UP, DOWN)]
+    closure_right = abs(right[0] - right[1] - right[2]) / abs(right[0])
+    ck.add("flux.fixed_axis_component_is_caught_by_the_node_closure",
+           closure_wrong > 1.0e-3 and closure_right < 1.0e-4 and along_wrong < 1.0e-12,
+           {"closure with u_x": round(closure_wrong, 6), "closure with u.n": closure_right,
+            "along-branch with u_x": along_wrong, "cos(theta)": round(abs(c), 6)},
+           "u_x misses the branch flux by 1-cos: closure red, conservation blind (1e-3 gate)")
+
+    # (4b) what is left in `closure with u.n` must be the trapezoid's own 1/n^2 term, not a
+    # refinement-independent bias -- that is exactly what the eta-grid truncation was.
+    def closure_at(step: float) -> float:
+        qq = [section_q(k, geom.station_xis(k)[-1], geom.frames[k].d, step)
+              for k in (STEM, UP, DOWN)]
+        return abs(qq[0] - qq[1] - qq[2]) / abs(qq[0])
+
+    c4, c16 = closure_at(0.02), closure_at(0.005)
+    # TB-base gives every section the same n, and the trapezoid's relative 1/n^2 error is
+    # the same factor on all three fluxes, so it cancels in the closure to 1e-16 already;
+    # only where n differs (TB-asym's 0.85W branch) is there a term left to watch shrink.
+    cancels = c4 < 1.0e-14
+    ck.add("flux.closure_leftover_shrinks_like_1_over_n_squared",
+           cancels or (c16 > 0.0 and 12.0 < c4 / c16 < 20.0 and c4 < 1.0e-4),
+           {"regime": "cancels (equal n on every section)" if cancels else "1/n^2 visible",
+            "with deta=0.02": "%.3e" % c4, "with deta=0.005": "%.3e" % c16,
+            "ratio": (round(c4 / c16, 2) if c16 > 0 else None)},
+           "either already machine-zero, or 4x finer eta must cut it ~16x: a residual that "
+           "refuses to shrink is a definition, not quadrature noise")
+
+    # (5) NEGATIVE 2: a junction station that is NOT a material section, perturbed by the
+    # share the instance saw.  The gate must ignore it; the disclosure column must show it.
+    stem_xis = geom.station_xis(STEM)
+    q_stem = {xi: section_q(STEM, xi, geom.frames[STEM].d) for xi in stem_xis}
+    q_stem[max(q_stem)] *= 0.85
+    flags_mat = {xi: geom.section_is_material(STEM, xi) for xi in stem_xis}
+    rel_mat, _ = gc._conservation(q_stem, flags_mat)
+    rel_all, worst_all = gc._conservation(q_stem, {xi: True for xi in stem_xis})
+    # Note what the *old* definition does with this fixture: the last stem station is both
+    # the reference AND a non-material line, so every real section is measured against the
+    # junction -- which is how the instance got 0.1454 / 0.2094 out of a conserving field.
+    ck.add("flux.junction_station_cannot_move_the_gated_number",
+           rel_mat < 1.0e-12 and abs(rel_all - (1.0 / 0.85 - 1.0)) < 1.0e-12
+           and worst_all == min(q_stem) and max(q_stem) not in
+           [xi for xi in stem_xis if geom.section_is_material(STEM, xi)],
+           {"gated (material only)": rel_mat, "disclosed (all stations)": rel_all,
+            "worst when all are used, at xi": worst_all,
+            "expected 1/0.85-1": round(1.0 / 0.85 - 1.0, 12)},
+           "a 15% defect on the non-material last station: gate 0, disclosure 0.1765 "
+           "and the reference station itself was the excluded one")
+
+    # (6) too few material stations must be an error, never a silent 0.0
+    try:
+        gc._conservation({0.0: 1.0, 0.25: 1.0}, {0.0: True, 0.25: False})
+        guard = "no exception"
+    except ValueError as exc:
+        guard = str(exc)[:46]
+    ck.add("flux.too_few_material_sections_raises", guard != "no exception", guard,
+           "anti-vacuous: 'nothing to compare' may not read as 'perfectly conserved'")
 
 
 def _lens_area_note(geom: TGeometry) -> float:
@@ -1406,6 +1633,7 @@ def main() -> int:
         tmp = tmp_root / case_id
         tmp.mkdir(parents=True, exist_ok=True)
         s1_pipeline_checks(ck, geom, tmp)
+        flux_section_checks(ck, geom)
         k0_truth_side_checks(ck, geom, tmp)
         membership_checks(ck, geom, tmp)
         runtime_path_checks(ck, geom, tmp)
@@ -1434,7 +1662,8 @@ def main() -> int:
                                "cases": summaries},
                               ensure_ascii=False, indent=2) + chr(10), encoding="utf-8")
     print(f"json={out}")
-    print(f"total={len(ck.rows)} failed={len(ck.failed)}")
+    print(f"total={len(ck.rows)} failed={len(ck.failed)} "
+          f"skipped={len(ck.skipped)}")
     if ck.failed:
         print("FAILED: " + ", ".join(ck.failed))
         return 1

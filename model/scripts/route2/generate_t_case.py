@@ -33,7 +33,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
@@ -56,8 +56,21 @@ SCRATCH_DEFAULT = (Path(__import__("os").environ["ROUTE2_OUT"]) / "s1_dryrun"
 REPO_CASE_ROOT = HERE.parents[1] / "cases" / "tbif_2d"
 SAMPLE_HEADER = "x_star,y_star,u_star,v_star,p_star,xi,eta,branch"
 SECTION_HEADER = "branch,xi,eta,x_star,y_star,u_star,v_star,p_star"
-BRANCH_STATION_START = 0.25
-STATION_STEP = 0.25
+SECTION_ETA_STEP = 0.02
+BRANCH_STATION_START = tg.TGeometry.BRANCH_STATION_START   # declared once, in t_geometry
+STATION_STEP = tg.TGeometry.STATION_STEP
+
+
+def section_eta_nodes(half_width: float, eta_step: float = SECTION_ETA_STEP) -> List[float]:
+    """The eta nodes across one section, from wall to wall, and back to the emitter.
+
+    n cells of exactly 2*HW/n so both walls are nodes: a fixed step with "break when
+    past HW" stops 0.01 short on the 0.85W branch (42.5 cells) and that truncation
+    biases the branch flux by 2.85e-4, independent of mesh refinement.
+    """
+    n = max(2, int(round(2.0 * half_width / eta_step)))
+    d = 2.0 * half_width / n
+    return [-half_width + j * d for j in range(n + 1)]
 
 
 # ----------------------------------------------------------------- FreeFEM text
@@ -73,7 +86,8 @@ def precision_prefix(var: str, digits: int) -> list[str]:
 
 
 def render_edp(geom: tg.TGeometry, case: tg.TCase, level: dict, out_dir: Path,
-               section_eta_step: float = 0.02, coord_digits: int = 17) -> str:
+               section_eta_step: float = SECTION_ETA_STEP,
+               coord_digits: int = 17) -> str:
     spacing = level["spacing"]
     counts = level["counts"]
     jx, jy = geom.j_point
@@ -248,19 +262,25 @@ def _emit_sections(geom: tg.TGeometry, prefix: Path, case: tg.TCase,
     o: List[str] = ["{",
                     f'  ofstream fo("{path.as_posix()}");',
                     *precision_prefix("fo", digits),
-                    f'  fo << "{SECTION_HEADER}" << endl;',
-                    f"  int NE = {int(round(2.0 * geom.max_half_width() / eta_step)) + 1};",
-                    f"  real DETA = {eta_step:.12g};"]
+                    f'  fo << "{SECTION_HEADER}" << endl;']
     for key in (tg.STEM, tg.UP, tg.DOWN):
         fr = geom.frames[key]
-        xi0 = 0.0 if fr.key == tg.STEM else BRANCH_STATION_START
-        n_sec = int(round((fr.length - xi0) / STATION_STEP)) + 1
+        xis = geom.station_xis(key)          # the one declaration shared with the gate
+        xi0 = xis[0]
+        n_sec = len(xis)
+        # One eta cell per frame, ending exactly on both walls.  A shared DETA = 0.02 with
+        # "break when past HW" silently stops 0.01 short on the 0.85W branch (42.5 cells),
+        # and that truncation biases the branch flux by 2.85e-4 -- refinement-independent,
+        # and it lands only on the kill-test geometry.
+        eta_nodes = section_eta_nodes(fr.half_width, eta_step)
+        n_eta = len(eta_nodes) - 1
         ox, oy = fr.origin
         o += ["  {",
               f"    real OX = {ox:.12g}; real OY = {oy:.12g};",
               f"    real DDX = {fr.d[0]:.12g}; real DDY = {fr.d[1]:.12g};",
               f"    real MDX = {fr.m[0]:.12g}; real MDY = {fr.m[1]:.12g};",
               f"    real HW = {fr.half_width:.12g};",
+              f"    int NE = {len(eta_nodes)}; real DETA = {eta_nodes[1] - eta_nodes[0]:.12g};",
               f"    for (int s = 0; s < {n_sec}; s++) {{",
               f"      real xi = {xi0:.12g} + s * {STATION_STEP:.12g};",
               "      for (int j = 0; j < NE; j++) {",
@@ -461,6 +481,12 @@ def build_field_dense(raw_path: Path, geom: tg.TGeometry) -> Tuple[List[dict], d
     return out, stats
 
 
+def _material_flags(geom: tg.TGeometry, per: dict) -> Dict[str, Dict[float, bool]]:
+    """Which stations are material cross-sections (see TGeometry.section_is_material)."""
+    return {br: {xi: geom.section_is_material(BRANCH_KEY[br], xi) for xi in tab}
+            for br, tab in per.items()}
+
+
 BRANCH_KEY = {"stem": tg.STEM, "branch_up": tg.UP, "branch_down": tg.DOWN}
 
 
@@ -486,12 +512,32 @@ def section_integrals(section_path: Path, geom: tg.TGeometry) -> dict:
             samples.sort()
             q[br][xi] = _trapz([s[1] for s in samples], [s[0] for s in samples])
             pcl[br][xi] = min(samples, key=lambda s: abs(s[0]))[2]
-    return {"q_per_section": q, "p_centreline": pcl}
+    return {"q_per_section": q, "p_centreline": pcl,
+            "material_station": _material_flags(geom, q)}
 
 
 def _trapz(vals: Sequence[float], coords: Sequence[float]) -> float:
     return sum(0.5 * (vals[i] + vals[i - 1]) * (coords[i] - coords[i - 1])
                for i in range(1, len(vals)))
+
+
+def _conservation(table: Dict[float, float], flags: Dict[float, bool]
+                  ) -> Tuple[float, Optional[float]]:
+    """max |Q(xi) - Q(outlet)| / |Q(outlet)| over the stations `flags` accepts.
+
+    Too few material stations is an error, not a zero: a gate that silently reports 0 when
+    it had nothing to compare would be the same class of mistake as the missing dict key.
+    """
+    keys = [xi for xi in sorted(table) if flags.get(xi)]
+    if len(keys) < 2:
+        raise ValueError(f"flux conservation needs >= 2 material cross-sections, got "
+                         f"{len(keys)} of {len(table)} stations; refusing to report 0.0 "
+                         f"for a comparison that was never made")
+    ref = abs(table[keys[-1]])
+    if ref <= 1.0e-12:
+        return 0.0, None
+    worst = max(keys, key=lambda xi: abs(table[xi] - ref) / ref)
+    return abs(table[worst] - ref) / ref, worst
 
 
 def quantities(summary: dict, ints: dict, junction_ps: List[float]) -> dict:
@@ -505,15 +551,30 @@ def quantities(summary: dict, ints: dict, junction_ps: List[float]) -> dict:
     p_in = _nearest(ps, 0.0)
     p_out_up, p_out_down = _nearest(pu, max(pu)), _nearest(pd, max(pd))
     p_j = sum(junction_ps) / max(len(junction_ps), 1)
-    conservation = 0.0
-    for table in (qs, qu, qd):
-        if not table:
-            continue
-        ref = abs(_nearest(table, max(table)))
-        if ref <= 1.0e-12:
-            continue
-        conservation = max(conservation,
-                           max(abs(q - ref) for q in table.values()) / ref)
+    # Along-branch flux conservation is a statement about *material* sections only: near
+    # the junction the frame's xi=const line is open on one side (it crosses into the other
+    # branch), so the flux through it legitimately differs from the outlet value by an
+    # amount refinement does not remove.  That definition -- not the mesh, not the truth --
+    # is what made the instance read 0.1454 (TB-base) / 0.2164 (TB-asym) at the 1e-3 gate.
+    # The excluded stations are still reported, never dropped.
+    mats = ints.get("material_station") or {b: {xi: True for xi in tab}
+                                            for b, tab in ints["q_per_section"].items()}
+    per_branch: Dict[str, dict] = {}
+    conservation = conservation_all = 0.0
+    n_gated = n_excluded = 0
+    for br, table in (("stem", qs), ("branch_up", qu), ("branch_down", qd)):
+        flags = mats.get(br, {})
+        rel, xi_w = _conservation(table, flags)
+        rel_all, xi_a = _conservation(table, {xi: True for xi in table})
+        excl = sorted(xi for xi in table if not flags.get(xi))
+        per_branch[br] = {"max_rel_material": rel, "worst_material_xi": xi_w,
+                          "max_rel_all_stations": rel_all, "worst_xi_all_stations": xi_a,
+                          "n_material": len(table) - len(excl), "n_excluded": len(excl),
+                          "excluded_xi": excl}
+        conservation = max(conservation, rel)
+        conservation_all = max(conservation_all, rel_all)
+        n_gated += len(table) - len(excl)
+        n_excluded += len(excl)
     return {
         "q_stem": q_in,
         "q_up": q_up_out,
@@ -524,6 +585,9 @@ def quantities(summary: dict, ints: dict, junction_ps: List[float]) -> dict:
         "split_fraction_up": q_up_out / max(q_in, 1e-12),
         "mass_closure_residual": abs(q_in - q_up_out - q_down_out) / max(abs(q_in), 1e-12),
         "flux_conservation_max_rel": conservation,
+        "flux_conservation_all_stations_rel": conservation_all,
+        "flux_per_branch": per_branch,
+        "flux_stations_gated": n_gated, "flux_stations_excluded": n_excluded,
         "q_in_edp_crosscheck": summary.get("q_in_edp"),
         "q_up_edp_crosscheck": summary.get("q_up_edp"),
         "q_down_edp_crosscheck": summary.get("q_down_edp"),
