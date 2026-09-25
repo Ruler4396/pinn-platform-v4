@@ -16,7 +16,27 @@ SWEEP_LIB_LOADED=1
 SWEEP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SWEEP_LIB_DIR}/.." && pwd)"           # = model/
 REPO_ROOT="$(cd "${PROJECT_ROOT}/.." && pwd)"
-OUT_DIR="${SWEEP_OUT_DIR:-${REPO_ROOT}/out}"
+
+# ------------------------------------------------------------ 产物落点（与脚本仓分离）
+# 默认路径**不再**是 ${REPO_ROOT}/out：9/25 本机 `sweep_t5.sh --dry-run` 在仓根生成
+# out/dryrun_argv.txt + out/logs/ 把工作区弄脏了（他两次指出目录要收干净）。
+# 选取顺序：显式 SWEEP_OUT_DIR → 实例工作区 → 仓外的 .scratch/sweep_out → 系统临时目录。
+SWEEP_WS_ROOT="${SWEEP_WS_ROOT:-/mnt/workspace/pinn-repro-2026}"
+_pick_out_dir() {
+  local -a cands=()
+  [[ -n "${SWEEP_OUT_DIR:-}" ]] && cands+=("${SWEEP_OUT_DIR}")
+  [[ -d "${SWEEP_WS_ROOT}" ]] && cands+=("${SWEEP_WS_ROOT}/out")
+  cands+=("${REPO_ROOT}/../.scratch/sweep_out" "${TMPDIR:-/tmp}/pinn-sweep-out")
+  local cand
+  for cand in "${cands[@]}"; do
+    if mkdir -p "${cand}" 2>/dev/null && ( cd "${cand}" 2>/dev/null; pwd ) 2>/dev/null; then
+      return 0
+    fi
+  done
+  echo "INVALID: 找不到可写的产物目录（依次试过：${cands[*]}）⇒ 设 SWEEP_OUT_DIR 指到仓外" >&2
+  return 1
+}
+OUT_DIR="$(_pick_out_dir)" || exit 1
 LOG_DIR="${OUT_DIR}/logs"
 PROGRESS="${OUT_DIR}/progress.jsonl"
 SEGMENT_TAG="${SWEEP_SEGMENT:-seg00}"

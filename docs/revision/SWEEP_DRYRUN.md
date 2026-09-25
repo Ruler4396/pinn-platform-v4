@@ -203,3 +203,28 @@ python3 model/scripts/generate_observations_seeded.py --family contraction_2d,be
 
 ⇒ **T5 主矩阵 19 格 × 5 `train_seed`、`obs_seed=0` 全程只吃 `cases/**/obs_*.csv` 已入库文件**，
 与本次修复无关，在跑的这段不用停。生成器的坑只影响 T6（`obs_seed=1..3`），且已修 + 桩化验过。
+
+## 9. 产物落点：仓根不许再出现 `out/`（9/25 卫生修复）
+
+`--dry-run` 曾在仓根生成 `out/dryrun_argv.txt` + `out/logs/`，把 git 工作区弄脏（`?? out/`）。
+脏工作区的代价不只是难看：段末要 `git add` 产物 push 回仓，未跟踪的 dry-run 垃圾会被一起卷进去，
+"提交里有什么"从此不可信。所以默认落点改成**与脚本仓分离**，`sweep_lib.sh:19-41` 的 `_pick_out_dir()`
+按顺序取第一个可写者：
+
+| 顺序 | 候选 | 命中条件 | 实测 |
+| --- | --- | --- | --- |
+| 1 | `$SWEEP_OUT_DIR` | 显式指定 | `OUT_DIR=/d/PINN-restart/.scratch/ovr_out` ✓ |
+| 2 | `${SWEEP_WS_ROOT:-/mnt/workspace/pinn-repro-2026}/out` | 该工作区目录存在（实例上就是这条） | 用假 ws 模拟：`…/.scratch/fake_ws/out` ✓ |
+| 3 | `<仓根的上一级>/.scratch/sweep_out` | 本机默认（**在 git 仓之外**） | `OUT_DIR=/d/PINN-restart/.scratch/sweep_out` ✓ |
+| 4 | `${TMPDIR:-/tmp}/pinn-sweep-out` | 3 也不可写时 | 未触发 |
+
+四条都不可写 ⇒ 打印 `INVALID: 找不到可写的产物目录` 并 `exit 1` —— **不退回仓根**，
+因为"退回仓根"正是这次要修的毛病。实例上如果工作区不在 `/mnt/workspace/pinn-repro-2026`，
+投递时带 `SWEEP_WS_ROOT=<你的工作区>` 或直接 `SWEEP_OUT_DIR=<产物目录>`。
+
+段首 `[plan]` 现在会把选中的目录打印出来（`OUT_DIR=…`），所以"产物到底落在哪"是每条命令自己声明的，
+不靠人记。本机自证：`bash model/scripts/sweep_t5.sh --t5 --dry-run` ⇒ 仓根 `out/` 不存在、
+`git status --porcelain` 只有被改的两个脚本（无 `??`）。
+
+注：本文件 §2 与 §8.3 的本地命令因此会把 dry-run 产物写到 `D:/PINN-restart/.scratch/sweep_out/`，
+不再写进仓库。

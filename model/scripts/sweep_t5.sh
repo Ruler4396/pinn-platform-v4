@@ -8,6 +8,10 @@
 #   bash model/scripts/sweep_t5.sh --t6 --seg 02                  # 只跑 T6 配对矩阵
 #   bash model/scripts/sweep_t5.sh --only-cells 1,2,19 --seg 03   # 只跑指定格
 #
+# 产物落点（写在仓外，不弄脏工作区；见 sweep_lib.sh:_pick_out_dir）
+#   实例：/mnt/workspace/pinn-repro-2026/out    本机：<仓的上一级>/.scratch/sweep_out
+#   覆盖：SWEEP_OUT_DIR=/path bash model/scripts/sweep_t5.sh …
+#
 # 两层种子
 #   train_seed ∈ {42..46} → 只换 --seed（初始化/批序/物理配点，见 train_*_strict_sparse.py:105-108）
 #   obs_seed   ∈ {0..3}   → 换点位：obs_seed=0 复用已入库 CSV；>0 先由
@@ -215,6 +219,7 @@ n_dup_t6=0
 echo "[plan] segment=${SEGMENT_TAG} 实际要训练=${n_planned}；铺排行=${n_planned}+${n_dup_t6} 条同名重复（运行时走 [skip-train]）（T5=${RUN_T5} T6=${RUN_T6}; n_seed=${n_seed} n_obs=${n_obs}）预算=${BUDGET_MIN}min dry-run=${SWEEP_DRY_RUN:-0}"
 echo "[plan] 串行总墙钟≈$(( eta_sec / 60 )) min；6 路并行按 1/4 折损≈$(( eta_sec / 240 )) min ⇒ 约需 $(( eta_sec / 60 / BUDGET_MIN + 1 )) 个 ${BUDGET_MIN}min 段"
 echo "[plan] 弯曲单价 ${BEND_UNIT_SEC}s（ESTIMATED=${BEND_IS_ESTIMATE}：0=已标定，1=未标定则本 ETA 不可信）"
+echo "[plan] 产物目录 OUT_DIR=${OUT_DIR}（progress/logs/segment tar 都在这，与脚本仓分离；覆盖用 SWEEP_OUT_DIR）"
 
 if [[ "${SWEEP_DRY_RUN:-0}" == 1 ]]; then
   mkdir -p "${OUT_DIR}"
