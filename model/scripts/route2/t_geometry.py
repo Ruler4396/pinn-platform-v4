@@ -24,6 +24,10 @@ Point = Tuple[float, float]
 ABSORB_TOL = 1.0e-6        # floor: what an exact-precision file needs; never the working band
 MAX_REJECT_FRAC = 5.0e-3   # above this share of rejected vertices the level halts
 FREEFEM_PRINT_DIGITS = 6   # measured: FreeFEM's ofstream writes 6 significant digits
+# The only place verdict names are declared.  Anything that counts them must derive its
+# keys from here -- defect 5 was a counter that kept a stale key and died on real meshes.
+MEMBERSHIP_VERDICTS: Tuple[str, ...] = ("frame", "absorbed_print",
+                                        "polygon_without_frame", "outside")
 STEM, UP, DOWN = 0, 1, 2
 FRAME_NAMES = {STEM: "stem", UP: "branch_up", DOWN: "branch_down"}
 

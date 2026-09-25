@@ -16,7 +16,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
+import time
 from pathlib import Path
 from typing import Dict
 
@@ -473,8 +475,6 @@ def membership_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
 
     random.seed(11)
     checked = unhandled = 0
-    for (a, b), lab in zip(geom.polygon.verts, geom.polygon.edge_ends):
-        pass
     for (a, b), lab in zip(geom.polygon.edge_ends, geom.polygon.edge_labels):
         for k in range(120):
             t = k / 119.0
@@ -493,7 +493,7 @@ def membership_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
     witness = (-1.0e-8, 0.4974937343)
     verdict, key, gap = geom.membership(*witness)
     ck.add("membership.the_shipped_witness_is_absorbed_not_lost",
-           key is not None and verdict in ("frame", "absorbed"),
+           key is not None and verdict in set(tg.MEMBERSHIP_VERDICTS) - {"outside"},
            [verdict, key, gap], "must resolve to a branch")
     # drops must be counted, never swallowed
     far = [(9.0, 0.0)]     # one genuine outlier out of 400 => counted, below the halt share
@@ -543,7 +543,7 @@ def membership_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
     dense2, stats2 = gc.build_field_dense(raw, geom)
     ck.add("membership.mesh_like_vertex_set_post_processes_clean",
            stats2["polygon_without_frame"] == 0 and len(dense2) == stats2["n_kept"] > 1000,
-           {"kept": stats2["n_kept"], "absorbed": stats2["absorbed"],
+           {"kept": stats2["n_kept"], "absorbed": stats2["absorbed_print"],
             "outside": stats2["outside"], "pwof": stats2["polygon_without_frame"]},
            "no contour-without-frame vertices")
     ck.add("bound_arithmetic_is_the_measured_half_ulp",
@@ -582,7 +582,7 @@ def membership_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
     counts = {}
     for h in (0.16, 0.08, 0.04):
         nodes = wall_nodes(h)
-        tally = {"frame": 0, "absorbed_print": 0, "outside": 0, "polygon_without_frame": 0}
+        tally = {v: 0 for v in tg.MEMBERSHIP_VERDICTS}      # derived: cannot go stale
         tally_exact = dict(tally)
         worst = 0.0
         for x, y in nodes:
@@ -638,6 +638,117 @@ def membership_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
                all(pred[h] > 0 for h in pred), {"absorbed": pred},
                "no instance totals for this case; only the count law is checked")
 
+
+    # ---- defect 5: the counter and the enum must be one source, and the input must be
+    # the artefact's own form.  None of the 194 green assertions had ever fed a real
+    # *_raw.csv to build_field_dense, so a stale counter key lived next to a membership()
+    # that returned 'absorbed_print' -- and the post-process died 500 s after the solve.
+    def print6(v: float) -> str:
+        return "%.6g" % v                      # what FreeFEM's ofstream actually writes
+
+    hdr6 = ["x_star", "y_star", "u_star", "v_star", "p_star", "bc_tag"]
+    h_probe = 0.08
+    art_rows = [[print6(x), print6(y), "1", "0", print6(-12.0 * x), "0"]
+                for x, y in wall_nodes(h_probe)]
+    n_wall = len(art_rows)
+    for i in range(70):
+        for j in range(40):
+            x, y = 8.0 * i / 69.0, -3.6 + 7.2 * j / 39.0
+            if geom.contains(x, y):
+                art_rows.append([print6(x), print6(y), "1", "0", print6(-12.0 * x), "0"])
+    printed_raw = tmp / f"printed_raw_{geom.case.case_id}.csv"
+    art.write_csv(printed_raw, hdr6, art_rows)
+    _hdr_p, body_p = art.read_csv_rows(printed_raw)
+    ck.add("defect5.the_input_really_is_six_digit_text",
+           len(body_p) == len(art_rows) > n_wall > 0
+           and all(r[0] == print6(float(r[0])) and r[1] == print6(float(r[1]))
+                   for r in body_p),
+           [len(body_p), n_wall, body_p[0][:2]],
+           "every coordinate is a fixed point of %.6g: memory floats cannot be involved")
+    dense_p, stats_p = gc.build_field_dense(printed_raw, geom)
+    ck.add("defect5.printed_artefact_runs_end_to_end_and_reports_the_three_numbers",
+           stats_p["outside"] == 0 and stats_p["absorbed_print"] > 0
+           and 0.0 < stats_p["max_absorbed_gap_star"] <= stats_p["max_absorbed_gap_bound_star"]
+           and all(v in stats_p for v in tg.MEMBERSHIP_VERDICTS)
+           and len(dense_p) == stats_p["n_kept"] == len(art_rows),
+           {"absorbed": stats_p["absorbed_print"], "outside": stats_p["outside"],
+            "max_gap_star": "%.2e" % stats_p["max_absorbed_gap_star"],
+            "bound_star": "%.2e" % stats_p["max_absorbed_gap_bound_star"],
+            "kept": stats_p["n_kept"]},
+           "outside=0, a counter for every verdict, the biggest gap swallowed <= its bound")
+
+    one = tmp / "verdict_one.csv"
+    art.write_csv(one, hdr6, [[print6(dense_p[0]["x_star"]), print6(dense_p[0]["y_star"]),
+                              "1", "0", "-12", "0"]])
+    real_membership = geom.membership
+    sweep: Dict[str, tuple] = {}
+    try:
+        for v in tg.MEMBERSHIP_VERDICTS:
+            geom.membership = (lambda x, y, _v=v: (_v, None if _v == "outside" else tg.STEM,
+                                                   9.9 if _v == "outside" else 1.0e-9))
+            try:
+                gc.build_field_dense(one, geom)
+                sweep[v] = ("returned", "")
+            except ValueError as exc:
+                sweep[v] = ("ValueError", str(exc)[:40])
+            except Exception as exc:                      # KeyError/RuntimeError = broken
+                sweep[v] = (type(exc).__name__, str(exc)[:40])
+    finally:
+        geom.membership = real_membership
+    designed = {"polygon_without_frame": "1 vertices inside the contour",
+                "outside": "rejected 1/1"}
+    ck.add("defect5.counter_keys_are_derived_from_the_verdict_enum",
+           set(sweep) == set(tg.MEMBERSHIP_VERDICTS)
+           and sweep["frame"][0] == "returned" and sweep["absorbed_print"][0] == "returned"
+           and all(sweep[k][1].startswith(t) for k, t in designed.items()),
+           {k: list(v) for k, v in sweep.items()},
+           "each verdict is counted once; the two that must halt report the count of 1")
+
+    witness_abs = next(d for d in dense_p if d["membership"] == "absorbed_print")
+    abs_row = tmp / "verdict_absorbed.csv"
+    art.write_csv(abs_row, hdr6, [[print6(witness_abs["x_star"]), print6(witness_abs["y_star"]),
+                                  "1", "0", "-12", "0"]])
+    full_enum = tg.MEMBERSHIP_VERDICTS
+    try:
+        tg.MEMBERSHIP_VERDICTS = tuple(v for v in full_enum if v != "absorbed_print")
+        try:
+            gc.build_field_dense(abs_row, geom)
+            neg = "no exception"
+        except RuntimeError as exc:
+            neg = str(exc)[:46]
+        except Exception as exc:
+            neg = "wrong type: " + type(exc).__name__
+    finally:
+        tg.MEMBERSHIP_VERDICTS = full_enum
+    pos = gc.build_field_dense(abs_row, geom)[1]
+    ck.add("defect5.deleting_a_counter_key_must_raise_by_name",
+           neg.startswith("undeclared membership verdict")
+           and pos["absorbed_print"] == 1 and pos["outside"] == 0,
+           {"with the key removed": neg, "with the enum": [pos["absorbed_print"],
+                                                           pos["outside"],
+                                                           "%.1e" % pos["max_absorbed_gap_star"]]},
+           "shrinking the enum => named RuntimeError, never a KeyError after a solved mesh")
+
+    # the command he actually types, not the function I call: `--selfcheck-raw` died on
+    # an unimported `json` once the KeyError stopped covering it up
+    import subprocess
+    proc = subprocess.run(
+        [sys.executable, str(HERE / "generate_t_case.py"), "--case", geom.case.case_id,
+         "--selfcheck-raw", str(printed_raw)],
+        capture_output=True, text=True, cwd=str(HERE))
+    try:
+        cli = json.loads(proc.stdout)["stats"]
+    except Exception as exc:                         # noqa: BLE001 - report, do not crash
+        cli = {"_unparsed": type(exc).__name__, "_stderr": proc.stderr[-160:]}
+    ck.add("defect5.selfcheck_raw_cli_runs_and_agrees_with_the_device",
+           proc.returncode == 0 and cli.get("outside") == 0
+           and cli.get("absorbed_print") == stats_p["absorbed_print"] > 0
+           and cli.get("n_kept") == stats_p["n_kept"],
+           {"rc": proc.returncode, "absorbed": cli.get("absorbed_print"),
+            "outside": cli.get("outside"),
+            "max_gap": cli.get("max_absorbed_gap_star"),
+            "device_absorbed": stats_p["absorbed_print"]},
+           "rc=0 and the same three numbers as the in-process run")
 
     ck.add("membership.reject_fraction_gate_exists",
            stats2["outside"] / max(stats2["n_vertices"], 1) <= tg.MAX_REJECT_FRAC,
@@ -891,10 +1002,353 @@ def meshing_checks(ck: Check, geom: TGeometry) -> None:
            counts["hgrade"][:2], "> half of h1 stem-wall counts")
 
 
+_OFSTREAM = re.compile(r'ofstream\s+(\w+)\("([^"]+)"\);')
+_HEADER_LINE = re.compile(r'^\s*(\w+)\s*<<\s*"([a-z_0-9,]+)"\s*<<\s*endl')
+_SUMMARY_LABEL = re.compile(r'^\s*(\w+)\s*<<\s*"([a-z_0-9_]+),"')
+
+
+def _edp_artifacts(edp: Path):
+    """(path, header) for every ofstream in a rendered .edp, in the order it writes them.
+
+    Reading the shipped script rather than a list I keep by hand is the point: if the
+    emitter renames or reorders an artefact, the stand-in solver below follows and the
+    runtime path stays covered -- defect 5 was exactly a hand-kept list going stale.
+    """
+    out, pending = [], None
+    for line in edp.read_text(encoding="utf-8").splitlines():
+        m = _OFSTREAM.search(line)
+        if m:
+            pending = (m.group(1), m.group(2))
+            continue
+        if pending:
+            h = _HEADER_LINE.match(line)
+            if h and h.group(1) == pending[0]:
+                out.append((pending[1], h.group(2)))
+                pending = None
+    return out
+
+
+def _standin_solver(geom: TGeometry, spacing: float):
+    """A fake FreeFem++ that writes the artefacts the real .edp asks for, at 6 digits.
+
+    Returns `run(cmd, *a, **kw)`; patch it over `generate_t_case.subprocess.run` to drive
+    run_case(execute=True) through every post-processing line without an instance.
+    """
+    import os
+    import subprocess
+
+    level_h = {lv["name"]: lv["spacing"] for lv in mesh_levels(spacing)}
+
+    m_up, m_down = (0.5, 0.5) if geom.case.is_geometrically_symmetric else (0.55, 0.45)
+    q_in = (m_up * 2.0 * geom.frames[UP].half_width
+            + m_down * 2.0 * geom.frames[DOWN].half_width)
+    sol_of = {STEM: rs.Poiseuille(mean_velocity=q_in / (2.0 * geom.h_stem),
+                                  half_width=geom.h_stem),
+              UP: rs.Poiseuille(mean_velocity=m_up, half_width=geom.frames[UP].half_width),
+              DOWN: rs.Poiseuille(mean_velocity=m_down,
+                                  half_width=geom.frames[DOWN].half_width)}
+
+    def print6(v: float) -> str:
+        return "%.6g" % v
+
+    def field(x: float, y: float):
+        _v, key, _g = geom.membership(x, y)
+        if key is None:
+            return None
+        fr = geom.frames[key]
+        xi, eta = fr.local(x, y)
+        u_ax = sol_of[key].axial_velocity(eta)
+        return (u_ax * fr.d[0], u_ax * fr.d[1],
+                sol_of[key].pressure(xi, p_ref=12.0 * (1.0 - xi / fr.length)), xi, eta, fr)
+
+    def vertices(h: float):
+        pts = []
+        for (a, b) in geom.polygon.edge_ends:
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            n = max(1, int(round(L / h)))
+            pts += [(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n)
+                    for k in range(n + 1)]
+        step = h / 2.0
+        nx = int(round(8.0 / step)) + 1
+        ny = int(round(7.2 / step)) + 1
+        pts += [(i * step, -3.6 + j * step) for i in range(nx) for j in range(ny)
+                if geom.contains(i * step, -3.6 + j * step)]
+        return pts
+
+    def rows_for(path: Path, header: str, text: str, h: float):
+        cols = header.split(",")
+        name = Path(path).name
+        if cols[:2] == ["x_star", "y_star"] and "bc_tag" in cols:
+            out = []
+            for x, y in vertices(h):
+                st = field(x, y)
+                if st is None:
+                    continue
+                u, v, p, xi, eta, fr = st
+                tag = 0
+                if fr.key == STEM and abs(xi) <= 1e-9:
+                    tag = 1
+                elif fr.key in (UP, DOWN) and abs(xi - fr.length) <= 1e-9:
+                    tag = 2 if fr.key == UP else 3
+                out.append([print6(t) for t in (x, y, u, v, p)] + [str(tag)])
+            return cols, out
+        if cols == ["key", "value"]:
+            labels = [_SUMMARY_LABEL.match(l).group(2)
+                      for l in text.splitlines() if _SUMMARY_LABEL.match(l)]
+            vals = {"nv": len(vertices(h)), "nt": 2 * len(vertices(h)),
+                    "q_in_edp": q_in, "q_up_edp": m_up * 2.0 * geom.frames[UP].half_width,
+                    "q_down_edp": m_down * 2.0 * geom.frames[DOWN].half_width}
+            return cols, [[l, print6(vals.get(l, 1.0))] for l in labels]
+        if cols[-1] == "branch":                 # the 8 structured sample grids
+            stem = name.split("_samples_")[1]
+            br, tag = stem.rsplit("_", 1)
+            key = {"stem": STEM, "branch_up": UP, "branch_down": DOWN}.get(br)
+            spec = (geom.junction_grid(h if tag == "h" else 2.0 * h)
+                    if key is None else geom.branch_grid(key, h if tag == "h" else 2.0 * h))
+            out = []
+            for x, y in geom.grid_points(spec):
+                st = field(x, y)
+                if st is None:
+                    continue
+                u, v, p, xi, eta, _fr = st
+                out.append([print6(t) for t in (x, y, u, v, p, xi, eta)] + [br])
+            return cols, out
+        if cols[0] == "branch":                  # cross-section profiles
+            out = []
+            for key in (STEM, UP, DOWN):
+                fr = geom.frames[key]
+                xi0 = 0.0 if key == STEM else 0.25
+                n_sta = int(round((fr.length - xi0) / 0.25)) + 1
+                for s in range(n_sta):
+                    xi = xi0 + s * 0.25
+                    j = 0
+                    eta = -fr.half_width
+                    while eta <= fr.half_width + 1e-12:
+                        x, y = fr.global_xy(xi, eta)
+                        u_ax = sol_of[key].axial_velocity(eta)
+                        out.append([fr.name] + [print6(t) for t in (
+                            xi, eta, x, y, u_ax * fr.d[0], u_ax * fr.d[1],
+                            sol_of[key].pressure(xi, p_ref=12.0 * (1.0 - xi / fr.length)))])
+                        j += 1
+                        eta = -fr.half_width + j * 0.02
+            return cols, out
+        raise AssertionError(f"stand-in solver has no writer for {name} columns {cols}")
+
+    state = {"t0": time.time(), "i": 0}
+
+    def run(cmd, *a, **kw):
+        cmd = [str(c) for c in cmd]
+        edp = next((c for c in cmd if c.endswith(".edp")), None)
+        if edp is None:                          # the manifest's version probe
+            return subprocess.CompletedProcess(cmd, 0, "4.9-fake\n", "")
+        text = Path(edp).read_text(encoding="utf-8")
+        h = level_h.get(Path(edp).stem.split("_")[-1], spacing)
+        for path, header in _edp_artifacts(Path(edp)):
+            cols, rws = rows_for(path, header, text, h)
+            art.write_csv(Path(path), cols, rws)
+            # stagger the mtimes so the plan's artifact_age_s column is tested against a
+            # known spread instead of against "the OS happened to tick"
+            state["i"] += 1
+            age = state["t0"] + 1.7 * state["i"]
+            os.utime(Path(path), (age, age))
+        return subprocess.CompletedProcess(cmd, 0, "fake solve ok\n", "")
+
+    return run
+
+
+def runtime_path_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
+    """run_case(execute=True) end to end against the stand-in solver -- the path the
+    device had never taken, which is why 194 green assertions coexisted with a product
+    that died on its first real post-process.
+    """
+    import generate_t_case as gc
+
+    out_root = tmp / "s1_runtime_subset_h1_h2"      # subset name: never a full-run name
+    levels = [lv for lv in mesh_levels(0.16) if lv["name"] in ("h1", "h2")]
+    real_exec, real_run = gc.freefem_executable, gc.subprocess.run
+    gc.freefem_executable = lambda: sys.executable
+    gc.subprocess.run = _standin_solver(geom, 0.16)
+    try:
+        res = gc.run_case(geom.case, out_root, levels, True, sigma=0.15, coord_digits=0)
+    except Exception as exc:                        # noqa: BLE001 - report, do not crash
+        res = {"plan": {"_raised": f"{type(exc).__name__}: {exc}"}}
+    finally:
+        gc.freefem_executable, gc.subprocess.run = real_exec, real_run
+    plan = res.get("plan", {})
+    ck.add("runtime.run_case_execute_true_completes", "_raised" not in plan,
+           plan.get("_raised", [e["level"] + ":" + e["status"] for e in plan.get("levels", [])]),
+           "no exception from the real solve/post-process/manifest path")
+    if "_raised" in plan:
+        return
+    ages = plan["levels"][0].get("artifact_age_s", {})
+    ck.add("runtime.artifact_age_column_is_live_and_ordered",
+           len(ages) == 11 and max(ages.values()) > 5.0
+           and sorted(ages.values())[0] > 0.0,
+           {"n": len(ages), "first": min(ages.values()), "last": max(ages.values())},
+           "11 artefacts, the staggered spread readable from it")
+    timing = plan.get("timing_s", {})
+    ck.add("runtime.stage_timers_accumulate",
+           all(k in timing for k in ("render_s", "solve_s", "postprocess_s", "manifest_s"))
+           and timing["postprocess_s"] > 0.0 and timing["solve_s"] > 0.0,
+           timing, "postprocess_s and solve_s non-zero (an inert timer would read 0.0)")
+    stats = plan["levels"][0]["dense_stats"]
+    ck.add("runtime.solved_level_reports_the_membership_triple",
+           stats["outside"] == 0 and stats["absorbed_print"] > 0
+           and stats["bc_tag_disagree"] == 0 and stats["n_kept"] == stats["n_vertices"],
+           {k: stats[k] for k in ("outside", "absorbed_print", "polygon_without_frame",
+                                  "bc_tag_disagree", "n_kept", "n_vertices")},
+           "outside=0, absorbed>0, the reader's inlet/outlet tags agree with the artefact")
+    # the paired negative: the same vertices classified with the old fixed 1e-6 band
+    raw_lvl = (out_root / "cfd" / f"{geom.case.case_id}_h1"
+               / f"{geom.case.case_id}_h1_raw.csv")
+    _h, rows_r = art.read_csv_rows(raw_lvl)
+
+    def dirichlet_count(tol_of) -> int:
+        n = 0
+        for r in rows_r:
+            x, y = float(r[0]), float(r[1])
+            _v, key, _g = geom.membership(x, y)
+            if key is None:
+                continue
+            fr = geom.frames[key]
+            xi, _eta = fr.local(x, y)
+            tol = tol_of(x, y)
+            if (fr.key in (UP, DOWN) and abs(xi - fr.length) <= tol) or \
+               (fr.key == STEM and abs(xi) <= tol):
+                n += 1
+        return n
+
+    n_old = dirichlet_count(lambda x, y: tg.ABSORB_TOL)
+    n_new = dirichlet_count(geom.representation_bound)
+    ck.add("boundary.ruler_is_the_printing_bound_not_a_fixed_band",
+           n_new > n_old > 0 and stats["bc_tag_disagree"] == 0,
+           {"with the 1e-6 band": n_old, "with the printing bound": n_new},
+           "the old band loses rotated-outlet vertices to 6-digit printing (defect 6)")
+    ck.add("runtime.mesh_gate_reached_with_two_levels",
+           len(plan.get("level_order", [])) == 2
+           and plan.get("mesh_independence", {}).get("relative", {}).get("quantities"),
+           {"levels": plan.get("level_order"),
+            "worst_rel": plan.get("mesh_independence", {}).get("relative", {})
+                        .get("worst_rel_change"),
+            "pass": plan.get("mesh_independence", {}).get("relative", {}).get("pass")},
+           "the <10% gate actually computed over h1,h2")
+    ck.add("runtime.artefacts_landed_where_the_manifest_hashes_them",
+           (out_root / "data" / geom.case.case_id / "field_dense.csv").is_file()
+           and (out_root / "data" / geom.case.case_id / "mesh_independence.json").is_file()
+           and plan.get("manifest_files", 0) >= 24,
+           plan.get("manifest_files"), ">=24 files hashed")
+    man = art.read_json(out_root / "data" / geom.case.case_id / "sha256sums.json")
+    ck.add("runtime.manifest_carries_the_freefem_startup_probe",
+           man.get("env", {}).get("freefem_version") == "4.9-fake"
+           and isinstance(man.get("env", {}).get("freefem_version_probe_wall_s"), float),
+           {k: man.get("env", {}).get(k) for k in ("freefem_version",
+                                                   "freefem_version_probe_wall_s")},
+           "the column that answers 'was the 497 s process start-up' is populated")
+
+
+REAL_FIXTURE = HERE.parents[1] / "cases" / "tbif_2d" / "fixtures" / "TB-base_h1_real_rows.csv"
+
+
+def real_artefact_checks(ck: Check) -> None:
+    """The mandated end-to-end assertion in its strongest form: a file FreeFEM itself
+    printed (committed in the repo), not coordinates I hold in memory.
+
+    It also pins defect 6, which the stand-in run found: four of these eight rows are
+    branch-outlet vertices, and on the 45-degree outlet plane 6-digit printing leaves them
+    3.0e-6 / 4.1e-6 from their own plane -- outside the fixed 1e-6 band the boundary
+    classification used, so the post-process called real Dirichlet nodes "wall".
+    """
+    import generate_t_case as gc
+    geom = TGeometry(case_by_id("TB-base"))
+    ck.add("fixture.solver_printed_rows_are_in_the_repository", REAL_FIXTURE.is_file(),
+           str(REAL_FIXTURE), "tracked artefact, readable on the instance")
+    if not REAL_FIXTURE.is_file():
+        return
+    hdr, body = art.read_csv_rows(REAL_FIXTURE)
+    ck.add("fixture.every_token_is_a_6_significant_digit_fixed_point",
+           all("%.6g" % float(t) == t for r in body for t in r if t.strip()),
+           {"rows": len(body), "sample": body[0][:3]},
+           "the file really is printed text, so memory floats cannot be involved")
+    dense, stats = gc.build_field_dense(REAL_FIXTURE, geom)
+    kinds = {}
+    for r in dense:
+        kinds[r["boundary_type"]] = kinds.get(r["boundary_type"], 0) + 1
+    ck.add("fixture.printed_outlet_vertices_are_classified_as_outlets",
+           stats["outside"] == 0 and stats["polygon_without_frame"] == 0
+           and stats["n_kept"] == len(body) == 8 and kinds == {"inlet": 4, "outlet_down": 4}
+           and stats["bc_tag_disagree"] == 0,
+           {"kinds": kinds, "absorbed": stats["absorbed_print"],
+            "max_gap": "%.3e" % stats["max_absorbed_gap_star"],
+            "bound": "%.1e" % stats["max_absorbed_gap_bound_star"]},
+           "8 kept, 4 inlet + 4 outlet_down, zero disagreement with the solver's own tags")
+    lost = 0
+    for r in dense:
+        x, y = r["x_star"], r["y_star"]
+        _v, key, _g = geom.membership(x, y)
+        fr = geom.frames[key]
+        xi, _eta = fr.local(x, y)
+        plane = abs(xi) if fr.key == STEM else abs(xi - fr.length)
+        if r["boundary_type"].startswith("outlet") and plane > tg.ABSORB_TOL:
+            lost += 1
+    ck.add("fixture.the_old_fixed_band_would_have_lost_them", lost == 4,
+           {"outlets beyond 1e-6": lost},
+           "4 of 4 real outlet nodes: the positive control for the same-ruler fix")
+
+
 def _lens_area_note(geom: TGeometry) -> float:
     if "lens_area" not in _AGREEMENT:
         _AGREEMENT.update(_polygon_matches_frames(geom))
     return _AGREEMENT["lens_area"]
+
+
+_MODULE_DUNDER = {"__name__", "__file__", "__doc__", "__all__", "__spec__", "__loader__",
+                  "__package__", "__builtins__", "__debug__"}
+
+
+def _unbound_global_refs(src: str, name: str):
+    """Names a module reads as globals but never binds anywhere -- a NameError waiting for
+    the one code path that has never been run.  Deliberately conservative: a name bound in
+    any scope counts as bound, so only genuinely-missing imports show up."""
+    import symtable
+    top = symtable.symtable(src.replace("\r\n", "\n"), name, "exec")
+    bound: set = set()
+    refs: set = set()
+
+    def visit(tbl):
+        for sym in tbl.get_symbols():
+            if sym.is_assigned() or sym.is_imported() or sym.is_namespace():
+                bound.add(sym.get_name())
+            if sym.is_global():
+                refs.add(sym.get_name())
+        for child in tbl.get_children():
+            visit(child)
+
+    visit(top)
+    import builtins
+    return sorted(refs - bound - set(dir(builtins)) - _MODULE_DUNDER)
+
+
+def module_hygiene_checks(ck: Check) -> None:
+    """Defect 5's second face: `--selfcheck-raw` also used `json` without importing it.
+
+    A branch that has never executed carries its NameError silently, and no in-process
+    assertion will ever see it.  The scan is compiled-only (stdlib symtable), so it runs
+    on the laptop, on his machine and on the instance identically.
+    """
+    offenders = {}
+    for path in sorted(HERE.glob("*.py")):
+        found = _unbound_global_refs(path.read_text(encoding="utf-8"), path.name)
+        if found:
+            offenders[path.name] = found
+    ck.add("hygiene.no_reference_to_an_unbound_module_name", offenders == {}, offenders,
+           "every global name is bound somewhere")
+    caught = _unbound_global_refs("import os\n\n\ndef f():\n    return json.dumps(1)\n",
+                                  "sample.py")
+    clean = _unbound_global_refs("import json\n\n\ndef f():\n    return json.dumps(1)\n",
+                                 "sample_ok.py")
+    ck.add("hygiene.the_scan_is_discriminative", caught == ["json"] and clean == [],
+           {"unimported": caught, "imported": clean},
+           "positive control: the first is reported, the second is not")
 
 
 def main() -> int:
@@ -926,6 +1380,7 @@ def main() -> int:
         s1_pipeline_checks(ck, geom, tmp)
         k0_truth_side_checks(ck, geom, tmp)
         membership_checks(ck, geom, tmp)
+        runtime_path_checks(ck, geom, tmp)
         meshing_checks(ck, geom)
         lens = _lens_area_note(geom)
         summaries[case_id] = {"metadata": geom.case.to_metadata(), "area": geom.area(),
@@ -938,6 +1393,8 @@ def main() -> int:
     ck.prefix = ""
     mesh_gate_checks(ck)
     k0_verdict_checks(ck)
+    module_hygiene_checks(ck)
+    real_artefact_checks(ck)
     impedance_checks(ck, summaries, tmp_root)
 
     out = Path(args.json)

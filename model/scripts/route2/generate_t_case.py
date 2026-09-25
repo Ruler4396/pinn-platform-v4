@@ -26,10 +26,12 @@ Three global refinement levels plus one junction-graded level.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -355,15 +357,14 @@ def build_field_dense(raw_path: Path, geom: tg.TGeometry) -> Tuple[List[dict], d
     header, rows = art.read_csv_rows(raw_path)
     idx = {name: i for i, name in enumerate(header)}
     out: List[dict] = []
-    stats = {"n_vertices": len(rows), "n_kept": 0, "outside": 0, "absorbed": 0,
-             "polygon_without_frame": 0, "bc_tag_disagree": 0,
+    stats = {"n_vertices": len(rows), "n_kept": 0, "bc_tag_disagree": 0,
+             **{v: 0 for v in tg.MEMBERSHIP_VERDICTS},
              "absorb_tol_floor_star": tg.ABSORB_TOL,
              "print_digits_assumed": tg.FREEFEM_PRINT_DIGITS,
              "max_reject_frac": tg.MAX_REJECT_FRAC,
              "worst_rejected": [], "max_absorbed_gap_star": 0.0,
-             "max_absorbed_gap_bound_star": 0.0}
+             "max_absorbed_gap_bound_star": 0.0, "bc_tag_disagree_examples": []}
     worst: List[Tuple[float, float, float]] = []
-    boundary_tol = tg.ABSORB_TOL      # a vertex this close to a wall line counts as on it
     for row in rows:
         x = float(row[idx["x_star"]])
         y = float(row[idx["y_star"]])
@@ -373,8 +374,15 @@ def build_field_dense(raw_path: Path, geom: tg.TGeometry) -> Tuple[List[dict], d
             stats["outside"] += 1
             worst.append((gap, x, y))
             continue
-        if verdict != "frame":
-            stats[verdict] += 1
+        if verdict not in stats:
+            # a verdict nobody declared must not surface as a KeyError halfway through a
+            # 500-second solve; say what is unknown and where it came from.  The counters
+            # are derived from tg.MEMBERSHIP_VERDICTS, so this guard cannot drift away
+            # from the enum -- the drift is what defect 5 was.
+            raise RuntimeError(f"undeclared membership verdict {verdict!r} at ({x}, {y}); "
+                               f"known: {tg.MEMBERSHIP_VERDICTS}")
+        stats[verdict] += 1
+        if verdict in ("frame", "absorbed_print"):
             if not geom.absorbed_within_bound(x, y, gap):
                 raise ValueError(
                     f"absorbed vertex ({x}, {y}) has gap {gap:.3e} above the printing "
@@ -385,6 +393,13 @@ def build_field_dense(raw_path: Path, geom: tg.TGeometry) -> Tuple[List[dict], d
                 stats["max_absorbed_gap_bound_star"] = geom.representation_bound(x, y)
         fr = geom.frames[key]
         xi, eta = fr.local(x, y)
+        # Same ruler as membership(), and for the same reason: xi/eta are linear
+        # combinations of the two printed coordinates, so on a rotated boundary (the
+        # 45-degree branch outlets) 6-digit printing displaces them by up to
+        # 2 x half-ulp -- measured 3.0e-6 and 4.1e-6 at |x| ~ 8, i.e. beyond the fixed
+        # 1e-6 band, which made the post-process call genuine outlet vertices "interior"
+        # and disagree with the solver's own boundary labels on 18 of 40 Dirichlet nodes.
+        boundary_tol = geom.representation_bound(x, y)
         btype = "interior"
         if abs(abs(eta) - fr.half_width) <= boundary_tol:
             btype = "wall"
@@ -395,6 +410,11 @@ def build_field_dense(raw_path: Path, geom: tg.TGeometry) -> Tuple[List[dict], d
         tag = int(float(row[idx["bc_tag"]]))
         if (tag in (1, 2, 3)) != (btype in ("inlet", "outlet_up", "outlet_down")):
             stats["bc_tag_disagree"] += 1
+            if len(stats["bc_tag_disagree_examples"]) < 5:
+                stats["bc_tag_disagree_examples"].append(
+                    {"x_star": x, "y_star": y, "bc_tag": tag, "classified": btype,
+                     "gap_to_own_plane": min(abs(xi), abs(xi - fr.length)),
+                     "boundary_tol_star": boundary_tol})
         dist = geom.wall_distance_exact(x, y)
         region = 0
         if math.hypot(x - geom.j_point[0], y - geom.j_point[1]) <= 1.5 * max(fr.half_width, 1e-9):
@@ -525,6 +545,8 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
     data_dir = out_root / "data" / case.case_id
     cfd_root = out_root / "cfd"
     data_dir.mkdir(parents=True, exist_ok=True)
+    timing: Dict[str, float] = {"render_s": 0.0, "solve_s": 0.0, "postprocess_s": 0.0,
+                                "manifest_s": 0.0}
     plan: dict = {"case": case.to_metadata(),
                   "geometry": {"polygon_ccw": geom.polygon.is_ccw(), "area": geom.area(),
                                "j_point": geom.j_point, "crotch": geom.crotch,
@@ -540,10 +562,14 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
         lvl_dir = cfd_root / f"{case.case_id}_{lvl['name']}"
         lvl_dir.mkdir(parents=True, exist_ok=True)
         edp = lvl_dir / f"{case.case_id}_{lvl['name']}.edp"
+        _t0 = time.perf_counter()
         text = render_edp(geom, case, lvl, lvl_dir, coord_digits=coord_digits)
+        timing["render_s"] += time.perf_counter() - _t0
         assert_edp_clean(text, edp.name)      # refuse to ship an .edp FreeFEM cannot eat
         edp.write_text(text, encoding="utf-8")
+        n_evals = _point_evaluations(geom, lvl["spacing"])
         entry = {"level": lvl["name"], "spacing_star": lvl["spacing"], "graded": lvl["graded"],
+                 "n_fem_point_evaluations": n_evals,
                  "border_counts": lvl["counts"], "edp": edp.name,
                  "edp_sha256": art.sha256_file(edp),
                  "expected": [f"{case.case_id}_{lvl['name']}{suf}.csv" for suf in
@@ -556,10 +582,12 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
             plan["levels"].append(entry)
             continue
         exe = freefem_executable()
+        _t1 = time.perf_counter()
         # `-nw` only.  `-noplot` is NOT a switch in FreeFem++ v4.9: it is parsed as an
         # input file name and every solve dies with "lex: Error input opening file"
         # (measured on the instance 2026-09-25, after I added it on a freeglut hunch).
         subprocess.run([exe, "-nw", str(edp)], check=True, cwd=str(lvl_dir))
+        timing["solve_s"] += time.perf_counter() - _t1
         raw = lvl_dir / f"{case.case_id}_{lvl['name']}_raw.csv"
         summary_p = lvl_dir / f"{case.case_id}_{lvl['name']}_summary.csv"
         sections = lvl_dir / f"{case.case_id}_{lvl['name']}_sections.csv"
@@ -569,6 +597,15 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
                 missing.append(str(lvl_dir / name))
         if missing:
             raise FileNotFoundError("FreeFEM did not produce: " + ", ".join(missing))
+        # Where the wall clock went, measured instead of guessed: the .edp writes its
+        # artefacts in stage order (raw -> summary -> 8 sample grids -> sections), so the
+        # mtimes of files FreeFEM itself created split startup+buildmesh+solve from the
+        # point-evaluation loops -- without adding any FreeFEM verb I have not run.
+        t0_art = edp.stat().st_mtime
+        produced = [raw, summary_p] + [lvl_dir / n for n in entry["expected"][3:]] + [sections]
+        entry["artifact_age_s"] = {p.name: round(p.stat().st_mtime - t0_art, 3)
+                                   for p in produced}
+        _t2 = time.perf_counter()
         dense, stats = build_field_dense(raw, geom)
         header_probe, probe_rows = art.read_csv_rows(raw)
         stats["coordinate_precision_probe"] = coordinate_digits_used(
@@ -587,6 +624,7 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
                       ["branch", "xi_star", "q_star"],
                       [[br, xi, val] for br, table in ints["q_per_section"].items()
                        for xi, val in sorted(table.items())])
+        timing["postprocess_s"] += time.perf_counter() - _t2
     if execute and plan["level_order"]:
         order = plan["level_order"]
         table = {name: [plan["quantities_by_level"][lv][name] for lv in order]
@@ -610,10 +648,49 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
                         else "FAIL -> halt: no credible truth for this geometry"),
         })
         plan["mesh_independence"] = {"relative": gate, "absolute": abs_gate}
+    _t3 = time.perf_counter()
+    plan["timing_s"] = {k: round(v, 2) for k, v in timing.items()}
+    plan["total_solve_wall_s"] = round(timing["solve_s"], 2)
     art.write_json(data_dir / "s1_plan.json", plan)
     plan["manifest_files"] = len(_manifest(out_root, case, data_dir)["files"])
     art.write_json(data_dir / "sha256sums.json", _manifest(out_root, case, data_dir))
+    timing["manifest_s"] += time.perf_counter() - _t3
+    plan["timing_s"] = {k: round(v, 2) for k, v in timing.items()}
+    art.write_json(data_dir / "s1_plan.json", plan)
+    print("timing_s=" + ", ".join(f"{k}:{v}" for k, v in plan["timing_s"].items()))
+    print("per-level FEM sample points (each costs 3 u/v/p lookups)="
+          + ", ".join(f"{e['level']}:{e['n_fem_point_evaluations']['total']}"
+                      f"=g{e['n_fem_point_evaluations']['grid_loops']}"
+                      f"+s{e['n_fem_point_evaluations']['section_stations']}"
+                      for e in plan["levels"]))
     return {"plan": plan, "data_dir": data_dir}
+
+
+def _point_evaluations(geom: tg.TGeometry, spacing: float) -> dict:
+    """How many `u(x,y)` lookups the .edp will perform, split by the loop that makes them.
+
+    FreeFEM's evaluation of a FEM function at an arbitrary point is a mesh search, so it
+    is the natural suspect for wall clock that the solver's own 0.094 s cannot explain.
+    Splitting the count matters because the two loops write different files: the mtime of
+    the sample grids vs the mtime of `sections.csv` says which of them ate the time, which
+    turns my guess into a column the next report can check against its own timer.
+    """
+    grids = stations = 0
+    for key in (tg.STEM, tg.UP, tg.DOWN):
+        for mult in (1.0, 2.0):
+            spec = geom.branch_grid(key, spacing * mult)
+            grids += spec["n_xi"] * spec["n_eta"]
+    for mult in (1.0, 2.0):
+        jspec = geom.junction_grid(spacing * mult)
+        nx = max(3, int(round((jspec["x1"] - jspec["x0"]) / jspec["spacing"])) + 1)
+        ny = max(3, int(round((jspec["y1"] - jspec["y0"]) / jspec["spacing"])) + 1)
+        grids += nx * ny
+    for key in (tg.STEM, tg.UP, tg.DOWN):
+        fr = geom.frames[key]
+        n_sta = int(round((fr.length - (0.0 if fr.key == tg.STEM else 0.25)) / 0.25)) + 1
+        stations += n_sta * (2 * int(round(fr.half_width / 0.02)) + 1)
+    return {"grid_loops": grids, "section_stations": stations,
+            "total": grids + stations}
 
 
 def _read_p(path: Path) -> List[float]:
@@ -627,17 +704,33 @@ def _read_summary(path: Path) -> dict:
     return {r[0]: float(r[1]) for r in rows if len(r) >= 2}
 
 
+_FF_PROBE: dict = {}
+
+
+def freefem_probe() -> dict:
+    """How long a bare FreeFem++ process costs in this container, measured once.
+
+    The instance spent 497 s on an h1 step whose own solve timer read 0.094 s, so the
+    question is whether the money went into process start-up or into the loops inside the
+    .edp.  This probe answers the first half; `artifact_age_s` answers the second.
+    """
+    if not _FF_PROBE:
+        _tp = time.perf_counter()
+        try:
+            proc = subprocess.run([freefem_executable(), "-nw", "-e",
+                                   "cout<<version<<endl;"],
+                                  capture_output=True, text=True, timeout=120)
+            tail = (proc.stdout + proc.stderr).strip().splitlines()
+            _FF_PROBE["freefem_version"] = tail[-1] if tail else "ran (no banner)"
+        except Exception as exc:
+            _FF_PROBE["freefem_version"] = f"unavailable: {type(exc).__name__}: {exc}"
+        _FF_PROBE["freefem_version_probe_wall_s"] = round(time.perf_counter() - _tp, 3)
+    return dict(_FF_PROBE)
+
+
 def _manifest(out_root: Path, case: tg.TCase, skip_dir: Path) -> dict:
     paths = [p for p in out_root.rglob("*") if p.is_file() and skip_dir not in p.parents]
-    env: dict = {}
-    try:
-        proc = subprocess.run([freefem_executable(), "-nw", "-e",
-                               "cout<<version<<endl;"],
-                              capture_output=True, text=True, timeout=120)
-        tail = (proc.stdout + proc.stderr).strip().splitlines()
-        env["freefem_version"] = tail[-1] if tail else "ran (no banner)"
-    except Exception as exc:
-        env["freefem_version"] = f"unavailable: {type(exc).__name__}: {exc}"
+    env: dict = freefem_probe()
     return {"case": case.to_metadata(),
             "env": art.env_lock(env),
             "files": {str(p).replace("\\", "/"): art.sha256_file(p) for p in sorted(paths)}}
