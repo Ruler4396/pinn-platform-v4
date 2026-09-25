@@ -31,7 +31,14 @@ import residual_scorers as rs                  # noqa: E402
 from t_geometry import (GEOMETRY_FEATURES, STEM, UP, DOWN, TCase, TGeometry,  # noqa: E402
                         border_counts, case_by_id, mesh_levels)
 
-DEFAULT_OUT = Path("D:/PINN-restart/.scratch/route2/selftest_k0_s1.json")
+import tempfile                                    # noqa: E402
+_IS_WINDOWS = tempfile.gettempdir().startswith(("C:", "D:"))
+# a hard-coded Windows default produced a junk file named with backslashes when the same
+# script ran on the Linux instance; the default must follow the platform
+DEFAULT_OUT = (Path("D:/PINN-restart/.scratch/route2/selftest_k0_s1.json") if _IS_WINDOWS
+               else Path(__import__("os").environ.get("ROUTE2_OUT",
+                                                      tempfile.gettempdir()))
+               / "route2_selftest_k0_s1.json")
 SIGMAS = (0.15, 0.30)
 _AGREEMENT: dict = {}
 # 1e-4 rather than 1e-8: the analytic gradient is exact but one-sided where a
@@ -679,6 +686,19 @@ def meshing_checks(ck: Check, geom: TGeometry) -> None:
                          sum(counts["h3"]) > sum(counts["h2"]) for _ in [0])
     ck.add("levels.borders_refine_monotonically", fine_vs_coarse,
            {k: sum(v) for k, v in counts.items()}, "increasing total")
+    import generate_t_case as gc
+    lvl0 = dict(mesh_levels()[0], counts=border_counts(geom, mesh_levels()[0]["spacing"], False))
+    text = gc.render_edp(geom, geom.case, lvl0, Path("lintcase"))
+    problems = gc.lint_edp(text)
+    ck.add("edp_lint.rendered_h1_is_clean", problems == [], problems[:4], "no problems")
+    sick = '  fo << "a," << xi << ","\n     << u(xx,yy) << endl;\n'
+    ck.add("edp_lint_catches_the_shipped_defect",
+           any("continuation" in p or "mid-expression" in p
+               for p in gc.lint_edp("{" + sick + "}")),
+           gc.lint_edp("{" + sick + "}")[:2], "must flag the split stream statement")
+    ck.add("edp_lint_catches_unbalanced_and_CR",
+           len(gc.lint_edp("int i = 0;\n{\n")) >= 1 and len(gc.lint_edp("a\r\n")) >= 1,
+           [gc.lint_edp("int i = 0;\n{\n"), gc.lint_edp("a\r\n")], "brace + CR flagged")
     ck.add("levels.graded_densest_near_junction",
            counts["hgrade"][:2] > [c // 2 for c in counts["h1"][:2]],
            counts["hgrade"][:2], "> half of h1 stem-wall counts")

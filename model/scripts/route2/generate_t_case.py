@@ -42,7 +42,15 @@ import residual_scorers as rs                          # noqa: E402
 import t_geometry as tg                                # noqa: E402
 
 LABEL = {"inlet": 1, "outlet_up": 2, "outlet_down": 3, "wall": 4}
-SCRATCH_DEFAULT = Path("D:/PINN-restart/.scratch/route2/s1_dryrun")
+import tempfile as _tempfile                       # noqa: E402
+# must be platform-neutral: a hard-coded "D:/..." default became a literal directory named
+# "D:" on the Linux instance.  ROUTE2_OUT wins, else the system temp dir, else the local
+# scratch tree the laptop uses.
+SCRATCH_DEFAULT = (Path(__import__("os").environ["ROUTE2_OUT"]) / "s1_dryrun"
+                   if __import__("os").environ.get("ROUTE2_OUT")
+                   else (Path("D:/PINN-restart/.scratch/route2/s1_dryrun")
+                         if _tempfile.gettempdir().startswith(("C:", "D:"))
+                         else Path(_tempfile.gettempdir()) / "route2_s1_dryrun"))
 REPO_CASE_ROOT = HERE.parents[1] / "cases" / "tbif_2d"
 SAMPLE_HEADER = "x_star,y_star,u_star,v_star,p_star,xi,eta,branch"
 SECTION_HEADER = "branch,xi,eta,x_star,y_star,u_star,v_star,p_star"
@@ -242,13 +250,53 @@ def _emit_sections(geom: tg.TGeometry, prefix: Path, case: tg.TCase,
               f"        if (eta > HW + 1e-12) break;",
               "        real xx = OX + xi * DDX + eta * MDX;",
               "        real yy = OY + xi * DDY + eta * MDY;",
-              f'        fo << "{fr.name}," << xi << "," << eta << "," << xx << "," << yy << ","',
-              "           << u(xx,yy) << "," << v(xx,yy) << "," << p(xx,yy) << endl;",
+              f'        fo << "{fr.name}," << xi << "," << eta << "," << xx << "," << yy << ","'
+              f' << u(xx,yy) << "," << v(xx,yy) << "," << p(xx,yy) << endl;',  # one line!
               "      }",
               "    }",
               "  }"]
     o += ["}", ""]
     return o
+
+
+# ------------------------------------------------------------------------ lint
+OPERATOR_START = ("<<", ">>", "&&", "||", "++", "--")
+
+
+def lint_edp(text: str) -> list[str]:
+    """Static checks on a rendered .edp, run before it is ever handed to FreeFEM.
+
+    FreeFEM's parser does not continue a statement across lines, so a stream statement
+    split in two is a hard compile error at the second line's `<<` -- which is exactly
+    how the first real S1 run died (line 293, code=1).  Catching it here costs a second
+    and does not need FreeFEM installed.
+    """
+    bad: list[str] = []
+    for n, line in enumerate(text.split("\n"), start=1):
+        t = line.strip()
+        if not t or t.startswith("//"):
+            continue
+        if t.startswith(OPERATOR_START):
+            bad.append(f"line {n}: statement continuation starts with an operator: {t[:40]!r}")
+        if "<<" in t and not t.endswith(";"):
+            bad.append(f"line {n}: stream statement does not end with ';' on one line")
+        if t.endswith((",", "<<")):
+            bad.append(f"line {n}: line ends mid-expression: {t[-20:]!r}")
+    if text.count("{") != text.count("}"):
+        bad.append(f"unbalanced braces: {text.count('{')} '{{' vs {text.count('}')} '}}'")
+    if "\r" in text:
+        bad.append("rendered .edp contains CR bytes (would break FreeFEM on Linux)")
+    for n, line in enumerate(text.split("\n"), start=1):
+        stripped = line.strip()
+        if stripped.startswith("border b") and not stripped.endswith("{"):
+            bad.append(f"line {n}: border header malformed: {stripped[:40]!r}")
+    return bad
+
+
+def assert_edp_clean(text: str, name: str) -> None:
+    problems = lint_edp(text)
+    if problems:
+        raise ValueError(f"{name} failed the .edp lint:\n  " + "\n  ".join(problems[:12]))
 
 
 # ------------------------------------------------------------------- processing
@@ -422,9 +470,10 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
             plan["levels"].append(entry)
             continue
         exe = freefem_executable()
-        # -nw = no window; -noplot because the DSW container has no X display, where
-        # freeglut otherwise prints a scary-but-harmless line on every load
-        subprocess.run([exe, "-nw", "-noplot", str(edp)], check=True, cwd=str(lvl_dir))
+        # `-nw` only.  `-noplot` is NOT a switch in FreeFem++ v4.9: it is parsed as an
+        # input file name and every solve dies with "lex: Error input opening file"
+        # (measured on the instance 2026-09-25, after I added it on a freeglut hunch).
+        subprocess.run([exe, "-nw", str(edp)], check=True, cwd=str(lvl_dir))
         raw = lvl_dir / f"{case.case_id}_{lvl['name']}_raw.csv"
         summary_p = lvl_dir / f"{case.case_id}_{lvl['name']}_summary.csv"
         sections = lvl_dir / f"{case.case_id}_{lvl['name']}_sections.csv"
@@ -493,7 +542,7 @@ def _manifest(out_root: Path, case: tg.TCase, skip_dir: Path) -> dict:
     paths = [p for p in out_root.rglob("*") if p.is_file() and skip_dir not in p.parents]
     env: dict = {}
     try:
-        proc = subprocess.run([freefem_executable(), "-nw", "-noplot", "-e",
+        proc = subprocess.run([freefem_executable(), "-nw", "-e",
                                "cout<<version<<endl;"],
                               capture_output=True, text=True, timeout=120)
         tail = (proc.stdout + proc.stderr).strip().splitlines()
