@@ -21,8 +21,9 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 Point = Tuple[float, float]
 # membership tolerances, star units (W_stem = 1).  One number, used by every predicate.
-ABSORB_TOL = 1.0e-6        # vertex within this of a frame rect is absorbed, and counted
+ABSORB_TOL = 1.0e-6        # floor: what an exact-precision file needs; never the working band
 MAX_REJECT_FRAC = 5.0e-3   # above this share of rejected vertices the level halts
+FREEFEM_PRINT_DIGITS = 6   # measured: FreeFEM's ofstream writes 6 significant digits
 STEM, UP, DOWN = 0, 1, 2
 FRAME_NAMES = {STEM: "stem", UP: "branch_up", DOWN: "branch_down"}
 
@@ -211,6 +212,24 @@ class TGeometry:
         g_eta = max(0.0, abs(eta) - fr.half_width)
         return math.hypot(g_xi, g_eta)
 
+    @staticmethod
+    def half_ulp(value: float, digits: int = FREEFEM_PRINT_DIGITS) -> float:
+        """Half the spacing of the printed decimals at this magnitude (0 if |v| < 10^(d-1))."""
+        v = abs(value)
+        if v == 0.0:
+            return 0.0
+        return 0.5 * 10.0 ** (math.floor(math.log10(v)) - (digits - 1))
+
+    def representation_bound(self, x: float, y: float) -> float:
+        """The largest gap that printing at FREEFEM_PRINT_DIGITS could possibly cause.
+
+        2 x half-ulp because a wall's normal offset sums the rounding of both stored
+        coordinates.  Anything whose gap exceeds this is NOT a printing artefact, which
+        is what turns the reverse circuit-breaker below into a real test.
+        """
+        return max(ABSORB_TOL,
+                   2.0 * max(self.half_ulp(x), self.half_ulp(y)))
+
     def membership(self, x: float, y: float,
                    absorb_tol: float = ABSORB_TOL) -> Tuple[str, Optional[int], float]:
         """The single source of truth for "is this point in the domain, and in which branch".
@@ -221,20 +240,24 @@ class TGeometry:
         FreeFEM vertex 1e-8 upstream of the inlet plane was inside the domain yet had no
         branch -- and died mid-postprocess.
         """
-        inside = [k for k, f in self.frames.items() if f.inside(x, y, tol=absorb_tol)]
-        if inside:
-            key = min(inside, key=lambda k: abs(self.frames[k].local(x, y)[1])
-                      / self.frames[k].half_width)
-            return ("frame", key, 0.0)
+        bound = self.representation_bound(x, y)
         gaps = {k: self.rect_gap(x, y, fr) for k, fr in self.frames.items()}
-        key = min(gaps, key=lambda k: gaps[k])
-        if gaps[key] <= absorb_tol:
-            return ("absorbed", key, gaps[key])
-        if self._in_polygon(x, y, absorb_tol):
-            # inside the contour yet further than absorb_tol from every rect: the contour
-            # and the frame union are supposed to coincide, so this must never happen
+        key = min(gaps, key=lambda k: (gaps[k],
+                                       abs(self.frames[k].local(x, y)[1])
+                                       / self.frames[k].half_width))
+        if gaps[key] <= absorb_tol:          # inside the rect at exact geometry
+            return ("frame", key, gaps[key])
+        if gaps[key] <= bound:               # only the printed decimals can explain this
+            return ("absorbed_print", key, gaps[key])
+        if self._in_polygon(x, y, bound):
+            # inside the contour yet farther than the printing bound from every rect:
+            # not a representation artefact -> a second source, the caller must halt
             return ("polygon_without_frame", key, gaps[key])
         return ("outside", None, min(gaps.values()))
+
+    def absorbed_within_bound(self, x: float, y: float, gap: float) -> bool:
+        """Reverse breaker: an absorbed vertex may not exceed what printing can explain."""
+        return gap <= self.representation_bound(x, y) * (1.0 + 1.0e-9)
 
     def contains(self, x: float, y: float, tol: float = ABSORB_TOL) -> bool:
         return self.membership(x, y, tol)[0] != "outside"

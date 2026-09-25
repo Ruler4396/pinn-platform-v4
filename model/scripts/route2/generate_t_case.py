@@ -60,17 +60,14 @@ STATION_STEP = 0.25
 
 # ----------------------------------------------------------------- FreeFEM text
 def precision_prefix(var: str, digits: int) -> list[str]:
-    """One statement per stream setting full coordinate precision, or nothing at all.
+    """Always empty: kept only so the emitters stay readable.
 
-    digits == 0 falls back to FreeFEM's default (~6 significant digits, which is what
-    made boundary nodes look outside the domain).  Kept switchable because the EDP
-    parser's support for `setprecision` is not verifiable on this laptop; if it is
-    refused, rerun with --coord-precision 0 and read `coordinate_digits` back from the
-    artefact instead of guessing.
+    FreeFem++ v4.9 rejects `setprecision` at compile time ("The Identifier setprecision
+    does not exist"), which killed every solve in a35a6ab.  Coordinates cannot be made
+    more precise from the .edp, so acceptance matches the file's own ruler instead --
+    see t_geometry.representation_bound and the measured FREEFEM_PRINT_DIGITS = 6.
     """
-    if digits <= 0:
-        return []
-    return [f"  {var} << setprecision({digits});"]
+    return []
 
 
 def render_edp(geom: tg.TGeometry, case: tg.TCase, level: dict, out_dir: Path,
@@ -360,8 +357,11 @@ def build_field_dense(raw_path: Path, geom: tg.TGeometry) -> Tuple[List[dict], d
     out: List[dict] = []
     stats = {"n_vertices": len(rows), "n_kept": 0, "outside": 0, "absorbed": 0,
              "polygon_without_frame": 0, "bc_tag_disagree": 0,
-             "absorb_tol_star": tg.ABSORB_TOL, "max_reject_frac": tg.MAX_REJECT_FRAC,
-             "worst_rejected": []}
+             "absorb_tol_floor_star": tg.ABSORB_TOL,
+             "print_digits_assumed": tg.FREEFEM_PRINT_DIGITS,
+             "max_reject_frac": tg.MAX_REJECT_FRAC,
+             "worst_rejected": [], "max_absorbed_gap_star": 0.0,
+             "max_absorbed_gap_bound_star": 0.0}
     worst: List[Tuple[float, float, float]] = []
     boundary_tol = tg.ABSORB_TOL      # a vertex this close to a wall line counts as on it
     for row in rows:
@@ -375,6 +375,14 @@ def build_field_dense(raw_path: Path, geom: tg.TGeometry) -> Tuple[List[dict], d
             continue
         if verdict != "frame":
             stats[verdict] += 1
+            if not geom.absorbed_within_bound(x, y, gap):
+                raise ValueError(
+                    f"absorbed vertex ({x}, {y}) has gap {gap:.3e} above the printing "
+                    f"bound {geom.representation_bound(x, y):.3e}: the band would be "
+                    f"wider than the artefact can explain -> refusing to absorb")
+            if gap > stats["max_absorbed_gap_star"]:
+                stats["max_absorbed_gap_star"] = gap
+                stats["max_absorbed_gap_bound_star"] = geom.representation_bound(x, y)
         fr = geom.frames[key]
         xi, eta = fr.local(x, y)
         btype = "interior"
@@ -400,6 +408,7 @@ def build_field_dense(raw_path: Path, geom: tg.TGeometry) -> Tuple[List[dict], d
                "p_star": float(row[idx["p_star"]]),
                "speed_star": math.hypot(float(row[idx["u_star"]]), float(row[idx["v_star"]])),
                "branch": fr.name, "membership": verdict, "rect_gap_star": gap,
+               "representation_bound_star": geom.representation_bound(x, y),
                "xi_star": xi, "eta_star": eta,
                "wall_distance_star": dist, "region_id": region,
                "is_boundary": int(btype != "interior"), "boundary_type": btype,
@@ -645,9 +654,9 @@ def main() -> int:
     ap.add_argument("--levels", default="", help="comma list, e.g. h1,h2 (default all four)")
     ap.add_argument("--base-spacing", type=float, default=0.16)
     ap.add_argument("--blend-sigma", type=float, default=0.15)
-    ap.add_argument("--coord-precision", type=int, default=17,
-                    help="significant digits requested from FreeFEM's streams; 0 keeps "
-                         "FreeFEM's default (~6), which is what lost boundary nodes")
+    ap.add_argument("--coord-precision", type=int, default=0,
+                    help="deprecated: v4.9 has no setprecision, so nothing is emitted "
+                         "into the .edp; anything > 0 is refused (it broke every solve)")
     ap.add_argument("--selfcheck-raw", default="",
                     help="run one real FreeFEM *_raw.csv through build_field_dense and "
                          "print the membership accounting; no solve, no writes")
@@ -665,6 +674,10 @@ def main() -> int:
                           "absorb_tol_star_unchanged": tg.ABSORB_TOL},
                          ensure_ascii=False, indent=2))
         return 0
+    if args.coord_precision > 0:
+        raise SystemExit("--coord-precision >0 is not available: FreeFem++ v4.9 refuses "
+                         "`setprecision` at compile time. Precision is handled by "
+                         "t_geometry.representation_bound(); leave it at 0.")
     if not (0.02 <= args.blend_sigma <= 0.5):
         raise SystemExit(f"--blend-sigma out of range: {args.blend_sigma}")
     case = tg.case_by_id(args.case)
