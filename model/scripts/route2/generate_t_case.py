@@ -305,22 +305,31 @@ def build_field_dense(raw_path: Path, geom: tg.TGeometry) -> Tuple[List[dict], d
     header, rows = art.read_csv_rows(raw_path)
     idx = {name: i for i, name in enumerate(header)}
     out: List[dict] = []
-    stats = {"n_vertices": len(rows), "n_kept": 0, "outside": 0, "bc_tag_disagree": 0}
-    tol = 1.0e-6
+    stats = {"n_vertices": len(rows), "n_kept": 0, "outside": 0, "absorbed": 0,
+             "polygon_without_frame": 0, "bc_tag_disagree": 0,
+             "absorb_tol_star": tg.ABSORB_TOL, "max_reject_frac": tg.MAX_REJECT_FRAC,
+             "worst_rejected": []}
+    worst: List[Tuple[float, float, float]] = []
+    boundary_tol = tg.ABSORB_TOL      # a vertex this close to a wall line counts as on it
     for row in rows:
         x = float(row[idx["x_star"]])
         y = float(row[idx["y_star"]])
-        if not geom.contains(x, y, tol=1.0e-6):
+        verdict, key, gap = geom.membership(x, y)
+        if key is None:
+            # dropped, but never silently: counted, and the largest gaps are kept
             stats["outside"] += 1
+            worst.append((gap, x, y))
             continue
-        fr = geom.frames[geom.primary_frame(x, y)]
+        if verdict != "frame":
+            stats[verdict] += 1
+        fr = geom.frames[key]
         xi, eta = fr.local(x, y)
         btype = "interior"
-        if abs(abs(eta) - fr.half_width) <= tol:
+        if abs(abs(eta) - fr.half_width) <= boundary_tol:
             btype = "wall"
-        if fr.key == tg.STEM and abs(xi) <= tol:
+        if fr.key == tg.STEM and abs(xi) <= boundary_tol:
             btype = "inlet"
-        if fr.key in (tg.UP, tg.DOWN) and abs(xi - fr.length) <= tol:
+        if fr.key in (tg.UP, tg.DOWN) and abs(xi - fr.length) <= boundary_tol:
             btype = "outlet_up" if fr.key == tg.UP else "outlet_down"
         tag = int(float(row[idx["bc_tag"]]))
         if (tag in (1, 2, 3)) != (btype in ("inlet", "outlet_up", "outlet_down")):
@@ -337,7 +346,8 @@ def build_field_dense(raw_path: Path, geom: tg.TGeometry) -> Tuple[List[dict], d
                "u_star": float(row[idx["u_star"]]), "v_star": float(row[idx["v_star"]]),
                "p_star": float(row[idx["p_star"]]),
                "speed_star": math.hypot(float(row[idx["u_star"]]), float(row[idx["v_star"]])),
-               "branch": fr.name, "xi_star": xi, "eta_star": eta,
+               "branch": fr.name, "membership": verdict, "rect_gap_star": gap,
+               "xi_star": xi, "eta_star": eta,
                "wall_distance_star": dist, "region_id": region,
                "is_boundary": int(btype != "interior"), "boundary_type": btype,
                "bc_tag": tag}
@@ -345,6 +355,18 @@ def build_field_dense(raw_path: Path, geom: tg.TGeometry) -> Tuple[List[dict], d
             rec["feat_" + name] = feats[name]
         out.append(rec)
     stats["n_kept"] = len(out)
+    worst.sort(reverse=True)
+    stats["worst_rejected"] = [{"gap_star": g, "x_star": x, "y_star": y}
+                               for g, x, y in worst[:10]]
+    if stats["polygon_without_frame"]:
+        # the contour and the frame union must coincide; if they don't, truth is not trusted
+        raise ValueError(f"{stats['polygon_without_frame']} vertices inside the contour but "
+                         "farther than ABSORB_TOL from every branch rect -- geometry and "
+                         "mesh disagree, halting instead of guessing a branch")
+    frac = stats["outside"] / max(stats["n_vertices"], 1)
+    if frac > tg.MAX_REJECT_FRAC:
+        raise ValueError(f"rejected {stats['outside']}/{stats['n_vertices']} vertices "
+                         f"(> {tg.MAX_REJECT_FRAC:.1%}); see worst_rejected in the stats")
     return out, stats
 
 
@@ -565,8 +587,18 @@ def main() -> int:
     ap.add_argument("--levels", default="", help="comma list, e.g. h1,h2 (default all four)")
     ap.add_argument("--base-spacing", type=float, default=0.16)
     ap.add_argument("--blend-sigma", type=float, default=0.15)
+    ap.add_argument("--selfcheck-raw", default="",
+                    help="run one real FreeFEM *_raw.csv through build_field_dense and "
+                         "print the membership accounting; no solve, no writes")
     args = ap.parse_args()
 
+    if args.selfcheck_raw:
+        case = tg.case_by_id(args.case)
+        geom = tg.TGeometry(case)
+        dense, stats = build_field_dense(Path(args.selfcheck_raw), geom)
+        print(json.dumps({"raw": args.selfcheck_raw, "stats": stats,
+                          "n_dense_rows": len(dense)}, ensure_ascii=False, indent=2))
+        return 0
     if not (0.02 <= args.blend_sigma <= 0.5):
         raise SystemExit(f"--blend-sigma out of range: {args.blend_sigma}")
     case = tg.case_by_id(args.case)

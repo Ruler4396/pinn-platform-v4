@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 Point = Tuple[float, float]
+# membership tolerances, star units (W_stem = 1).  One number, used by every predicate.
+ABSORB_TOL = 1.0e-6        # vertex within this of a frame rect is absorbed, and counted
+MAX_REJECT_FRAC = 5.0e-3   # above this share of rejected vertices the level halts
 STEM, UP, DOWN = 0, 1, 2
 FRAME_NAMES = {STEM: "stem", UP: "branch_up", DOWN: "branch_down"}
 
@@ -201,10 +204,40 @@ class TGeometry:
                        edge_labels=[e[2] for e in walk],
                        edge_ends=[(e[0], e[1]) for e in walk])
 
-    def contains(self, x: float, y: float, tol: float = 1.0e-12) -> bool:
-        if any(f.inside(x, y) for f in self.frames.values()):
-            return True
-        return self._in_polygon(x, y, tol)
+    def rect_gap(self, x: float, y: float, fr: "Frame") -> float:
+        """Distance from (x, y) to frame k's rectangle; 0.0 when it is inside it."""
+        xi, eta = fr.local(x, y)
+        g_xi = max(0.0, max(-xi, xi - fr.length))
+        g_eta = max(0.0, abs(eta) - fr.half_width)
+        return math.hypot(g_xi, g_eta)
+
+    def membership(self, x: float, y: float,
+                   absorb_tol: float = ABSORB_TOL) -> Tuple[str, Optional[int], float]:
+        """The single source of truth for "is this point in the domain, and in which branch".
+
+        Returns (verdict, frame_key, gap).  `contains`, `primary_frame` and the S1
+        post-processor all go through here: the bug this method exists to kill was
+        `contains()` accepting 1e-6 while frame membership accepted 1e-9, so a real
+        FreeFEM vertex 1e-8 upstream of the inlet plane was inside the domain yet had no
+        branch -- and died mid-postprocess.
+        """
+        inside = [k for k, f in self.frames.items() if f.inside(x, y, tol=absorb_tol)]
+        if inside:
+            key = min(inside, key=lambda k: abs(self.frames[k].local(x, y)[1])
+                      / self.frames[k].half_width)
+            return ("frame", key, 0.0)
+        gaps = {k: self.rect_gap(x, y, fr) for k, fr in self.frames.items()}
+        key = min(gaps, key=lambda k: gaps[k])
+        if gaps[key] <= absorb_tol:
+            return ("absorbed", key, gaps[key])
+        if self._in_polygon(x, y, absorb_tol):
+            # inside the contour yet further than absorb_tol from every rect: the contour
+            # and the frame union are supposed to coincide, so this must never happen
+            return ("polygon_without_frame", key, gaps[key])
+        return ("outside", None, min(gaps.values()))
+
+    def contains(self, x: float, y: float, tol: float = ABSORB_TOL) -> bool:
+        return self.membership(x, y, tol)[0] != "outside"
 
     def _in_polygon(self, x: float, y: float, tol: float) -> bool:
         verts = self.polygon.verts
@@ -229,19 +262,20 @@ class TGeometry:
             best = min(best, _dist_point_seg(x, y, a, b))
         return 0.0 if best == math.inf else best
 
-    def frames_at(self, x: float, y: float) -> List[int]:
-        return [k for k, f in self.frames.items() if f.inside(x, y)]
+    def frames_at(self, x: float, y: float, tol: float = ABSORB_TOL) -> List[int]:
+        return [k for k, f in self.frames.items() if f.inside(x, y, tol=tol)]
 
-    def primary_frame(self, x: float, y: float) -> int:
+    def primary_frame(self, x: float, y: float, tol: float = ABSORB_TOL) -> int:
         """Deterministic frame assignment: the frame whose centreline is nearest.
 
-        The stem/branch rectangles overlap in a lens around the junction, so
-        assignment is a *convention* and is recorded as such (see the design doc).
+        The stem/branch rectangles overlap in a lens around the junction, so assignment
+        is a *convention* and is recorded as such (see the design doc).  Never contradicts
+        `contains`: whatever that accepts, this resolves (possibly as "absorbed").
         """
-        cand = self.frames_at(x, y)
-        if not cand:
-            raise ValueError(f"point ({x}, {y}) outside the domain")
-        return min(cand, key=lambda k: abs(self.frames[k].local(x, y)[1]) / self.frames[k].half_width)
+        verdict, key, gap = self.membership(x, y, tol)
+        if key is None:
+            raise ValueError(f"point ({x}, {y}) outside the domain (nearest rect {gap:.3e})")
+        return key
 
     # --------------------------------------------------- blend weights (plan b)
     def chi(self, x: float, y: float, sigma: float) -> Dict[int, Tuple[float, Point]]:

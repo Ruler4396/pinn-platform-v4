@@ -28,6 +28,7 @@ import artifacts as art                             # noqa: E402
 import fd_stencils as fd                      # noqa: E402
 import impedance_baseline as ib                # noqa: E402
 import residual_scorers as rs                  # noqa: E402
+import t_geometry as tg                                     # noqa: E402
 from t_geometry import (GEOMETRY_FEATURES, STEM, UP, DOWN, TCase, TGeometry,  # noqa: E402
                         border_counts, case_by_id, mesh_levels)
 
@@ -458,6 +459,99 @@ def s1_pipeline_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
            [round(mg_bad["worst_rel_change"], 4), mg_bad["worst_quantity"]], "> 0.10 on q_up")
 
 
+def membership_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
+    """Defect 3 as a positive example: `contains` and frame assignment cannot disagree.
+
+    The real FreeFEM mesh put vertices 1e-8..1e-6 off the inlet plane; `contains` used a
+    1e-6 band while `Frame.inside` used 1e-9, so those vertices were "in the domain" with
+    no branch and the post-process died.  Sweeping the contour with jitter reproduces the
+    band by construction, so this test does not need the instance file to be meaningful --
+    and `generate_t_case.py --selfcheck-raw` exists for running the real one.
+    """
+    import random
+    import generate_t_case as gc
+
+    random.seed(11)
+    checked = unhandled = 0
+    for (a, b), lab in zip(geom.polygon.verts, geom.polygon.edge_ends):
+        pass
+    for (a, b), lab in zip(geom.polygon.edge_ends, geom.polygon.edge_labels):
+        for k in range(120):
+            t = k / 119.0
+            x, y = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
+            for eps in (0.0, 1.0e-9, 1.0e-8, 1.0e-7, 5.0e-7, 1.0e-6):
+                ang = random.uniform(0.0, 2.0 * math.pi)
+                xx, yy = x + eps * math.cos(ang), y + eps * math.sin(ang)
+                checked += 1
+                if geom.contains(xx, yy):
+                    try:
+                        geom.primary_frame(xx, yy)
+                    except ValueError:
+                        unhandled += 1
+    ck.add("membership.contains_implies_a_frame", unhandled == 0,
+           {"samples": checked, "unhandled": unhandled}, "0 unhandled")
+    witness = (-1.0e-8, 0.4974937343)
+    verdict, key, gap = geom.membership(*witness)
+    ck.add("membership.the_shipped_witness_is_absorbed_not_lost",
+           key is not None and verdict in ("frame", "absorbed"),
+           [verdict, key, gap], "must resolve to a branch")
+    # drops must be counted, never swallowed
+    far = [(9.0, 0.0)]     # one genuine outlier out of 400 => counted, below the halt share
+    rows = [[x, y, 0.0, 0.0, 0.0, 0] for x, y in far]
+    rows += [[0.2 + 0.009 * i, 0.1, 1.0, 0.0, 5.0, 0] for i in range(400)]
+    fake = tmp / "membership_raw.csv"
+    art.write_csv(fake, ["x_star", "y_star", "u_star", "v_star", "p_star", "bc_tag"], rows)
+    dense, stats = gc.build_field_dense(fake, geom)
+    ck.add("membership.rejections_are_counted_not_swallowed",
+           stats["outside"] == 1 and len(stats["worst_rejected"]) == 1
+           and stats["n_kept"] == len(dense) == 400,
+           {"outside": stats["outside"], "kept": stats["n_kept"],
+            "worst_gap": stats["worst_rejected"][0]["gap_star"]},
+           "1 counted with its gap, 400 kept")
+    # and past the halt fraction it must stop rather than quietly keep a partial truth
+    bad = [[9.0 + 0.1 * i, 4.0, 0.0, 0.0, 0.0, 0] for i in range(20)]
+    bad += [[0.5 + 0.05 * i, 0.0, 1.0, 0.0, 5.0, 0] for i in range(20)]
+    fake_bad = tmp / "membership_raw_halt.csv"
+    art.write_csv(fake_bad, ["x_star", "y_star", "u_star", "v_star", "p_star", "bc_tag"], bad)
+    try:
+        gc.build_field_dense(fake_bad, geom)
+        halted = False
+        detail = "no exception"
+    except ValueError as exc:
+        halted, detail = True, str(exc)[:70]
+    ck.add("membership.over_the_halt_fraction_it_stops", halted, detail,
+           f"> {tg.MAX_REJECT_FRAC:.1%} rejected => ValueError")
+    ck.add("membership.absorbed_points_are_labelled_in_the_output",
+           "membership" in dense[0] and "rect_gap_star" in dense[0],
+           sorted(k for k in dense[0] if k in ("membership", "rect_gap_star")), "labels present")
+    # a mesh-like vertex set: contour vertices + interior lattice, must post-process clean
+    mesh_rows = []
+    for (a, b), _ in zip(geom.polygon.edge_ends, geom.polygon.edge_labels):
+        n = 60
+        for k in range(n + 1):
+            f = k / n
+            x, y = a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f
+            mesh_rows.append([x, y, 1.0, 0.0, -12.0 * x, 0])
+    for i in range(70):
+        for j in range(40):
+            x = 8.0 * i / 69.0
+            y = -3.6 + 7.2 * j / 39.0
+            if geom.contains(x, y):
+                mesh_rows.append([x, y, 1.0, 0.0, -12.0 * x, 0])
+    raw = tmp / "mesh_like_raw.csv"
+    art.write_csv(raw, ["x_star", "y_star", "u_star", "v_star", "p_star", "bc_tag"], mesh_rows)
+    dense2, stats2 = gc.build_field_dense(raw, geom)
+    ck.add("membership.mesh_like_vertex_set_post_processes_clean",
+           stats2["polygon_without_frame"] == 0 and len(dense2) == stats2["n_kept"] > 1000,
+           {"kept": stats2["n_kept"], "absorbed": stats2["absorbed"],
+            "outside": stats2["outside"], "pwof": stats2["polygon_without_frame"]},
+           "no contour-without-frame vertices")
+    ck.add("membership.reject_fraction_gate_exists",
+           stats2["outside"] / max(stats2["n_vertices"], 1) <= tg.MAX_REJECT_FRAC,
+           [stats2["outside"], stats2["n_vertices"], tg.MAX_REJECT_FRAC],
+           "below the halt threshold")
+
+
 def impedance_checks(ck: Check, summaries: Dict[str, dict], tmp: Path) -> None:
     """S2 opponent: device checks that need no numpy, no torch and no instance time.
 
@@ -738,6 +832,7 @@ def main() -> int:
         tmp.mkdir(parents=True, exist_ok=True)
         s1_pipeline_checks(ck, geom, tmp)
         k0_truth_side_checks(ck, geom, tmp)
+        membership_checks(ck, geom, tmp)
         meshing_checks(ck, geom)
         lens = _lens_area_note(geom)
         summaries[case_id] = {"metadata": geom.case.to_metadata(), "area": geom.area(),
