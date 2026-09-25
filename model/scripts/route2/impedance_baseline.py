@@ -55,12 +55,22 @@ import t_geometry as tg                                # noqa: E402
 Point3 = Tuple[float, float, float]
 PARAM_NAMES = ("w_stem", "w_up", "w_dn", "kappa")
 KAPPA_FLOOR = 1.0e-9
+DEFAULT_STARTS: Tuple[Tuple[float, ...], ...] = ((1.0, 1.0, 1.0, 0.05),
+                                                 (0.7, 1.2, 0.9, 0.3),
+                                                 (1.3, 0.75, 1.15, 0.005))
 OBSERVABLES = ("q_in", "q_up", "q_down", "p_in", "p_junction")
-# centreline pressure stations used as the "rich data" arm of the identifiability test
-PROBE_SET: Tuple[Tuple[str, float], ...] = (
+# Ruling R2-2 (统括官 2026-09-25): two observation tiers are BOTH run, because they answer
+# different questions and dropping either creates a defect.  T-A is what a pressure/flow
+# rig actually measures; T-B is the minimal station set that removes the rank deficiency
+# *this module proves*, i.e. the station count is derived, not chosen.
+OBS_TIERS: Dict[str, Tuple[Tuple[str, float], ...]] = {"T-A": (), "T-B": (
     ("stem", 0.25), ("stem", 0.60), ("stem", 0.90),
     ("up", 0.30), ("up", 0.80), ("down", 0.30), ("down", 0.80),
-)
+)}
+NOISE_FLOOR_DEFAULT = 0.03        # 3% is the pre-registered default for both arms
+NOISE_PROVENANCE_MIN = 0.03       # anything below needs instrument provenance
+# the T-B station set, kept as a name so the identifiability report and S3 share one source
+PROBE_SET: Tuple[Tuple[str, float], ...] = OBS_TIERS["T-B"]
 
 
 # ------------------------------------------------------------------- forward map
@@ -304,19 +314,24 @@ class Fit:
         return {"theta": {n: round(v, 8) for n, v in zip(PARAM_NAMES, self.theta)},
                 "sse": self.sse, "iterations": self.iterations,
                 "converged": self.converged, "start": self.start,
-                "jtpj_eigenvalues": self.eigen, "eigenvalue_condition": ratio}
+                "jtpj_eigenvalues": self.eigen, "eigenvalue_condition": ratio,
+            "gradient_norm_inf": getattr(self, "grad_norm_inf", None),
+            "stop_reason": getattr(self, "stop_reason", "n/a")}
 
 
 LOG_BOX = {"w_stem": (math.log(0.05), math.log(5.0)), "w_up": (math.log(0.05), math.log(5.0)),
            "w_dn": (math.log(0.05), math.log(5.0)), "kappa": (math.log(1.0e-9), math.log(5.0))}
 MAX_STEP = 0.5
+GRAD_TOL = 1.0e-6      # first-order optimality on the scaled normal equations
+SSE_SINGULAR = 1.0e-24  # a noiseless-consistent target is solved exactly; count it converged
+STALL_REL = 1.0e-14
 
 
 def fit_theta(observed: Sequence[float], lengths: Dict[str, float], p_in: float,
               starts: Optional[Sequence[Sequence[float]]] = None,
               fix_kappa: Optional[float] = None,
               probes: Sequence[Tuple[str, float]] = (),
-              steps: int = 120) -> Fit:
+              steps: int = 400) -> Fit:
     """Damped Gauss-Newton in log-parameters, numerical Jacobian, multi-start.
 
     Steps are trust-region limited and the log-parameters box-clamped: with the junction
@@ -357,6 +372,7 @@ def fit_theta(observed: Sequence[float], lengths: Dict[str, float], p_in: float,
     if starts is None:
         starts = [[1.0, 1.0, 1.0, 0.05], [0.7, 1.2, 0.9, 0.3]]
     best: Optional[Fit] = None
+    per_start: List["Fit"] = []
     for start_id, start in enumerate(starts):
         x = []
         for slot, idx in enumerate(free):
@@ -365,11 +381,20 @@ def fit_theta(observed: Sequence[float], lengths: Dict[str, float], p_in: float,
         lam = 1.0e-3
         prev = sum(r * r for r in residual(x))
         converged = False
+        stop_reason = "max_iterations"
+        grad_norm = float("inf")
         used = 0
         for used in range(steps):
             r0 = residual(x)
             jac = jacobian(x)
             jtr = [sum(jac[a][i] * r0[i] for i in range(len(r0))) for a in range(len(x))]
+            grad_norm = max(abs(v) for v in jtr)          # ||J^T r||_inf, scaled residuals
+            if grad_norm < GRAD_TOL:
+                converged, stop_reason = True, "first_order_optimality"
+                break
+            if prev < SSE_SINGULAR:
+                converged, stop_reason = True, "exact_consistency"
+                break
             jtj = [[sum(jac[a][i] * jac[b][i] for i in range(len(r0)))
                     for b in range(len(x))] for a in range(len(x))]
             for a in range(len(x)):
@@ -382,15 +407,16 @@ def fit_theta(observed: Sequence[float], lengths: Dict[str, float], p_in: float,
                 delta = [d * MAX_STEP / biggest for d in delta]
             trial = [min(max(x[k] + delta[k], box[k][0]), box[k][1]) for k in range(len(x))]
             sse = sum(r * r for r in residual(trial))
-            if sse < prev * (1.0 - 1.0e-14):
+            if sse < prev * (1.0 - STALL_REL):
                 move = max(abs(trial[k] - x[k]) for k in range(len(x)))
                 x, prev, lam = trial, sse, max(lam * 0.3, 1.0e-10)
                 if move < 1.0e-10:
-                    converged = True
+                    stop_reason = "step_stall"
                     break
             else:
                 lam = min(lam * 10.0, 1.0e8)
                 if lam >= 1.0e8:
+                    stop_reason = "damping_ceiling"
                     break
         jac = jacobian(x)
         r0 = residual(x)
@@ -399,10 +425,60 @@ def fit_theta(observed: Sequence[float], lengths: Dict[str, float], p_in: float,
         vals, _ = jacobi_eigen(jtj)
         fit = Fit(to_theta(x), prev, used + 1, converged, jac, vals, start_id)
         fit.free_names = names                       # type: ignore[attr-defined]
+        fit.grad_norm_inf = grad_norm                # type: ignore[attr-defined]
+        fit.stop_reason = stop_reason                # type: ignore[attr-defined]
+        per_start.append(fit)
         if best is None or fit.sse < best.sse:
             best = fit
     assert best is not None
+    best.per_start = per_start                        # type: ignore[attr-defined]
+    best.all_converged = all(f.converged for f in per_start)   # type: ignore[attr-defined]
     return best
+
+
+def write_obs_table(path: Path, observed: Sequence[float], meta: dict) -> str:
+    """One hashed observation table that BOTH arms read (ruling R2-2 constraint 1).
+
+    The checkable assertion this exists for: impedance arm and PINN arm record the same
+    sha256 for the data they consumed.  If the two hashes differ, the "same data" claim in
+    the adversary table is false, so the file hash -- not a promise -- is the evidence.
+    """
+    import artifacts as art
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = ["index", "name", "value"]
+    rows = [[i, n, v] for i, (n, v) in enumerate(zip(OBS_NAMES_FULL, observed))]
+    art.write_csv(path, header, rows)
+    path.with_suffix(".meta.json").write_text(json.dumps(meta, ensure_ascii=False,
+                                                         indent=2) + "\n", encoding="utf-8")
+    return art.sha256_file(path)
+
+
+def read_obs_table(path: Path) -> Tuple[List[float], dict, str]:
+    import artifacts as art
+    header, rows = art.read_csv_rows(path)
+    if header[:3] != ["index", "name", "value"]:
+        raise ValueError(f"{path}: not a route-2 observation table (header {header[:3]})")
+    observed = [float(r[2]) for r in sorted(rows, key=lambda r: int(r[0]))]
+    meta_path = path.with_suffix(".meta.json")
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    return observed, meta, art.sha256_file(path)
+
+
+def require_provenance(noise_frac: float, provenance: Optional[str]) -> None:
+    """Below the 3% pre-registered floor, an instrument citation is mandatory (constraint 2).
+
+    1% is allowed to be *run*, but it may not enter the deliverable as a default tier
+    without a µPIV repeatability reference or our own calibration record: a quieter noise
+    level is what would let the opponent look separable for the wrong reason.
+    """
+    if noise_frac < NOISE_PROVENANCE_MIN and not (provenance or "").strip():
+        raise ValueError(
+            f"noise_frac={noise_frac:.3%} is below the pre-registered "
+            f"{NOISE_PROVENANCE_MIN:.0%} default and carries no instrument provenance; "
+            f"refusing to produce a row that cannot go in the paper")
+
+
+OBS_NAMES_FULL = OBSERVABLES + tuple(f"p_{b}_{int(100 * f)}" for b, f in PROBE_SET)
 
 
 def identifiability_report(lengths: Dict[str, float], theta_true: Sequence[float],
@@ -538,15 +614,17 @@ def evidence(sigma: float = 0.15) -> dict:
     }
     obs_rich = observables(theta_true, lengths, p_in, PROBE_SET)
     fit_rich = fit_theta(obs_rich, lengths, p_in, probes=PROBE_SET,
-                         starts=[[1.0, 1.0, 1.0, 0.05], [0.7, 1.2, 0.9, 0.3]])
+                         starts=DEFAULT_STARTS)
     rep["positive_control_with_stations"] = {
         "fit": fit_rich.as_dict(),
+        "every_start_converged": fit_rich.all_converged,     # type: ignore[attr-defined]
+        "stop_reasons": [f.stop_reason for f in              # type: ignore[attr-defined]
+                         fit_rich.per_start],                # type: ignore[attr-defined]
         "param_errors": {n: abs(a - b) / max(abs(b), 1.0e-12)
                          for n, a, b in zip(PARAM_NAMES, fit_rich.theta, theta_true)},
     }
     obs_node = observables(theta_true, lengths, p_in)
-    fit_node = fit_theta(obs_node, lengths, p_in,
-                         starts=[[1.0, 1.0, 1.0, 0.05], [0.8, 1.1, 0.95, 0.02]])
+    fit_node = fit_theta(obs_node, lengths, p_in, starts=DEFAULT_STARTS)
     sol_true = solve_network(theta_true, lengths, p_in)
     sol_node = solve_network(fit_node.theta, lengths, p_in)
     rep["node_data_only"] = {
@@ -564,15 +642,21 @@ def evidence(sigma: float = 0.15) -> dict:
     }
     rep["identifiability"] = identifiability_report(lengths, theta_true, p_in)
     noisy = [o * (1.0 + 0.03 * math.sin(7.0 * i + 1.0)) for i, o in enumerate(obs_rich)]
-    fit_noisy = fit_theta(noisy, lengths, p_in, probes=PROBE_SET,
-                          starts=[[1.0, 1.0, 1.0, 0.05], [0.7, 1.2, 0.9, 0.3]])
+    require_provenance(NOISE_FLOOR_DEFAULT, None)   # 3% needs no citation; below it does
+    fit_noisy = fit_theta(noisy, lengths, p_in, probes=PROBE_SET, starts=DEFAULT_STARTS)
     rep["noise_3pct_with_stations"] = {
+        "noise_frac": NOISE_FLOOR_DEFAULT,
         "fit": fit_noisy.as_dict(),
+        "every_start_converged": fit_noisy.all_converged,    # type: ignore[attr-defined]
+        "stop_reasons": [f.stop_reason for f in               # type: ignore[attr-defined]
+                         fit_noisy.per_start],               # type: ignore[attr-defined]
+        "gradient_norm_inf_per_start": [round(f.grad_norm_inf, 12) for f in
+                                        fit_noisy.per_start], # type: ignore[attr-defined]
         "param_errors": {n: abs(a - b) / max(abs(b), 1.0e-12)
                          for n, a, b in zip(PARAM_NAMES, fit_noisy.theta, theta_true)},
     }
     fit_no_kappa = fit_theta(obs_rich, lengths, p_in, fix_kappa=0.0, probes=PROBE_SET,
-                             starts=[[1.0, 1.0, 1.0], [0.8, 0.9, 1.1]])
+                             starts=[list(d) for d in DEFAULT_STARTS])
     sol_no_k = solve_network(fit_no_kappa.theta, lengths, p_in)
 
     def err(sol: dict) -> dict:
@@ -598,7 +682,7 @@ def evidence(sigma: float = 0.15) -> dict:
     obs_defect, defect_note = station_data_with_distributed_defect(
         theta_true, lengths, p_in, PROBE_SET)
     fit_defect = fit_theta(obs_defect, lengths, p_in, probes=PROBE_SET,
-                           starts=[[1.0, 1.0, 1.0, 0.05], [0.9, 0.95, 1.05, 0.2]])
+                           starts=DEFAULT_STARTS)
     pred_defect = observables(fit_defect.theta, lengths, p_in, PROBE_SET)
     rep["distributed_defect_floor"] = {
         "defect": defect_note,
@@ -616,6 +700,21 @@ def evidence(sigma: float = 0.15) -> dict:
     pts = [(x, y, 0.0) for x, y in asym.grid_points(asym.branch_grid(tg.UP, 0.1))]
     field_fit = predict_field(asym, fit_rich.theta, pts, sigma=sigma)
     field_true = predict_field(asym, theta_true, pts, sigma=sigma)
+    rep["observation_tiers"] = {
+        "T-A": {"probes": [], "n_observables": len(OBSERVABLES),
+                "jacobian_rank": rank_by_elimination(
+                    jacobian_wrt_params(theta_true, lengths, p_in, ())),
+                "claim": "what a pressure/flow rig measures; rank 3 < 4 params means no "
+                         "wall-parameter identification is possible at all here"},
+        "T-B": {"probes": [[b, f] for b, f in PROBE_SET],
+                "n_observables": len(observables(theta_true, lengths, p_in, PROBE_SET),),
+                "jacobian_rank": rank_by_elimination(
+                    jacobian_wrt_params(theta_true, lengths, p_in, PROBE_SET)),
+                "claim": "station count is set by the rank condition this module proves, "
+                         "not chosen by taste"},
+        "rule": "kill-test conclusions are declared per tier; merging them into one mean "
+                "is not allowed (ruling R2-2)",
+    }
     rep["field_output_check"] = {
         "n_points": len(field_fit),
         "rel_l2_u": rel_l2([f[0] for f in field_fit], [f[0] for f in field_true]),
@@ -631,7 +730,46 @@ def main() -> int:
     ap.add_argument("--json", default="", help="write evidence json here (outside the repo)")
     ap.add_argument("--sigma", type=float, default=0.15)
     ap.add_argument("--dry-run", action="store_true", help="accepted for symmetry with S1")
+    ap.add_argument("--tier", default="T-B", choices=sorted(OBS_TIERS),
+                    help="observation tier to write with --obs-out")
+    ap.add_argument("--obs-out", default="", help="write a hashed observation table here")
+    ap.add_argument("--obs-in", default="", help="fit this hashed observation table instead")
+    ap.add_argument("--noise-frac", type=float, default=NOISE_FLOOR_DEFAULT)
+    ap.add_argument("--noise-provenance", default="",
+                    help="instrument citation; mandatory below 3%")
     args = ap.parse_args()
+
+    if args.obs_in:
+        observed, meta, sha = read_obs_table(Path(args.obs_in))
+        require_provenance(float(meta.get("noise_frac", NOISE_FLOOR_DEFAULT)),
+                           meta.get("noise_provenance"))
+        fit = fit_theta(observed, meta["lengths"], float(meta["p_in"]),
+                        probes=tuple(tuple(x) for x in meta.get("probes", ())),
+                        starts=DEFAULT_STARTS)
+        out = {"obs_sha256": sha, "meta": meta, "fit": fit.as_dict(),
+               "every_start_converged": fit.all_converged}   # type: ignore[attr-defined]
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0 if fit.converged else 1
+
+    if args.obs_out:
+        asym = tg.TGeometry(tg.case_by_id("TB-asym"))
+        lengths = lengths_from_geometry(asym)
+        theta_true = [asym.case.w_stem, asym.case.w_branch_up, asym.case.w_branch_down,
+                      0.12]
+        p_in = _p_in_from(theta_true, lengths)
+        probes = OBS_TIERS[args.tier]
+        require_provenance(args.noise_frac, args.noise_provenance or None)
+        raw = observables(theta_true, lengths, p_in, probes)
+        obs = [o * (1.0 + args.noise_frac * math.sin(7.0 * i + 1.0))
+               for i, o in enumerate(raw)]
+        meta = {"tier": args.tier, "probes": [list(x) for x in probes],
+                "lengths": lengths, "p_in": p_in, "noise_frac": args.noise_frac,
+                "noise_provenance": args.noise_provenance or None,
+                "synthetic": True, "case": asym.case.case_id}
+        sha = write_obs_table(Path(args.obs_out), obs, meta)
+        print(json.dumps({"wrote": args.obs_out, "sha256": sha, "tier": args.tier,
+                          "noise_frac": args.noise_frac}, ensure_ascii=False, indent=2))
+        return 0
 
     rep = evidence(args.sigma)
     text = json.dumps(rep, ensure_ascii=False, indent=2)

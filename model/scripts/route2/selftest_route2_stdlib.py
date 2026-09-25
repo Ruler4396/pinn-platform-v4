@@ -451,7 +451,7 @@ def s1_pipeline_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
            [round(mg_bad["worst_rel_change"], 4), mg_bad["worst_quantity"]], "> 0.10 on q_up")
 
 
-def impedance_checks(ck: Check, summaries: Dict[str, dict]) -> None:
+def impedance_checks(ck: Check, summaries: Dict[str, dict], tmp: Path) -> None:
     """S2 opponent: device checks that need no numpy, no torch and no instance time.
 
     The load-bearing claim under test is not "the network fits" but "what the network can
@@ -528,6 +528,67 @@ def impedance_checks(ck: Check, summaries: Dict[str, dict]) -> None:
     ck.add("s2_field_output_finite_and_comparable",
            fo["all_finite"] and fo["n_points"] > 100,
            {"n_points": fo["n_points"], "rel_l2_u": fo["rel_l2_u"]}, "same metric as S3")
+    # ---- ruling R2-2: convergence must be stated and tested, not assumed -----------
+    arms = {"positive": pc, "noise": ev["noise_3pct_with_stations"],
+            "defect": dd}
+    for label, arm in arms.items():
+        fit = arm["fit"]
+        ck.add(f"s2_convergence.{label}_reaches_first_order_optimality",
+               fit["converged"] and fit.get("stop_reason") in
+               ("first_order_optimality", "exact_consistency"),
+               {"converged": fit["converged"], "stop_reason": fit.get("stop_reason"),
+                "iterations": fit["iterations"], "grad_norm": fit.get("gradient_norm_inf")},
+               "converged via a stated criterion")
+    ck.add("s2_convergence.all_starts_converge_and_agree",
+           ev["noise_3pct_with_stations"]["every_start_converged"]
+           and len(ev["noise_3pct_with_stations"]["stop_reasons"]) == 3,
+           ev["noise_3pct_with_stations"]["stop_reasons"], "3 starts, all converged")
+    ck.add("s2_convergence.the_old_false_negative_is_gone",
+           ev["noise_3pct_with_stations"]["fit"]["iterations"] < 21,
+           ev["noise_3pct_with_stations"]["fit"]["iterations"],
+           "<21: the 20:0x reading stalled on the damping ceiling, not on the optimum")
+    tiers = ev["observation_tiers"]
+    ck.add("s2_tiers_TA_is_rank_deficient_TB_is_not",
+           tiers["T-A"]["jacobian_rank"] < 4 and tiers["T-B"]["jacobian_rank"] == 4,
+           {k: tiers[k]["jacobian_rank"] for k in ("T-A", "T-B")}, "3 then 4")
+    ck.add("s2_tiers_TB_station_count_equals_the_proved_minimum",
+           len(tiers["T-B"]["probes"]) == 7, len(tiers["T-B"]["probes"]),
+           "3 stem + 4 branch stations, from the rank condition")
+    try:
+        ib.require_provenance(0.01, None)
+        refused = False
+    except ValueError:
+        refused = True
+    ib.require_provenance(0.01, "µPIV repeatability reference (slot)")
+    ib.require_provenance(0.03, None)
+    ck.add("s2_noise_gate_1pct_without_provenance_is_refused", refused, refused, "raise")
+    obs = [float(i) for i in range(len(ib.OBS_NAMES_FULL))]
+    fA = tmp / "obs_TA.csv"
+    fB = tmp / "obs_TB.csv"
+    shaA = ib.write_obs_table(fA, ib.observables(theta := [1.0, 0.85, 1.0, 0.12],
+                                {"stem": 4.0, "up": 4.0, "down": 4.0}, 30.0, ()),
+                              {"tier": "T-A", "lengths": {"stem": 4.0, "up": 4.0,
+                                                          "down": 4.0},
+                               "p_in": 30.0, "probes": [], "noise_frac": 0.03})
+    shaB = ib.write_obs_table(fB, ib.observables(theta, {"stem": 4.0, "up": 4.0,
+                                                         "down": 4.0}, 30.0,
+                                                 ib.OBS_TIERS["T-B"]),
+                              {"tier": "T-B", "lengths": {"stem": 4.0, "up": 4.0,
+                                                          "down": 4.0},
+                               "p_in": 30.0,
+                               "probes": [list(x) for x in ib.OBS_TIERS["T-B"]],
+                               "noise_frac": 0.03})
+    back, meta, sha_again = ib.read_obs_table(fA)
+    ck.add("s2_obs_table_roundtrip_hash_is_stable",
+           sha_again == shaA and len(back) == 5 + 0 and meta["tier"] == "T-A",
+           [shaA[:12], sha_again[:12], len(back), meta["tier"]], "same sha256 on re-read")
+    ck.add("s2_obs_table_tiers_are_different_bytes", shaA != shaB, [shaA[:12], shaB[:12]],
+           "different data => different hash")
+    ck.add("s2_obs_table_pinned_hash_defends_the_same_data_claim",
+           ib.read_obs_table(fB)[1]["probes"] == [list(x) for x in ib.OBS_TIERS["T-B"]],
+           ib.read_obs_table(fB)[1]["probes"][:2], "tier provenance travels with the file")
+
+
     asym = summaries.get("TB-asym", {})
     ck.add("s2_adversary_geometry_is_the_asymmetric_one",
            "adversary" in asym.get("metadata", {}).get("role", "")
@@ -669,7 +730,7 @@ def main() -> int:
     ck.prefix = ""
     mesh_gate_checks(ck)
     k0_verdict_checks(ck)
-    impedance_checks(ck, summaries)
+    impedance_checks(ck, summaries, tmp_root)
 
     out = Path(args.json)
     repo_root = HERE.parents[2]  # .../pinn-platform-v4
