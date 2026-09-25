@@ -422,7 +422,9 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
             plan["levels"].append(entry)
             continue
         exe = freefem_executable()
-        subprocess.run([exe, "-nw", str(edp)], check=True, cwd=str(lvl_dir))
+        # -nw = no window; -noplot because the DSW container has no X display, where
+        # freeglut otherwise prints a scary-but-harmless line on every load
+        subprocess.run([exe, "-nw", "-noplot", str(edp)], check=True, cwd=str(lvl_dir))
         raw = lvl_dir / f"{case.case_id}_{lvl['name']}_raw.csv"
         summary_p = lvl_dir / f"{case.case_id}_{lvl['name']}_summary.csv"
         sections = lvl_dir / f"{case.case_id}_{lvl['name']}_sections.csv"
@@ -491,7 +493,8 @@ def _manifest(out_root: Path, case: tg.TCase, skip_dir: Path) -> dict:
     paths = [p for p in out_root.rglob("*") if p.is_file() and skip_dir not in p.parents]
     env: dict = {}
     try:
-        proc = subprocess.run([freefem_executable(), "-nw", "-e", "cout<<version<<endl;"],
+        proc = subprocess.run([freefem_executable(), "-nw", "-noplot", "-e",
+                               "cout<<version<<endl;"],
                               capture_output=True, text=True, timeout=120)
         tail = (proc.stdout + proc.stderr).strip().splitlines()
         env["freefem_version"] = tail[-1] if tail else "ran (no banner)"
@@ -533,10 +536,14 @@ def main() -> int:
     execute = not args.dry_run
     if execute:
         try:
-            freefem_executable()
+            exe = freefem_executable()
         except FileNotFoundError as exc:
-            print(f"[blocked] {exc}; rerun with --dry-run to render the scripts only")
+            # overlay disk is not persistent: a restarted instance loses FreeFEM, and a
+            # silent fall back to "not measured" would make the segment look completed
+            print(f"[ABORT] {exc} -- container disk is not persistent, re-install first. "
+                  f"Rerun with --dry-run only renders scripts.")
             return 3
+        print(f"[gate] FreeFEM resolved to {exe}")
     res = run_case(case, out_root, levels, execute, sigma=args.blend_sigma)
     plan = res["plan"]
     print(f"out_root={out_root}")
