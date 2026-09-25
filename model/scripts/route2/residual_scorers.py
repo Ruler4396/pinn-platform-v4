@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 # ---------------------------------------------------------------- frozen gates
 K0_TRUTH_OVER_MODEL_MAX = 10.0        # score(truth) / score(converged reading)
@@ -175,22 +175,34 @@ def fd_step_convergence_gate(estimates: Sequence[float],
 
 
 def absolute_gates(q_in: float, q_up: float, q_down: float,
-                   flux_conservation_max: float = float("nan")) -> dict:
-    """Non-relative gates: mass closure and the symmetry sanity check.
+                   flux_conservation_max: float = float("nan"),
+                   expected_split: Optional[float] = 0.5) -> dict:
+    """Non-relative gates: mass closure and the split sanity check.
 
     A near-zero residual cannot be judged by relative change across meshes, so it
     gets its own absolute threshold here instead of sitting in the <10% gate.
+    expected_split = 0.5 is valid only for the mirror-symmetric T; on TB-asym the split
+    is a free observable and must be passed as None -- the cell then reports the number
+    and says why it is not judging it (an inapplicable gate must never look like a pass).
     """
     q_in = abs(q_in)
     if not (math.isfinite(q_in) and q_in > 0.0):
         return {"pass": False, "reason": "q_in not a positive finite number", "q_in": q_in}
     closure = abs(q_in - q_up - q_down) / q_in
     split = q_up / q_in
+    if expected_split is None:
+        split_cell: dict = {"value": split, "expected": None, "applicable": False,
+                            "pass": True,
+                            "note": "geometry not mirror-symmetric; the split is scored "
+                                    "against the 1D model in S2, not as a self-check"}
+    else:
+        split_cell = {"value": split, "expected": expected_split, "applicable": True,
+                      "limit": SYMMETRY_TOL,
+                      "pass": bool(abs(split - expected_split) <= SYMMETRY_TOL)}
     out = {
         "mass_closure": {"value": closure, "limit": MASS_CLOSURE_REL_TOL,
                          "pass": bool(closure <= MASS_CLOSURE_REL_TOL)},
-        "symmetry_of_split": {"value": abs(split - 0.5), "limit": SYMMETRY_TOL,
-                              "pass": bool(abs(split - 0.5) <= SYMMETRY_TOL)},
+        "split_sanity": split_cell,
         "flux_conservation_along_branch": {
             "value": flux_conservation_max, "limit": MASS_CLOSURE_REL_TOL,
             "pass": bool(math.isfinite(flux_conservation_max)

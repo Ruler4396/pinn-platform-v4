@@ -60,21 +60,22 @@ def render_edp(geom: tg.TGeometry, case: tg.TCase, level: dict, out_dir: Path,
     a = o.append
     a(f"// Auto-generated route-2 symmetric-T Stokes solve: {case.case_id} / {level['name']}")
     a(f"// theta_deg={case.theta_deg} L_stem={case.l_stem} L_branch={case.l_branch} "
-      f"W_stem={case.w_stem} W_branch={case.w_branch} target mesh size h={spacing}")
+      f"W_up={case.w_branch_up} W_down={case.w_branch_down} target h={spacing}")
     a("// star units: inlet mean velocity = 1, both outlet pressures = 0, mu = 1")
     a("real JX = %.12g; real JY = %.12g;" % (jx, jy))
     a("real CT = %.12g; real ST = %.12g;" % (geom.cos_t, geom.sin_t))
     a("real LSTEM = %.12g; real HSTEM = %.12g;" % (case.l_stem, geom.h_stem))
-    a("real LBR = %.12g; real HBR = %.12g;" % (case.l_branch, geom.h_branch))
+    a("real LBR = %.12g; real HBUP = %.12g; real HBDN = %.12g;"
+  % (case.l_branch, geom.h_branch["up"], geom.h_branch["down"]))
     a("")
     a("func int inDomain(real xx, real yy) {")
     a("  if (xx >= -1e-12 && xx <= LSTEM + 1e-12 && abs(yy) <= HSTEM + 1e-12) return 1;")
     a("  real a1 = (xx - JX) * CT + (yy - JY) * ST;")
     a("  real b1 = -(xx - JX) * ST + (yy - JY) * CT;")
-    a("  if (a1 >= -1e-12 && a1 <= LBR + 1e-12 && abs(b1) <= HBR + 1e-12) return 1;")
+    a("  if (a1 >= -1e-12 && a1 <= LBR + 1e-12 && abs(b1) <= HBUP + 1e-12) return 1;")
     a("  real a2 = (xx - JX) * CT - (yy - JY) * ST;")
     a("  real b2 = -(xx - JX) * ST - (yy - JY) * CT;")
-    a("  if (a2 >= -1e-12 && a2 <= LBR + 1e-12 && abs(b2) <= HBR + 1e-12) return 1;")
+    a("  if (a2 >= -1e-12 && a2 <= LBR + 1e-12 && abs(b2) <= HBDN + 1e-12) return 1;")
     a("  return 0;")
     a("}")
     a("")
@@ -222,7 +223,7 @@ def _emit_sections(geom: tg.TGeometry, prefix: Path, case: tg.TCase,
     o: List[str] = ["{",
                     f'  ofstream fo("{path.as_posix()}");',
                     f'  fo << "{SECTION_HEADER}" << endl;',
-                    f"  int NE = {int(round(2.0 * max(geom.h_stem, geom.h_branch) / eta_step)) + 1};",
+                    f"  int NE = {int(round(2.0 * geom.max_half_width() / eta_step)) + 1};",
                     f"  real DETA = {eta_step:.12g};"]
     for key in (tg.STEM, tg.UP, tg.DOWN):
         fr = geom.frames[key]
@@ -451,11 +452,13 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
         table = {name: [plan["quantities_by_level"][lv][name] for lv in order]
                  for name in tg.MESH_INDEPENDENCE_QUANTITIES}
         gate = rs.mesh_independence_gate(table)
+        expected_split = 0.5 if case.is_geometrically_symmetric else None
         abs_gate = rs.absolute_gates(
             plan["quantities_by_level"][order[-1]]["q_stem"],
             plan["quantities_by_level"][order[-1]]["q_up"],
             plan["quantities_by_level"][order[-1]]["q_down"],
-            plan["quantities_by_level"][order[-1]]["flux_conservation_max_rel"])
+            plan["quantities_by_level"][order[-1]]["flux_conservation_max_rel"],
+            expected_split=expected_split)
         art.write_csv(data_dir / "field_dense.csv", list(last_dense[0].keys()),
                       [list(d.values()) for d in last_dense])
         art.write_json(data_dir / "mesh_independence.json", {

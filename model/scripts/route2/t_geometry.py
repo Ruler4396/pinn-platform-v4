@@ -31,9 +31,14 @@ class TCase:
     theta_deg: float = 45.0
     l_branch: float = 4.0
     w_stem: float = 1.0
-    w_branch: float = 1.0
+    w_branch_up: float = 1.0
+    w_branch_down: float = 1.0
     family: str = "tbif_2d"
-    note: str = "symmetric T, Stokes, FreeFEM truth"
+    note: str = "symmetric T: carries K0 self-scoring, mesh independence, conservation"
+
+    @property
+    def is_geometrically_symmetric(self) -> bool:
+        return abs(self.w_branch_up - self.w_branch_down) < 1.0e-12
 
     def to_metadata(self) -> dict:
         return {
@@ -43,16 +48,22 @@ class TCase:
             "theta_deg": self.theta_deg,
             "l_branch_over_W": self.l_branch,
             "w_stem_over_W": self.w_stem,
-            "w_branch_over_W": self.w_branch,
+            "w_branch_up_over_W": self.w_branch_up,
+            "w_branch_down_over_W": self.w_branch_down,
+            "geometrically_symmetric": self.is_geometrically_symmetric,
             "units": "star: W_stem=1, U_inlet_mean=1, mu=1, steady Stokes",
+            "role": ("kill-test geometry (adversary table)"
+                     if not self.is_geometrically_symmetric else "self-check geometry"),
             "note": self.note,
         }
 
 
 ASYM_CASE = TCase(
     case_id="TB-asym",
-    w_branch=0.85,
-    note="reserved S1b variant: breaks the 0.5 split degeneracy, not built this round",
+    w_branch_up=0.85,
+    note=("adversary-table geometry per ruling R2-1 (统括官, 2026-09-25): the upper branch is "
+          "0.85W so the flow split is no longer pinned to 0.5 by symmetry and becomes a "
+          "measurable, invertible observable"),
 )
 
 
@@ -114,46 +125,54 @@ def _seg_intersect(p: Point, r: Point, q: Point, s: Point) -> Point:
 
 
 class TGeometry:
-    """Analytic geometry of the symmetric T. Everything downstream reads this."""
+    """Analytic geometry of a T with one stem and two (possibly unequal) branches."""
 
     def __init__(self, case: TCase = TCase()):
         self.case = case
         th = math.radians(case.theta_deg)
         self.cos_t, self.sin_t = math.cos(th), math.sin(th)
         self.h_stem = 0.5 * case.w_stem
-        self.h_branch = 0.5 * case.w_branch
+        self.h_branch = {"up": 0.5 * case.w_branch_up, "down": 0.5 * case.w_branch_down}
         self.j_point: Point = (case.l_stem, 0.0)
 
         frames: Dict[int, Frame] = {}
         frames[STEM] = Frame(STEM, FRAME_NAMES[STEM], (0.0, 0.0), (1.0, 0.0), (0.0, 1.0),
                              self.h_stem, case.l_stem, "stem")
-        for key, sign in ((UP, +1.0), (DOWN, -1.0)):
+        for key, sign, hb in ((UP, +1.0, self.h_branch["up"]), (DOWN, -1.0, self.h_branch["down"])):
             d = (self.cos_t, sign * self.sin_t)
             m = (-self.sin_t, sign * self.cos_t)  # away from the stem centreline; y-reflected only
             frames[key] = Frame(key, FRAME_NAMES[key], self.j_point, d, m,
-                                self.h_branch, case.l_branch, "branch")
+                                hb, case.l_branch, "branch")
         self.frames = frames
 
         # Outward (away-from-axis) wall meeting point A_sigma on the stem wall line.
         s, c = self.sin_t, self.cos_t
         if s <= 1.0e-12:
             raise ValueError("theta too small to form a T")
-        u = (self.h_stem - self.h_branch * c) / s
-        if u < -1.0e-9:
-            raise ValueError("branch outer wall meets the stem wall line downstream of the "
-                             "inlet only when h_branch*cos(theta) <= h_stem; widen the stem")
-        if u > case.l_branch:
-            raise ValueError("wall meeting point lies beyond the branch outlet")
         self.a_outer: Dict[int, Point] = {}
         self.corners: Dict[int, Tuple[Point, Point]] = {}
         for key in (UP, DOWN):
             fr = self.frames[key]
+            u = (self.h_stem - fr.half_width * c) / s
+            if u < -1.0e-9:
+                raise ValueError(f"{fr.name}: h_branch*cos(theta) > h_stem leaves the branch "
+                                 "outer wall meeting the stem wall line upstream of the inlet")
+            if u > case.l_branch:
+                raise ValueError(f"{fr.name}: wall meeting point lies beyond the branch outlet")
             self.a_outer[key] = fr.global_xy(u, fr.half_width)
             self.corners[key] = (fr.global_xy(case.l_branch, fr.half_width),
                                  fr.global_xy(case.l_branch, -fr.half_width))
-        self.crotch = self.frames[UP].global_xy(self.h_branch * c / s, -self.h_branch)
-        if abs(self.crotch[1]) > 1.0e-12:
-            raise ValueError("crotch must lie on the stem centreline")
+        # crotch = where the two inner walls meet (off-axis once the branches differ)
+        up, dn = self.frames[UP], self.frames[DOWN]
+        p = up.global_xy(0.0, -up.half_width)
+        q = dn.global_xy(0.0, -dn.half_width)
+        self.crotch = _seg_intersect(p, up.d, q, dn.d)
+        t_up = (self.crotch[0] - p[0]) * up.d[0] + (self.crotch[1] - p[1]) * up.d[1]
+        t_dn = (self.crotch[0] - q[0]) * dn.d[0] + (self.crotch[1] - q[1]) * dn.d[1]
+        if not (1.0e-9 < t_up <= up.length and 1.0e-9 < t_dn <= dn.length):
+            raise ValueError("inner walls do not meet inside both branches: not a T junction")
+        if self.crotch[0] <= case.l_stem:
+            raise ValueError("crotch sits upstream of the junction plane")
         self.polygon = self._build_polygon()
         self._perimeter = sum(
             math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in self.polygon.edge_ends
@@ -438,6 +457,9 @@ class TGeometry:
 
     def perimeter(self) -> float:
         return self._perimeter
+
+    def max_half_width(self) -> float:
+        return max(fr.half_width for fr in self.frames.values())
 
     def area(self) -> float:
         return self.polygon.area()

@@ -18,6 +18,7 @@ import json
 import math
 import sys
 from pathlib import Path
+from typing import Dict
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
@@ -25,9 +26,10 @@ if str(HERE) not in sys.path:
 
 import artifacts as art                             # noqa: E402
 import fd_stencils as fd                      # noqa: E402
+import impedance_baseline as ib                # noqa: E402
 import residual_scorers as rs                  # noqa: E402
 from t_geometry import (GEOMETRY_FEATURES, STEM, UP, DOWN, TCase, TGeometry,  # noqa: E402
-                        border_counts, mesh_levels)
+                        border_counts, case_by_id, mesh_levels)
 
 DEFAULT_OUT = Path("D:/PINN-restart/.scratch/route2/selftest_k0_s1.json")
 SIGMAS = (0.15, 0.30)
@@ -43,11 +45,13 @@ FD_STEP = 1.0e-4
 class Check:
     def __init__(self) -> None:
         self.rows: list[dict] = []
+        self.prefix = ""
 
     def add(self, name: str, ok: bool, value: object, limit: object = "") -> None:
-        self.rows.append({"check": name, "pass": bool(ok), "value": value, "limit": limit})
+        full = self.prefix + name
+        self.rows.append({"check": full, "pass": bool(ok), "value": value, "limit": limit})
         flag = "PASS" if ok else "FAIL"
-        print(f"[{flag}] {name}: value={_fmt(value)} limit={_fmt(limit)}")
+        print(f"[{flag}] {full}: value={_fmt(value)} limit={_fmt(limit)}")
 
     @property
     def failed(self) -> list[str]:
@@ -70,11 +74,16 @@ def geometry_checks(ck: Check, geom: TGeometry) -> None:
     _AGREEMENT.update(agree)
     ck.add("polygon.boundary_equals_union_of_frames", agree["mismatch"] == 0,
            agree["mismatch"], "0 cells")
-    ck.add("polygon.top_bottom_symmetric", agree["symmetry_violations"] == 0,
-           agree["symmetry_violations"], "0 cells")
+    if geom.case.is_geometrically_symmetric:
+        ck.add("polygon.top_bottom_symmetric", agree["symmetry_violations"] == 0,
+               agree["symmetry_violations"], "0 cells")
+    else:
+        ck.add("polygon.crotch_off_axis_for_asymmetric_branches",
+               abs(geom.crotch[1]) > 1.0e-3, geom.crotch[1], "|y| > 1e-3")
     ck.add("polygon.area_equals_union_minus_lens",
            abs(poly.area() - (geom.case.l_stem * geom.case.w_stem
-                              + 2 * geom.case.l_branch * geom.case.w_branch
+                              + geom.case.l_branch * (geom.case.w_branch_up
+                                                      + geom.case.w_branch_down)
                               - agree["lens_area"])) < 0.05,
            [round(poly.area(), 4), round(agree["lens_area"], 4)], "12 - lens, tol 0.05")
     ck.add("crotch_downstream_of_junction", geom.crotch[0] > geom.j_point[0],
@@ -93,9 +102,19 @@ def geometry_checks(ck: Check, geom: TGeometry) -> None:
     ck.add("wall_distance.centreline_is_half_width",
            abs(geom.wall_distance_exact(2.0, 0.0) - geom.h_stem) < 1.0e-9,
            geom.wall_distance_exact(2.0, 0.0), geom.h_stem)
-    ck.add("wall_distance.symmetric",
-           abs(geom.wall_distance_exact(5.3, 1.1) - geom.wall_distance_exact(5.3, -1.1)) < 1e-12,
-           [geom.wall_distance_exact(5.3, 1.1), geom.wall_distance_exact(5.3, -1.1)], "equal")
+    if geom.case.is_geometrically_symmetric:
+        ck.add("wall_distance.mirror_symmetric",
+               abs(geom.wall_distance_exact(5.3, 1.1) - geom.wall_distance_exact(5.3, -1.1)) < 1e-12,
+               [geom.wall_distance_exact(5.3, 1.1), geom.wall_distance_exact(5.3, -1.1)], "equal")
+    else:
+        ck.add("wall_distance.branch_half_widths_differ",
+               abs(geom.frames[UP].half_width - geom.frames[DOWN].half_width) > 1e-9,
+               [geom.frames[UP].half_width, geom.frames[DOWN].half_width], "up != down")
+        ck.add("wall_distance.matches_own_branch_half_width",
+               abs(geom.wall_distance_exact(*geom.frames[UP].global_xy(2.0, 0.0))
+                   - geom.frames[UP].half_width) < 1e-9,
+               geom.wall_distance_exact(*geom.frames[UP].global_xy(2.0, 0.0)),
+               geom.frames[UP].half_width)
 
 
 def _borders_chain(poly) -> bool:
@@ -339,15 +358,22 @@ def k0_verdict_checks(ck: Check) -> None:
 def s1_pipeline_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
     """End-to-end check of the S1 post-processing on a manufactured Poiseuille truth.
 
-    FreeFEM itself cannot run here, but everything it hands back -- raw vertex CSV and
-    section CSV -> field_dense rows -> Q(xi), pressure drops, mass closure, mesh gate --
-    is exercised on an analytic field whose exact answers are known.
+    FreeFEM cannot run here, but everything it hands back -- raw vertex CSV and section
+    CSV -> field_dense rows -> Q(xi), pressure drops, mass closure, mesh gate -- is
+    exercised on an analytic field whose exact answers are known.  Per-branch mean
+    velocities are chosen so the expected section fluxes are Q = mean * width.
     """
     import generate_t_case as gc
 
-    stem = rs.Poiseuille(mean_velocity=1.0, half_width=geom.h_stem)
-    side = rs.Poiseuille(mean_velocity=0.5, half_width=geom.h_branch)
-    sol_of = {STEM: stem, UP: side, DOWN: side}
+    m_up, m_down = (0.5, 0.5) if geom.case.is_geometrically_symmetric else (0.55, 0.45)
+    w_up = geom.frames[UP].half_width * 2.0
+    w_dn = geom.frames[DOWN].half_width * 2.0
+    q_up_exp, q_dn_exp = m_up * w_up, m_down * w_dn
+    q_in_exp = q_up_exp + q_dn_exp
+    stem = rs.Poiseuille(mean_velocity=q_in_exp / (geom.h_stem * 2.0), half_width=geom.h_stem)
+    sol_of = {STEM: stem,
+              UP: rs.Poiseuille(mean_velocity=m_up, half_width=geom.frames[UP].half_width),
+              DOWN: rs.Poiseuille(mean_velocity=m_down, half_width=geom.frames[DOWN].half_width)}
 
     raw_rows, sec_rows = [], []
     for key, fr in geom.frames.items():
@@ -368,14 +394,13 @@ def s1_pipeline_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
                 sec_rows.append([fr.name, xi, eta, x, y, u, v, p])
     lvl = tmp / "TB-fake_h1"
     lvl.mkdir(parents=True, exist_ok=True)
-    raw_p = lvl / "raw.csv"
-    sec_p = lvl / "sections.csv"
+    raw_p, sec_p = lvl / "raw.csv", lvl / "sections.csv"
     art.write_csv(raw_p, ["x_star", "y_star", "u_star", "v_star", "p_star", "bc_tag"], raw_rows)
     art.write_csv(sec_p, ["branch", "xi", "eta", "x_star", "y_star", "u_star", "v_star",
                           "p_star"], sec_rows)
     art.write_csv(lvl / "summary.csv", ["key", "value"],
                   [["nv", len(raw_rows)], ["nt", 2 * len(raw_rows)],
-                   ["q_in_edp", 1.0], ["q_up_edp", 0.5], ["q_down_edp", 0.5]])
+                   ["q_in_edp", q_in_exp], ["q_up_edp", q_up_exp], ["q_down_edp", q_dn_exp]])
     dense, stats = gc.build_field_dense(raw_p, geom)
     ck.add("s1.field_dense_keeps_all_indomain_points",
            stats["outside"] == 0 and stats["n_kept"] == len(raw_rows), stats, "outside=0")
@@ -388,25 +413,34 @@ def s1_pipeline_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
 
     ints = gc.section_integrals(sec_p, geom)
     q = gc.quantities(gc._read_summary(lvl / "summary.csv"), ints, [1.0, 1.0])
-    ck.add("s1.inlet_flow_recovers_analytic", abs(q["q_stem"] - 1.0) < 2.0e-3,
-           q["q_stem"], "1.0 (mean velocity 1 x width 1)")
-    ck.add("s1.branch_flow_recovers_analytic", abs(q["q_up"] - 0.5) < 2.0e-3
-           and abs(q["q_down"] - 0.5) < 2.0e-3, [q["q_up"], q["q_down"]], "0.5 / 0.5")
+    ck.add("s1.inlet_flow_recovers_analytic", abs(q["q_stem"] - q_in_exp) < 2.0e-3 * q_in_exp,
+           [q["q_stem"], q_in_exp], "Q_in = mean x width")
+    ck.add("s1.branch_flows_recover_analytic",
+           abs(q["q_up"] - q_up_exp) < 2.0e-3 * q_up_exp
+           and abs(q["q_down"] - q_dn_exp) < 2.0e-3 * q_dn_exp,
+           [q["q_up"], q_up_exp, q["q_down"], q_dn_exp], "Q = mean x width per branch")
     ck.add("s1.mass_closure_is_a_number_not_a_default",
-           abs(q["mass_closure_residual"]) < 4.0e-3 and q["mass_closure_residual"] == q["mass_closure_residual"],
+           q["mass_closure_residual"] == q["mass_closure_residual"]
+           and abs(q["mass_closure_residual"]) < 4.0e-3,
            q["mass_closure_residual"], "< 4e-3")
-    ck.add("s1.split_fraction_is_half", abs(q["split_fraction_up"] - 0.5) < 2.0e-3,
-           q["split_fraction_up"], "0.5")
-    dp_expected = stem.pressure(0.0, 12.0) - side.pressure(geom.case.l_branch, 0.0)
+    ck.add("s1.split_fraction_recovers_analytic",
+           abs(q["split_fraction_up"] - q_up_exp / q_in_exp) < 2.0e-3,
+           [q["split_fraction_up"], q_up_exp / q_in_exp], "Q_up / Q_in")
+    dp_expected = stem.pressure(0.0, 12.0) - sol_of[UP].pressure(geom.case.l_branch, 0.0)
     ck.add("s1.dp_matches_analytic_poiseuille",
            abs(q["dp_stem_to_up"] - dp_expected) < 0.05,
            [q["dp_stem_to_up"], dp_expected], "stem p_in - branch p_out")
+    expected_split = 0.5 if geom.case.is_geometrically_symmetric else None
     gate = rs.absolute_gates(q["q_stem"], q["q_up"], q["q_down"],
-                            q["flux_conservation_max_rel"])
+                             q["flux_conservation_max_rel"], expected_split=expected_split)
     ck.add("s1.absolute_gates_pass_on_analytic_field", gate["pass"],
-           {k: round(v["value"], 6) for k, v in gate.items() if isinstance(v, dict)}, "all True")
-    names = ("q_stem", "q_up", "q_down", "dp_stem_to_up", "dp_stem_to_down",
-             "p_junction_over_outlet")
+           {k: (round(v["value"], 6) if isinstance(v, dict) else v)
+            for k, v in gate.items()}, "all True")
+    ck.add("s1.split_gate_marks_inapplicable_when_asymmetric",
+           gate["split_sanity"]["applicable"] == geom.case.is_geometrically_symmetric,
+           gate["split_sanity"]["applicable"], "matches case symmetry")
+    names = tg_names = ("q_stem", "q_up", "q_down", "dp_stem_to_up", "dp_stem_to_down",
+                        "p_junction_over_outlet")
     fake_levels = {name: [q[name] * 1.02, q[name] * 1.005, q[name]] for name in names}
     mg = rs.mesh_independence_gate(fake_levels)
     ck.add("s1.mesh_gate_wireable_from_quantities", mg["pass"], mg["worst_rel_change"],
@@ -415,6 +449,92 @@ def s1_pipeline_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
                                                               q["q_up"] * 1.2, q["q_up"]]))
     ck.add("s1.mesh_gate_catches_flow_drift", not mg_bad["pass"],
            [round(mg_bad["worst_rel_change"], 4), mg_bad["worst_quantity"]], "> 0.10 on q_up")
+
+
+def impedance_checks(ck: Check, summaries: Dict[str, dict]) -> None:
+    """S2 opponent: device checks that need no numpy, no torch and no instance time.
+
+    The load-bearing claim under test is not "the network fits" but "what the network can
+    and cannot identify".  Every threshold below is a number the module prints, so a
+    future change to the model has to break one of these to be noticed.
+    """
+    import impedance_baseline as ib
+
+    # 1) the eigensolver the rank argument leans on, against known spectra
+    known = [([[4.0, 0, 0, 0], [0, 3.0, 0, 0], [0, 0, 2.0, 0], [0, 0, 0, 1.0]],
+              [4.0, 3.0, 2.0, 1.0], "diagonal"),
+             ([[1.0, 1, 1, 1]] * 4, [4.0, 0.0, 0.0, 0.0], "rank_one_repeated_root"),
+             ([[2.0, 1.0, 0.0, 0.0], [1.0, 2.0, 0.0, 0.0],
+               [0.0, 0.0, 3.0, -1.0], [0.0, 0.0, -1.0, 3.0]], [4.0, 3.0, 2.0, 1.0],
+              "two_blocks")]
+    for mat, expect, label in known:
+        got = ib.jacobi_eigen([row[:] for row in mat])[0]
+        ck.add(f"s2_jacobi.spectrum_{label}",
+               all(abs(a - b) < 1.0e-9 for a, b in zip(got, expect)),
+               [round(g, 9) for g in got], expect)
+    ck.add("s2_rank.node_only_jacobian_is_rank_deficient",
+           ib.rank_by_elimination(ib.jacobian_wrt_params(
+               [1.0, 0.85, 1.0, 0.12], {"stem": 4.0, "up": 4.0, "down": 4.0}, 1.0, ())) < 4,
+           ib.rank_by_elimination(ib.jacobian_wrt_params(
+               [1.0, 0.85, 1.0, 0.12], {"stem": 4.0, "up": 4.0, "down": 4.0}, 1.0, ())), "< 4")
+
+    ev = ib.evidence()
+    pc = ev["positive_control_with_stations"]
+    ck.add("s2_positive_control_recovers_synthetic_theta",
+           max(pc["param_errors"].values()) < 1.0e-6,
+           {k: round(v, 9) for k, v in pc["param_errors"].items()}, "all < 1e-6")
+    nd = ev["node_data_only"]
+    ck.add("s2_node_data_matches_observables_but_not_parameters",
+           nd["split_up_rel_error"] < 1.0e-9 and nd["kappa_rel_error"] > 0.05
+           and nd["w_stem_rel_error"] < 0.05,
+           {"split_err": nd["split_up_rel_error"], "kappa_err": round(nd["kappa_rel_error"], 4),
+            "w_stem_err": round(nd["w_stem_rel_error"], 5)},
+           "observables exact while kappa is off >5%")
+    idn = ev["identifiability"]
+    ck.add("s2_identifiability_node_only_is_degenerate",
+           idn["node_only"]["rank_deficient"]
+           and idn["flat_direction_node_only"]["invariant_under_trade_off"],
+           {"rank": idn["node_only"]["jacobian_rank"],
+            "invariant": idn["flat_direction_node_only"]["invariant_under_trade_off"]},
+           "rank<4 and trade-off leaves every observable fixed")
+    ck.add("s2_identifiability_one_stem_station_breaks_it",
+           (not idn["node_plus_stations"]["rank_deficient"])
+           and (not idn["flat_direction_with_stations"]["invariant_under_trade_off"]),
+           {"rank": idn["node_plus_stations"]["jacobian_rank"],
+            "invariant": idn["flat_direction_with_stations"]["invariant_under_trade_off"]},
+           "rank==4 and trade-off moves the stations")
+    jc = ev["junction_correction_identifiability"]
+    ck.add("s2_junction_correction_free_on_node_data_only",
+           jc["sse_free_on_station_data"] < 1.0e-20
+           and jc["sse_kappa_fixed_zero_on_station_data"] > 1.0e-4,
+           {"sse_free": jc["sse_free_on_station_data"],
+            "sse_kappa0": jc["sse_kappa_fixed_zero_on_station_data"]},
+           "correction costs nothing at the node, everything at the stations")
+    dd = ev["distributed_defect_floor"]
+    ck.add("s2_distributed_defect_leaves_a_non_zero_floor",
+           dd["sse"] > 1.0e-9 and dd["node_observables_still_matched"] < 1.0e-9
+           and dd["worst_station_rel_error"] > 1.0e-4,
+           {"sse": dd["sse"], "node_match": dd["node_observables_still_matched"],
+            "worst_station_rel_error": dd["worst_station_rel_error"]},
+           "node exact, along-stem shape missed")
+    ck.add("s2_distributed_defect_drives_effective_widths_nonsense",
+           abs(dd["fit"]["theta"]["w_stem"] - 1.0) > 0.2,
+           dd["fit"]["theta"], "w_stem far from the true 1.0 while nodes are matched")
+    nz = ev["noise_3pct_with_stations"]["param_errors"]
+    ck.add("s2_three_percent_noise_keeps_wide_and_branch_widths",
+           nz["w_up"] < 0.05 and nz["w_dn"] < 0.05 and nz["w_stem"] < 0.05,
+           {k: round(v, 4) for k, v in nz.items()}, "widths < 5%; kappa is the weak one")
+    fo = ev["field_output_check"]
+    ck.add("s2_field_output_finite_and_comparable",
+           fo["all_finite"] and fo["n_points"] > 100,
+           {"n_points": fo["n_points"], "rel_l2_u": fo["rel_l2_u"]}, "same metric as S3")
+    asym = summaries.get("TB-asym", {})
+    ck.add("s2_adversary_geometry_is_the_asymmetric_one",
+           "adversary" in asym.get("metadata", {}).get("role", "")
+           and "self-check" in summaries.get("TB-base", {}).get("metadata", {}).get("role", ""),
+           [asym.get("metadata", {}).get("role"),
+            summaries.get("TB-base", {}).get("metadata", {}).get("role")],
+           "TB-asym = adversary table, TB-base = self-check")
 
 
 def k0_truth_side_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
@@ -512,28 +632,44 @@ def _lens_area_note(geom: TGeometry) -> float:
 def main() -> int:
     ap = argparse.ArgumentParser(description="route2 K0/S1 stdlib self-test")
     ap.add_argument("--json", default=str(DEFAULT_OUT), help="output json (scratch dir)")
-    ap.add_argument("--case", default="TB-base")
+    ap.add_argument("--cases", default="TB-base,TB-asym",
+                    help="comma list; both run by default because TB-asym is now the "
+                         "adversary-table geometry (ruling R2-1)")
     args = ap.parse_args()
 
-    geom = TGeometry(TCase(**{k: v for k, v in geom_case_kwargs(args.case).items()}))
     ck = Check()
-    print(f"# route2 stdlib self-test  case={geom.case.case_id} theta={geom.case.theta_deg} "
-          f"poly_area={geom.area():.4f} perimeter={geom.perimeter():.4f}")
-    geometry_checks(ck, geom)
-    jacobian_checks(ck, geom)
-    manufactured_field_checks(ck, geom)
-    fd_checks(ck, geom)
+    tmp_root = Path(args.json).parent / "selftest_tmp"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    summaries: Dict[str, dict] = {}
+    case_ids = [c.strip() for c in args.cases.split(",") if c.strip()]
+    for case_id in case_ids:
+        geom = TGeometry(case_by_id(case_id))
+        ck.prefix = "" if len(case_ids) == 1 else f"{case_id}."
+        print(f"# route2 stdlib self-test  case={geom.case.case_id} theta={geom.case.theta_deg}"
+              f" W_up={geom.case.w_branch_up} W_dn={geom.case.w_branch_down}"
+              f" area={geom.area():.4f} perimeter={geom.perimeter():.4f}"
+              f" crotch=({geom.crotch[0]:.5f},{geom.crotch[1]:.5f})")
+        geometry_checks(ck, geom)
+        jacobian_checks(ck, geom)
+        manufactured_field_checks(ck, geom)
+        fd_checks(ck, geom)
+        tmp = tmp_root / case_id
+        tmp.mkdir(parents=True, exist_ok=True)
+        s1_pipeline_checks(ck, geom, tmp)
+        k0_truth_side_checks(ck, geom, tmp)
+        meshing_checks(ck, geom)
+        lens = _lens_area_note(geom)
+        summaries[case_id] = {"metadata": geom.case.to_metadata(), "area": geom.area(),
+                              "perimeter": geom.perimeter(), "crotch": geom.crotch,
+                              "lens_area": lens,
+                              "lens_fraction": lens / geom.area()}
+        print(f"# {case_id}: overlap-lens area {lens:.4f} "
+              f"({100.0 * lens / geom.area():.1f}% of domain) -- frame assignment is a "
+              f"convention there, made single-valued by blend weights for plan (b)")
+    ck.prefix = ""
     mesh_gate_checks(ck)
     k0_verdict_checks(ck)
-    tmp = Path(args.json).parent / "selftest_tmp"
-    tmp.mkdir(parents=True, exist_ok=True)
-    s1_pipeline_checks(ck, geom, tmp)
-    k0_truth_side_checks(ck, geom, tmp)
-    meshing_checks(ck, geom)
-    lens = _lens_area_note(geom)
-    print(f"# stem/branch overlap-lens area = {lens:.4f} "
-          f"({100.0 * lens / geom.area():.1f}% of the domain): frame assignment is a "
-          f"convention there, handled by blend weights in plan (b)")
+    impedance_checks(ck, summaries)
 
     out = Path(args.json)
     repo_root = HERE.parents[2]  # .../pinn-platform-v4
@@ -541,9 +677,8 @@ def main() -> int:
         raise SystemExit(f"refusing to write self-test output inside the repo: {out}")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"checks": ck.rows, "failed": ck.failed,
-                               "case": geom.case.to_metadata(),
-                               "lens_area": lens},
-                              ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                               "cases": summaries},
+                              ensure_ascii=False, indent=2) + chr(10), encoding="utf-8")
     print(f"json={out}")
     print(f"total={len(ck.rows)} failed={len(ck.failed)}")
     if ck.failed:
