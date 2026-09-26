@@ -225,7 +225,13 @@ def truth_score(case_root: Path, case_id: str, level: str, geom: tg.TGeometry) -
                                       "share_of_printing_bound": uni[worst_key]["share_of_bound"],
                                       "spread_star": uni[worst_key]["spread_star"],
                                       "printing_bound_star": uni[worst_key]["printing_bound_star"]},
-            "fd_step_gate": rs.fd_step_convergence_gate([mom_coarse, mom])}
+            "fd_step_gate": rs.fd_step_convergence_gate([mom_coarse, mom]),
+            # steps are given in units of the fine lattice (the scan needs only the ratio);
+            # kind=squared_error because momentum_mse is a squared residual, whose value-
+            # noise asymptote is (ulp/h^2)^2 -> 16x per halving, measured 15.9 on our own
+            # exact-solution scan at 6 digits.
+            "fd_step_scan": reference_resolution_scan([mom_coarse, mom], [2.0, 1.0],
+                                                      kind="squared_error")}
 
 
 # =============================================================== model side (torch)
@@ -394,6 +400,94 @@ def fd_derivs(t, nets, xy_norm, plan, geom, sigma, sharpness, detach_features=Fa
     return out
 
 
+# ------------------------------------------------- is the reference good enough to judge?
+# Preregistered 2026-09-26, BEFORE this was ever run on the instance, at the 统括官's
+# instruction: a second-derivative comparison may only be called FAIL when the reference
+# itself resolves the quantity it is disagreeing about.  Which term dominates is decided by
+# the DIRECTION of the step scan, not by a size the author finds convenient:
+#
+#   truncation (the stencil is right, the mesh is coarse) -> error FALLS as the step shrinks
+#   round-off / representation (the data cannot carry it) -> error RISES as the step shrinks
+#
+# A second central difference amplifies value noise by 4*ulp/h^2 (weights 1,-2,1) while its
+# truncation error falls as h^2, so the two have opposite slopes and cannot be confused.
+# If the scan says the reference does not resolve the quantity, the item is recorded
+# INDETERMINATE -- never PASS, never FAIL.  No threshold in residual_scorers.py is involved
+# in this decision, and it cannot rescue K0: K0-S4 still judges the run on its own terms.
+SECOND_ORDER_SLOPE_TOL = 0.25          # a factor-2 step change must move the error by
+                                       # h^2 -> 4x (down) or h^-4 -> 16x (up); +-25%
+ROUND_OFF_AMPLIFICATION = 4.0          # |1| + |-2| + |1| on the stored values
+
+
+def second_derivative_roundoff_bound(ulp: float, step: float) -> float:
+    """The largest move a second central difference can make when each stored value is
+    uncertain by `ulp`: weights (1, -2, 1) sum in absolute value to 4, divided by h^2."""
+    return ROUND_OFF_AMPLIFICATION * ulp / (step * step)
+
+
+def second_order_status(scan: dict | None, disagreement: float, tol: float) -> str:
+    """What a second-derivative disagreement is allowed to mean, given its own reference.
+
+    Pre-registered 2026-09-26 at the 统括官's instruction, written before any instance run:
+    RESOLVED_FAIL / RESOLVED_PASS only when the reference resolves the quantity, i.e. the
+    step scan sits in the truncation regime.  Otherwise INDETERMINATE -- which is neither a
+    pass nor an acquittal, and cannot rescue K0 because K0-S4 is judged separately.
+    """
+    if not scan:
+        return "INDETERMINATE"
+    if scan.get("status") != "TRUNCATION":
+        return "INDETERMINATE"
+    return "RESOLVED_FAIL" if disagreement > tol else "RESOLVED_PASS"
+
+
+def reference_resolution_scan(errors: Sequence[float], steps: Sequence[float],
+                              kind: str = "error") -> dict:
+    """Which regime owns a disagreement series measured on one field at shrinking steps?
+
+    Ordered `errors[i]` at `steps[i]`, steps strictly decreasing.  The slope is taken from
+    the ENDPOINTS in log-log (a per-halving factor), because a series can leave its
+    asymptotic regime mid-scan; every pairwise factor is still reported, so a series that
+    is not clean stays visible instead of being silently classified.
+
+    The two asymptotes are far apart and both are derived, not fitted:
+      * truncation-dominated      error ~ h^2   -> factor 0.25 per halving
+      * value-noise dominated     error ~ ulp/h^2 (weights 1,-2,1) -> factor 4 per halving
+        (and the squared residual, which is what momentum_mse is, moves by 16 per halving)
+    Anything between those bands means this reference cannot resolve the quantity, and the
+    item it feeds is then INDETERMINATE -- not passed, not failed.
+    """
+    if len(errors) < 2 or len(errors) != len(steps):
+        return {"status": "INDETERMINATE", "reason": "need >=2 (step, error) pairs",
+                "factors_per_halving": []}
+    if min(errors) <= 0.0 or min(steps) <= 0.0:
+        return {"status": "INDETERMINATE",
+                "reason": f"non-positive step or error in the scan: {list(zip(steps, errors))}",
+                "factors_per_halving": []}
+    pairs = []
+    for (e0, s0), (e1, s1) in zip(zip(errors, steps), list(zip(errors, steps))[1:]):
+        pairs.append((e1 / e0) ** (math.log(2.0) / math.log(s0 / s1)))
+    e0, s0, e1, s1 = errors[0], steps[0], errors[-1], steps[-1]
+    factor = (e1 / e0) ** (math.log(2.0) / math.log(s0 / s1))
+    # per-halving asymptotes, by what the series measures:
+    #   kind="error":          truncation h^2 -> 0.25,  value noise ulp/h^2 -> 4
+    #   kind="squared_error":  its square:            -> 0.0625,           -> 16
+    # boundaries sit at the geometric midpoint of each asymptote and 1, so the verdict is
+    # not a fitted number.  The 16 side is MEASURED, not assumed: the exact-solution scan
+    # at 6 digits gave mse(0.04)/mse(0.08) = 15.9 (documented in the design note).
+    theo = {"error": (0.25, 4.0), "squared_error": (0.0625, 16.0)}
+    if kind not in theo:
+        raise ValueError(f"reference_resolution_scan: unknown kind {kind!r}")
+    down, up = theo[kind]
+    lo_b, hi_b = math.sqrt(down), math.sqrt(up)
+    status = ("TRUNCATION" if factor <= lo_b else
+              "ROUND_OFF" if factor >= hi_b else "INDETERMINATE")
+    return {"status": status, "kind": kind, "factor_per_halving": round(factor, 4),
+            "pairwise_factors": [round(x, 4) for x in pairs],
+            "endpoints": [[s0, e0], [s1, e1]],
+            "bands": {"TRUNCATION_below": lo_b, "ROUND_OFF_above": hi_b,
+                      "asymptotes_per_halving": {"truncation": down, "value_noise": up}}}
+
+
 def _flatten(x) -> List[float]:
     """Tensors and plain nested lists through the same door.
 
@@ -556,11 +650,24 @@ def run_gate(case_root: Path, case_id: str, level: str, sigma: float,
         ref = fd_derivs(t, nets, xy, plan, geom, sigma, sharp)
         first = max(_rel_err(auto[k], ref[k]) for k in ("u_x", "u_y", "v_x", "v_y",
                                                         "p_x", "p_y"))
-        second = max(_rel_err(auto[k], ref[k]) for k in ("u_xx", "u_yy", "v_xx", "v_yy"))
+        second_keys = ("u_xx", "u_yy", "v_xx", "v_yy")
+        second = max(_rel_err(auto[k], ref[k]) for k in second_keys)
+        # Same autograd value against FD references at three step sizes: if the reference's
+        # own truncation dominates, the error falls with the step and the comparison
+        # resolves the quantity; if float64 cancellation dominates, it rises.  The
+        # classification is `reference_resolution_scan` (pure stdlib, unit-tested below);
+        # this loop only feeds it numbers.
+        scan_steps = [FD_STEP_NORM * 4.0, FD_STEP_NORM, FD_STEP_NORM / 4.0]
+        scan_err = []
+        for _st in scan_steps:
+            _ref_st = fd_derivs(t, nets, xy, plan, geom, sigma, sharp, step=_st)
+            scan_err.append(max(_rel_err(auto[k], _ref_st[k]) for k in second_keys))
         reading = residual_from({k: auto[k] for k in ("u_xx", "u_yy", "v_xx", "v_yy",
                                                       "p_x", "p_y", "u_x", "v_y")})
         model_scores[plan] = reading["momentum_mse"]
-        chain[plan] = {"first_total_derivative": first, "second_total_derivative": second}
+        chain[plan] = {"first_total_derivative": first, "second_total_derivative": second,
+                       "second_reference_scan": reference_resolution_scan(scan_err,
+                                                                          scan_steps)}
         extra[f"plan_{plan}"] = {"supervised_loss_z": final_loss,
                                  "continuity_mse": reading["continuity_mse"],
                                  "momentum_by_fd": residual_from({
@@ -601,6 +708,18 @@ def run_gate(case_root: Path, case_id: str, level: str, sigma: float,
                                    for k, v in model_scores.items()},
         "chain": chain, "extra": extra,
         "fd_step_same_lattice": truth["fd_step_same_lattice"],
+        "reference_resolution": {
+            "truth_mse_step_scan": truth.get("fd_step_scan"),
+            "chain_second_scan": {pl: chain[pl].get("second_reference_scan") for pl in chain},
+            "second_order_items": {
+                f"K0-C_{pl}_second_total_derivative":
+                    second_order_status(chain[pl].get("second_reference_scan"),
+                                        chain[pl]["second_total_derivative"],
+                                        rs.K0_CHAIN_SECOND_REL_MAX) for pl in chain},
+            "rule": "pre-registered 2026-09-26: a second-derivative item is only called "
+                    "FAIL when its own reference resolves the quantity (step scan in the "
+                    "truncation regime); otherwise INDETERMINATE -- not a pass, and not a "
+                    "rescue, since K0-S4 still judges the run on its own terms."},
         "axis_uniformity_worst": truth.get("axis_uniformity_worst"),
         "denominator_is": "fixed-budget supervised fit on the dense truth "
                           "(a best-case model reading, not the final S3 PINN)",

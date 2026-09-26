@@ -1677,6 +1677,93 @@ def defect8_checks(ck: Check) -> None:
            "list has no .detach, and no assertion ever called _rel_err with a list before")
 
 
+
+def k0_referee_checks(ck: Check) -> None:
+    """A second-derivative referee that does not depend on the file's digits, and the
+    rule that says when the FD-based reference is not allowed to call anything a FAIL.
+
+    Field: G(x,y) = sum_k c_k exp(-r_k^2 / 2 sigma^2) over the three branch frames -- the
+    same Gaussian proximity the plan-b features are built from.  d2G/dx2 is derived by
+    hand (below) and used as the referee, so nothing here reads a printed file.
+    """
+    import k0_truth_gate as kg
+    geom = TGeometry(case_by_id("TB-base"))
+    frames = {k: geom.frames[k] for k in (STEM, UP, DOWN)}
+    coef = {STEM: 0.7, UP: -0.3, DOWN: 0.5}
+    sig = 0.15
+
+    def comp(k: int, x: float, y: float) -> float:
+        xi, eta = frames[k].local(x, y)
+        return coef[k] * math.exp(-(xi * xi + eta * eta) / (2.0 * sig * sig))
+
+    def comp_d2_xx(k: int, x: float, y: float) -> float:
+        # psi = exp(-q), q = (xi^2+eta^2)/(2 sig^2); d2psi/dx2 = psi (qx^2 - qxx) with
+        # qx = (xi dx + eta mx)/sig^2 and qxx = (dx^2+mx^2)/sig^2 = 1/sig^2 (unit vectors)
+        fr = frames[k]
+        xi, eta = fr.local(x, y)
+        qx = (xi * fr.d[0] + eta * fr.m[0]) / (sig * sig)
+        qxx = (fr.d[0] ** 2 + fr.m[0] ** 2) / (sig * sig)
+        return coef[k] * math.exp(-(xi * xi + eta * eta) / (2.0 * sig * sig)) * (qx * qx - qxx)
+
+    nodes = []
+    for k in frames:
+        fr = frames[k]
+        for i in range(41):
+            for j in (0, 8, 17, 25, 34):
+                nodes.append((k,) + fr.global_xy(fr.length * i / 40.0,
+                                                 -0.9 * fr.half_width
+                                                 + 1.8 * fr.half_width * j / 34.0))
+
+    def rel_err_at(step: float, round_to: int | None) -> float:
+        num = den = 0.0
+        for (k, x, y) in nodes:
+            val = (lambda v: round(v, round_to) if round_to is not None else v)
+            fd = (val(comp(k, x + step, y)) - 2.0 * val(comp(k, x, y))
+                  + val(comp(k, x - step, y))) / (step * step)
+            ex = comp_d2_xx(k, x, y)
+            num += (fd - ex) ** 2
+            den += ex * ex
+        return math.sqrt(num / den)
+
+    steps = [4.0e-3, 1.0e-3, 2.5e-4]
+    exact = kg.reference_resolution_scan([rel_err_at(s, None) for s in steps], steps)
+    six = kg.reference_resolution_scan([rel_err_at(s, 6) for s in steps], steps)
+    six_sq = kg.reference_resolution_scan([rel_err_at(s, 6) ** 2 for s in steps], steps,
+                                          kind="squared_error")
+    ck.add("referee.hand_derived_reference_is_reached_by_exact_data",
+           exact["status"] == "TRUNCATION" and 0.18 < exact["factor_per_halving"] < 0.32
+           and exact["endpoints"][1][1] < 1.0e-5,
+           {"factors": exact["pairwise_factors"], "err at finest": exact["endpoints"][1][1]},
+           "error falls 4x per halving (h^2 truncation) -> the referee resolves the quantity")
+    ck.add("referee.six_digit_data_flips_the_direction",
+           six["status"] == "ROUND_OFF" and 3.0 < six["factor_per_halving"] < 5.0
+           and six_sq["status"] == "ROUND_OFF" and 12.0 < six_sq["factor_per_halving"] < 22.0,
+           {"per_halving_error": six["factor_per_halving"],
+            "per_halving_squared": six_sq["factor_per_halving"],
+            "theory": "4x per halving for the error, 16x for a squared residual"},
+           "shrinking the step makes it WORSE -> this reference cannot judge the stencil")
+    bound = [kg.second_derivative_roundoff_bound(tg.TGeometry.half_ulp(1.5), s) for s in steps]
+    meas = [rel_err_at(s, 6) for s in steps]
+    rms_scale = math.sqrt(sum(comp_d2_xx(k, x, y) ** 2 for (k, x, y) in nodes) / len(nodes))
+    ratio = [max(b / rms_scale, 1e-30) / max(m, 1e-30) for b, m in zip(bound, meas)]
+    ck.add("referee.roundoff_bound_holds_without_being_loose",
+           all(b >= m for b, m in zip(bound, meas)) and max(ratio) < 1.0e3,
+           {"bound/measured": [round(r, 1) for r in ratio],
+            "bound_abs": ["%.1e" % b for b in bound], "measured": ["%.1e" % m for m in meas]},
+           "4*ulp/h^2 is an upper bound on the move and within 3 decades of the measurement")
+    flat = kg.reference_resolution_scan([0.05, 0.05, 0.05], steps)
+    ck.add("referee.a_flat_series_is_called_what_it_is", flat["status"] == "INDETERMINATE",
+           flat["pairwise_factors"], "no slope -> no verdict, and no silent pass either")
+    ck.add("referee.status_rule_cannot_be_used_as_an_acquittal",
+           kg.second_order_status(exact, 0.4, rs.K0_CHAIN_SECOND_REL_MAX) == "RESOLVED_FAIL"
+           and kg.second_order_status(six, 0.4, rs.K0_CHAIN_SECOND_REL_MAX) == "INDETERMINATE"
+           and kg.second_order_status(exact, 1.0e-6, rs.K0_CHAIN_SECOND_REL_MAX)
+           == "RESOLVED_PASS" and kg.second_order_status(None, 0.0, 0.05) == "INDETERMINATE",
+           {"resolving_ref+big": "RESOLVED_FAIL", "resolving_ref+small": "RESOLVED_PASS",
+            "noise_ref": "INDETERMINATE", "no scan": "INDETERMINATE"},
+           "INDETERMINATE appears only when the reference is blind, never to hide a fail")
+
+
 def _lens_area_note(geom: TGeometry) -> float:
     if "lens_area" not in _AGREEMENT:
         _AGREEMENT.update(_polygon_matches_frames(geom))
@@ -1778,6 +1865,7 @@ def main() -> int:
     k0_verdict_checks(ck)
     module_hygiene_checks(ck)
     defect8_checks(ck)
+    k0_referee_checks(ck)
     real_artefact_checks(ck)
     impedance_checks(ck, summaries, tmp_root)
 
