@@ -7,7 +7,7 @@
 # have metrics.json, and every file is re-fetched and hash-checked against the pinned commit.
 set -uo pipefail
 
-PIN=f6073c20f45645eba9ff0498ae63f82cffadb562
+PIN=44559b2e79f50323a6153f28749fbb041e914b5c
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 PHASE="${1:-check}"
@@ -23,12 +23,12 @@ export SWEEP_OUT_DIR="$WS/out"
 export UNIT_DENSE_TRAIN_SEC=85 UNIT_SPARSE_TRAIN_SEC=56 BEND_UNIT_SEC=118 UNIT_EVAL_SEC=2
 
 declare -A EXPECT=(
-  [model/scripts/sweep_lib.sh]=69a86b7c1a90d6b56f6a969140185ba7ac6848a493d9677c530f30fabf867401
-  [model/scripts/sweep_t5.sh]=338290bbe7f815a0a90d93221f71d5c458b87ee2b275a826f15b47e8a064c16e
-  [model/scripts/train_joint_upnp_pin.py]=a44528a9142d601741d786d4b3e39f64ff51e5e5ead5e27ed29549c9e1392eff
+  [model/scripts/sweep_lib.sh]=fa310d1e4c8bd41227cf6ed3eb8c424dcc788c3eda07972f4a7e5a30a1c92014
+  [model/scripts/sweep_t5.sh]=fabc15b442f6eebe2a2eca941548db867e4756512cd5914f8a1e84e9cc9960e7
+  [model/scripts/train_joint_upnp_pin.py]=8777a8560d8915d98542bf01f45411173c12dc6d0a647013f0c1665bddc064fb
   [model/scripts/baselines_pod.py]=a1bc77cea2f5d24a34b1d8209de10e6e1f6212a87ec7560160e2e046c0381e14
   [model/scripts/selftest_ledger.sh]=e5d4bc2dd077d9f84fd48d613f361d456d7d6d5f9078c241d0aab42662e282bb
-  [model/scripts/analyze_sweep.py]=39f9de7ad4a6c63ebb6e039c05271787374add6da74b8de60e891fa94688d6e5
+  [model/scripts/analyze_sweep.py]=0883a1066050127882b60661cdca2538374ef6d85063b30be6f34e53b9b20c69
   [model/scripts/generate_observations_seeded.py]=0cac210ca0a69f858c7669a66e14d8a268b14636117af353458ad278dbd47d28
   [model/scripts/ops/build_runs_index.py]=9ec4c8fc9f6c867695ace375f74f1fc9b7e5b6502690dbb8b4b14a3d39a9e95b
 )
@@ -147,6 +147,17 @@ if [ "$PHASE" = full ]; then
   step armC_pre fatal "cd model && python3 scripts/baselines_pod.py --self-check"
   step seg09_baseline fatal "bash model/scripts/sweep_t5.sh --baseline --seg 09 --budget-min 45"
   log "FULL_TRAIN_DONE"
+fi
+
+if [ "$PHASE" = evalextra ]; then
+  # 44559b2 gives arm A a test-evaluation chain (--eval-test-cases). The 10 arm-A runs already
+  # have metrics.json, so the sweep takes the [skip-train] path and only produces evaluations:
+  # this is a backfill, not a retrain.
+  step seg14_armA_testeval fatal "bash model/scripts/sweep_t5.sh --baseline --no-pod --only-cells 20,21 --seg 14 --budget-min 15"
+  step analyze_full nonfatal "python3 model/scripts/analyze_sweep.py --split test --metric rel_l2_speed --paired t5c04,t5c08 --paired t5c22,t5c01 --paired t5c23,t5c04 --paired t5c20,t5c01 --paired t5c21,t5c04 --out out/analyze_t4_full.json"
+  step index_final2 fatal "python3 model/scripts/ops/build_runs_index.py"
+  log "EVALEXTRA_DONE"
+  exit 0
 fi
 
 if [ "$PHASE" = tail ] || [ "$PHASE" = full ]; then
