@@ -55,7 +55,17 @@ get() {  # fetch, hash-check, only then replace
     rc=$?
     echo "K0_${LV}_RC=$rc K0_${LV}_s=$(( $(date +%s) - Tc ))"
     grep -E 'truth|model_|balance|fd_step|momentum_mse|reference|Traceback|rror|verdict|FAIL|K0-' "/tmp/k0_$LV.txt" | head -34
-    cp -f "$W/data/TB-base/k0_verdict.json" "$O/k0_e4f32a8_verdict_$LV.json" 2>/dev/null
+    # Only copy the verdict when THIS run produced it. The gate writes k0_verdict.json at the
+    # end, so after a crash the file on disk is the previous pin's — copying it unconditionally
+    # (what run_k0_471228b.sh did) lets a stale verdict masquerade as a fresh reading.
+    if [ "$rc" = 0 ] && [ -f "$W/data/TB-base/k0_verdict.json" ]; then
+      cp -f "$W/data/TB-base/k0_verdict.json" "$O/k0_e4f32a8_verdict_$LV.json"
+      echo "VERDICT_COPIED $LV mtime=$(stat -c %y "$O/k0_e4f32a8_verdict_$LV.json" | cut -c1-19)"
+    else
+      echo "NO_VERDICT_FROM_THIS_RUN level=$LV rc=$rc (盘上的 k0_verdict.json 未采纳，可能是上一枚留下的)"
+      ls -l "$W/data/TB-base/k0_verdict.json" 2>&1 | cut -c1-70
+      continue
+    fi
     python3 - "$O/k0_e4f32a8_verdict_$LV.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
