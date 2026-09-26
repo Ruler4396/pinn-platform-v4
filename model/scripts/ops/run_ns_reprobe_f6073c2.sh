@@ -8,7 +8,7 @@
 # Re-running is safe: nothing is deleted and every file is hash-checked before it lands.
 set -uo pipefail
 
-PIN=1eba9884d6107ad9403e85b1e2d2d44652a5a9dd
+PIN=fe0b074a5b0e5e355a359de8ef04f5cf6817a8d9
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="$WS/ffroot.tgz"
@@ -19,10 +19,10 @@ export PYTHONPATH="$WS/pylibs:${PYTHONPATH:-}"
 LEVELS="1e-3 1 10 50"
 
 declare -A EXPECT=(
-  [model/scripts/gen_ns_re_edp.py]=5e3a3c7e52fb9f97e4fb699f6095a5881e21e664d37e57b6e10e529a61046a9c
+  [model/scripts/gen_ns_re_edp.py]=ab824d089a121b563467a316940288b0078a24bd9d40dedbf7fd2fa0aa84c407
   [model/scripts/finalize_ns_truth.py]=1af30ad14426fcdc6397948fc79eedcd0cdfa061a09193fcec61f6123fa456ae
   [model/scripts/check_ns_re_to_stokes.py]=912f17e0a8088ff0ccfb01cbb938823aa1ff642c10723d2fa5ff37d7d40b9336
-  [model/scripts/selftest_ns_re.py]=cf47df668a85861f464d840304ca9188799a92d63cfd5c0f2cbebee185903e34
+  [model/scripts/selftest_ns_re.py]=e7c744f530ee68a35be1d40b8f7519c1bd171746d1bfbb0a2b3e950de37bf609
 )
 
 log() { printf '%s | %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -87,6 +87,10 @@ fi
 
 if [ "$PHASE" = run ]; then
   step gen_write fatal "python3 model/scripts/gen_ns_re_edp.py --write"
+  # Probe FIRST, per route-2's order: at 21:12 it parsed clean and then died rc=8 on the
+  # inherited /root/dev write path (fixed in fe0b074). A probe whose success signal is an error
+  # code is not a probe, so require BOTH rc=0 and a non-empty raw csv.
+  step probe_syntax fatal "cd model/cases/contraction_2d/cfd/C-base_ns_re1 && nice -n 10 FreeFem++ -nw probe_syntax.edp && test -s probe_syntax_raw.csv && echo PROBE_OK"
   step list_edp fatal "find model/cases/contraction_2d/cfd -maxdepth 2 -name 'C-base_ns_re*.edp' | sort"
   for L in $LEVELS; do
     d="model/cases/contraction_2d/cfd/C-base_ns_re${L}"
