@@ -192,7 +192,8 @@ def self_test() -> int:
         print(f"  [OK] 失败正对照：求解器 rc=8 的样本使 all_zero_rc=False（rc_all={bad_res['rc_all']}）"
               f" ⇒ 主循环会走 INVALID 分支，不会把失败读成单价")
         # ⑤ 真件演练（零求解）：对仓库里真实 .edp 跑 prepare()，父目录必须可落文件
-        for real_case in ("C-base", "B-base"):
+        # 统括官 §五 的反对照要求是"五个工况全过"，不是抽两个 ⇒ 直接吃 DEFAULT_CASES
+        for real_case in [c.strip() for c in DEFAULT_CASES.split(",")]:
             rwork = root / ("rw_" + real_case)
             rwork.mkdir(parents=True, exist_ok=True)
             dst = prepare(find_edp(real_case), rwork, real_case, rwork / "gen")
@@ -203,7 +204,7 @@ def self_test() -> int:
             for t in tg:
                 assert t.parent.is_dir() and (t.parent / ".x").parent.exists(), t
                 assert _descends(t, rwork / "gen"), "改写后的目标跑到了工作区外：%s" % t
-            print("  [OK] 真件 prepare（%s）：%d 个 ofstream 目标全部父目录存在、且都在本次工作区内" % (real_case, len(tg)))
+            print("  [OK] 真件 prepare（%s）：%d 个 ofstream 目标全部父目录存在、可落文件、且都在本次工作区内" % (real_case, len(tg)))
         # ⑥ 必定红：故意给一个不存在的目标目录 ⇒ verify_targets 必须点名，而不是继续跑
         try:
             verify_targets("C-boom", [root / "nope" / "deep" / "x.csv"])
