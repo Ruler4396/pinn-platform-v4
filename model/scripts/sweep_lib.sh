@@ -182,6 +182,7 @@ RUNS_FAIL=0
 RUNS_SKIP=0
 RUNS_GATE_FAIL=0
 RUNS_EVAL_FAIL=0
+RUNS_EVALONLY=0
 SWEEP_PID="${SWEEP_PID:-$$}"   # 可由环境注入（selftest_ledger.sh 用它来扮演"本进程"），默认取当前 shell pid
 
 _progress_append() {  # $1=run $2=family $3=cell $4=train_seed $5=obs_seed $6=phase $7=wall_ms $8=rc $9=metrics_json
@@ -478,7 +479,7 @@ train_joint() {  # $1..$11 同上，$12=eval_test_cases（不传就没有 test �
   # 否则一次 --max-steps 1 的探针会永久占住这个格子的名字。
   if [[ -f "${run_dir}/metrics.json" ]] && ! grep -aq '"smoke": true' "${run_dir}/metrics.json"; then
     echo "[skip-train-joint] ${run_name}"
-    RUNS_SKIP=$((RUNS_SKIP + 1))
+    local 是补评估=0
     # 跳过训练 ≠ 跳过评估。9/26 的缺陷：sweep 从没把 test 工况递给臂A（grep eval-test-cases = 0），
     # 于是 evaluations/ 里只有 metrics_val_dense.json ⇒ 必做1 的臂A 两个口径都进不了表。
     if [[ -n "${eval_test}" && ! -f "${run_dir}/evaluations/metrics_test_dense.json" ]]; then
@@ -496,7 +497,9 @@ train_joint() {  # $1..$11 同上，$12=eval_test_cases（不传就没有 test �
         RUNS_FAIL=$((RUNS_FAIL + 1)); RUNS_EVAL_FAIL=$((RUNS_EVAL_FAIL + 1)); return 1
       fi
       echo "[ok-eval-only] ${run_name}"
+      是补评估=1
     fi
+    if [[ "${是补评估}" == 1 ]]; then RUNS_EVALONLY=$((RUNS_EVALONLY + 1)); else RUNS_SKIP=$((RUNS_SKIP + 1)); fi
     return 0
   fi
   echo "[train-joint] ${run_name} (cell=${cell} ts=${train_seed})" | tee "${log}"
@@ -567,16 +570,17 @@ seal_segment() {
   #      且"成功 + 续跑跳过"的 run 数 = 段内终态成功的 run 数。
   # grep -c 在"没匹配"时返回合法的 0 ⇒ "本段 0 行"一律 INVALID，不能当通过。
   python3 - "${PROGRESS}" "${SEGMENT_TAG}" "${RUNS_DONE}" "${RUNS_FAIL}" "${RUNS_SKIP}" "${expected}" \
-    "${SWEEP_PID}" "${RUNS_GATE_FAIL}" "${RUNS_EVAL_FAIL}" "${SWEEP_FORCE_LEDGER_BREAK:-}" <<'LEDGER_PY'
+    "${SWEEP_PID}" "${RUNS_GATE_FAIL}" "${RUNS_EVAL_FAIL}" "${RUNS_EVALONLY}" "${SWEEP_FORCE_LEDGER_BREAK:-}" <<'LEDGER_PY'
 import json, os, sys
 for _s in (sys.stdout, sys.stderr):
     try:
         _s.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-path, seg, done, fail, skip, expected, mypid, gate_fail, eval_fail, breakage = sys.argv[1:13]
+path, seg, done, fail, skip, expected, mypid, gate_fail, eval_fail, evalonly, breakage = sys.argv[1:14]
 done, fail, skip = int(done), int(fail), int(skip)
 gate_fail, eval_fail = int(gate_fail or 0), int(eval_fail or 0)
+evalonly = int(evalonly or 0)
 if breakage == "1":          # 自测开关：人为把账本读废，确认这条闸会变红
     print("[self-test] 已按要求模拟账本损坏", file=sys.stderr)
     raise SystemExit(1)
@@ -586,7 +590,7 @@ if gate_fail:
 if not os.path.exists(path):
     print("INVALID: 记账文件 %s 不存在 ⇒ 本段什么都没记上，不能声称跑过" % path, file=sys.stderr)
     raise SystemExit(1)
-rows, bad_lines = [], 0
+rows, all_rows, bad_lines = [], [], 0
 for line in open(path, encoding="utf-8"):
     line = line.strip()
     if not line:
@@ -596,6 +600,7 @@ for line in open(path, encoding="utf-8"):
     except Exception:
         bad_lines += 1
         continue
+    all_rows.append(rec)
     if rec.get("segment") == seg:
         rows.append(rec)
 if bad_lines:
@@ -623,8 +628,20 @@ dup_ok = sorted(run for run in term_train
                 if sum(1 for r in rows if is_train(r) and r.get("run") == run and r.get("rc") == 0) > 1)
 train_lines = [r for r in rows if is_train(r)]
 repeats = len(train_lines) - len(term_train)
+# 补评估段（本段只做评估、不训练）：它的 run 在本段里没有 train 行，
+# 拿"段内终态成功数 == 成功 + 跳过"去比必然假红（实例段 14 实测：10 个 [ok-eval-only]、0 failures 仍 INVALID）。
+# 正确核法：本段被补评估的 run 必须在**任意段**有一条终态成功的 train 行，且本段评估行 rc=0。
+mine_evalonly = sorted({r.get("run") for r in mine if not is_train(r) and r.get("rc") == 0
+                        and r.get("run") not in term_train})
+all_latest = {}
+for r in all_rows:
+    all_latest[(r.get("run"), str(r.get("phase", "")))] = r
+orphan_evalonly = [run for run in mine_evalonly
+                   if not (all_latest.get((run, "train")) and all_latest[(run, "train")].get("rc") == 0)]
 
 problems = []
+if len(mine_evalonly) != evalonly:
+    problems.append("补评估单元数 内存=%d 账本=%d（本段只做评估、无 train 行的 run）" % (evalonly, len(mine_evalonly)))
 if mine_train_ok != done:
     problems.append("本进程训练成功数 内存=%d 账本=%d（pid=%s 的行）" % (done, mine_train_ok, mypid))
 if mine_bad != fail:
@@ -634,14 +651,17 @@ if term_bad:
                     % (len(term_bad), ", ".join(term_bad[:5])))
 if eval_bad:
     problems.append("有 %d 个 run 的评估阶段终态失败：%s" % (len(eval_bad), ", ".join(eval_bad[:5])))
-if len(term_ok) != done + skip:
+if orphan_evalonly:
+    problems.append("有 %d 个 run 被补了评估但它所在任何段都没有终态成功的 train 行：%s ⇒ 给失败的 run 补评估没有意义"
+                    % (len(orphan_evalonly), ", ".join(orphan_evalonly[:5])))
+if len(term_ok) + len(mine_evalonly) != done + skip + evalonly:
     problems.append("段内终态成功 run 数=%d ≠ 本次成功 %d + 续跑跳过 %d ⇒ 有 run 被跳过但账上没有成功行"
-                    % (len(term_ok), done, skip))
+                    % (len(term_ok) + len(mine_evalonly), done + evalonly, skip))
 if dup_ok:
     problems.append("同一 run 有多条成功 train 行（run-name 撞车或重复铺排？）：%s" % ", ".join(dup_ok[:5]))
-print("%d runs / %d failures / %d skipped / %d gate-fail / %d eval-fail  (账本段 %s：%d 行；本进程 pid=%s 成功 %d 失败 %d；"
+print("%d runs / %d failures / %d skipped / %d gate-fail / %d eval-fail / %d eval-only  (账本段 %s：%d 行；本进程 pid=%s 成功 %d 失败 %d；"
       "段内 distinct train run %d = 终态成功 %d + 终态失败 %d；重试行 %d)"
-      % (done, fail, skip, gate_fail, eval_fail, seg, len(rows), mypid, mine_train_ok, mine_bad,
+      % (done, fail, skip, gate_fail, eval_fail, evalonly, seg, len(rows), mypid, mine_train_ok, mine_bad,
          len(term_train), len(term_ok), len(term_bad), repeats))
 if repeats:
     print("[ledger] 段内有 %d 行是重试/续跑的重复入账 ⇒ 单价与机时统计请按 distinct run 取最后一条" % repeats)

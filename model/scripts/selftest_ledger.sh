@@ -18,7 +18,7 @@ trap 'rm -rf "${WORK}"' EXIT
 # $9..=账本行（printf 格式，%s=本进程 pid，%s=段名）
 run_case() {
   local name="$1" want="$2" done_n="$3" fail_n="$4" skip_n="$5" exp="$6" gate="$7" evalf="$8"
-  local want_sub="${EXPECT_SUB:-}"   # 判据子串走环境变量，账本行仍从 $9 起排
+  local want_sub="${EXPECT_SUB:-}" evalonly_n="${EVALONLY:-0}"   # 判据子串/补评估数走环境变量
   shift 8
   local case_dir="${WORK}/${name}"
   mkdir -p "${case_dir}"
@@ -33,7 +33,7 @@ run_case() {
       bash -c "
         source '${HERE}/sweep_lib.sh' >/dev/null 2>&1 || exit 70
         RUNS_DONE=${done_n}; RUNS_FAIL=${fail_n}; RUNS_SKIP=${skip_n}
-        RUNS_GATE_FAIL=${gate}; RUNS_EVAL_FAIL=${evalf}
+        RUNS_GATE_FAIL=${gate}; RUNS_EVAL_FAIL=${evalf}; RUNS_EVALONLY=${evalonly_n}
         seal_segment '${exp}' 2>&1
       "
   )"
@@ -63,7 +63,7 @@ L() {  # L <run> <phase> <rc> <pid>
 }
 
 FAILS=0
-echo "== seal_segment 九例（驱动真实函数，不是复刻逻辑）=="
+echo "== seal_segment 十二例（驱动真实函数，不是复刻逻辑）=="
 # ① 干净：3 个 run 各一行 train rc=0，内存 3/0/0
 run_case "1 正常绿" ok 3 0 0 "" 0 0 \
   "$(L r1 train 0 111)" "$(L r2 train 0 111)" "$(L r3 train 0 111)" || FAILS=$((FAILS+1))
@@ -91,9 +91,21 @@ EXPECT_SUB="同一 run 有多条成功 train 行" run_case "8 同 run 两条成�
 EXPECT_SUB="前置闸门没过" run_case "9 闸门失败计数" invalid 1 0 0 "" 1 0 \
   "$(L r1 train 0 111)" || FAILS=$((FAILS+1))
 
+# ⑩ 补评估段（实例段 14 的真实现场）：本段 0 条 train 行、10 个 run 只有 eval_test rc=0，
+#    且这些 run 的 train 终态成功行在**别的段**（s00）。旧等式会假红；修完必须绿。
+L0() { printf '{"run": "%s", "phase": "%s", "rc": %s, "pid": "%s", "segment": "s00", "family": "contraction_2d", "cell": "t5c20", "train_seed": 42, "obs_seed": 0, "wall_ms": 139000}
+' "$1" "$2" "$3" "$4"; }
+EO_LINES=()
+for i in 1 2 3; do EO_LINES+=("$(L0 "r$i" train 0 100)" "$(L r$i eval_test 0 111)"); done
+EVALONLY=3 run_case "10 补评估段不该假红" ok 0 0 0 "" 0 0 "${EO_LINES[@]}" || FAILS=$((FAILS+1))
+# ⑪ 正对照：给一个从没训练成功的 run 补评估 ⇒ 必须红（证明上一条不是把闸门改松）
+EVALONLY=2 run_case "11 正对照·给失败run补评估要红" invalid 0 0 0 "" 0 0   "$(L0 r1 train 0 100)" "$(L r1 eval_test 0 111)" "$(L r2 eval_test 0 111)" || FAILS=$((FAILS+1))
+# ⑫ 正对照：内存说补评估 3 个、账本只有 2 个 ⇒ 红
+EVALONLY=3 run_case "12 正对照·补评估数不符要红" invalid 0 0 0 "" 0 0   "$(L0 r1 train 0 100)" "$(L r1 eval_test 0 111)" "$(L0 r2 train 0 100)" "$(L r2 eval_test 0 111)" || FAILS=$((FAILS+1))
+
 echo
 if [[ ${FAILS} -eq 0 ]]; then
-  echo "总体：九例全符合（含 3、6 两条'必定 INVALID'的正对照 ⇒ 闸门没被改成永远绿）"
+  echo "总体：十二例全符合（含 3/6/11/12 四条'必定 INVALID'的正对照 ⇒ 闸门没被改成永远绿）"
   exit 0
 fi
 echo "总体：有 ${FAILS} 例不符 ⇒ 对账函数不可信"
