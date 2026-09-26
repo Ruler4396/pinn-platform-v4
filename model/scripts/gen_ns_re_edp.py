@@ -36,13 +36,15 @@ repeats them, because "it looks like FreeFEM" is not a category:
       four mesh levels): `if (c) break;` inside a `for` block;
   (iii) **not** yet run on this build, and the reason `probe_syntax.edp` exists: `floor`
       (only ever as `floor(x*1.0eN)/1.0eN`), the fespace assignments `u0 = u;` and
-      `u = 0.0;`, and a `solve` statement inside a block.  The probe appends each of them to
-      the shipped Stokes text as a pure append, one construct per line behind a
-      `// PROBE <tag>` comment, and closes its blocks the same merged way the real file does;
-      it costs about 1.5 s.  If it stops at a tagged line, the reported line number names
-      exactly one construct and the difference set here has a documented replacement
-      (integer truncation for `floor`; interpolate-into-buffer for `u0 = u`).  The fix
-      belongs in this generator, not in a hand-edited .edp.
+      `u = 0.0;`, and a `solve` statement inside a block.  The probe appends them to the
+      shipped Stokes text -- with the shipped text's two absolute output paths redirected,
+      because on 2026-09-26 21:12 the instance parsed all 158 lines without a syntax error
+      and then died with rc=8 on `/root/dev/pinn_v3/...` -- one construct per line behind a
+      `// PROBE <tag>` comment, and it closes its blocks the same merged way the real file
+      does.  If it stops at a tagged line, the reported line number names exactly one
+      construct and the difference set here has a documented replacement (integer truncation
+      for `floor`; interpolate-into-buffer for `u0 = u`).  The fix belongs in this generator,
+      not in a hand-edited .edp.
 
 `pow` is deliberately absent: it appears in other shipped cases' .edp files but not in the
 contraction file whose reproduction is what we verified, and `(u-u0)*(u-u0)` needs no
@@ -159,7 +161,8 @@ def build_spec(widths: dict[str, int]) -> dict:
         "//   assignments u = 0.0 and u0 = u, and a solve statement inside a block.  The file",
         "//   model/cases/contraction_2d/cfd/C-base_ns_re1/probe_syntax.edp appends each of",
         "//   them, one per line and tagged with a '// PROBE' comment, to the shipped Stokes",
-        "//   text; run that first, it costs about 1.5 s and no postprocessing.",
+        "//   text with its two output paths redirected (the shipped /root/dev path does not",
+        "//   exist on the instance: clean parse, then rc=8); run that first, ~1.5 s.",
     ]
     insert_before = {
         "solve Stokes([u,v,p],[ut,vt,qt], solver=UMFPACK) =": [
@@ -319,18 +322,34 @@ def syntax_findings(text: str) -> list[tuple[int, str, str]]:
     return hits
 
 
+PROBE_PATH_SWAP = (SHIPPED_ABS, "probe_syntax_raw.csv")
+
+
+def probe_base(stokes: str) -> str:
+    """The shipped Stokes text with ONLY its two output paths redirected.
+
+    Measured on the instance at 21:12: a probe that inherits `ofstream fout("/root/dev/…")`
+    parses all 158 lines without a syntax error and then dies with rc=8 before printing
+    anything, because that directory does not exist there. A probe whose success signal is an
+    error code is not a probe, so the inherited path is redirected -- and `selftest_ns_re.py`
+    proves this is the *only* edit to the shipped text, which keeps "nothing new but the
+    constructs under test" a checked claim instead of a description.
+    """
+    return stokes.replace(PROBE_PATH_SWAP[0], PROBE_PATH_SWAP[1])
+
+
 def probe_text(stokes: str, widths: dict[str, int]) -> str:
-    """The shipped Stokes file with the *new* constructs appended -- a pure append, so the
-    difference set is trivially the tail, and every construct the NS solve adds is compiled
-    against a file the instance has already solved successfully.
+    """`probe_base(stokes)` plus the appended block carrying the new constructs.
 
     One construct per line, each preceded by a `// PROBE <tag>` line: FreeFEM aborts at the
-    first syntax error and prints the line number, so a single 0.4 s run says which of
+    first syntax error and prints the line number, so a single run says which of
     `floor` / `u0 = u` / the iterated solve is the problem and which are already proven.
     """
     body = [
-        "// --- T6-Re syntax probe. Appended to the shipped Stokes text unchanged; nothing",
-        "//     below is a modelling choice, every line is a construct the NS file uses.",
+        "// --- T6-Re syntax probe. Nothing below is a modelling choice; every line is a",
+        "//     construct the NS file uses. The only edit to the shipped text above is the",
+        "//     two output paths, because the absolute /root/dev path does not exist on the",
+        "//     instance and gave rc=8 after an otherwise clean parse (2026-09-26 21:12).",
         "// PROBE real-decl",
         "//   Re is set to 1 here, not to the level's value: the construct under test is a",
         "//   real declaration named Re (the name has no underscore), and at 1.0 the probe's",
@@ -394,7 +413,8 @@ def probe_text(stokes: str, widths: dict[str, int]) -> str:
         "// PROBE end",
         'cout << "PROBE OK du2=" << du2 << endl;',
     ]
-    head = stokes if stokes.endswith("\n") else stokes + "\n"
+    head = probe_base(stokes)
+    head = head if head.endswith("\n") else head + "\n"
     return head + "\n".join(body) + "\n"
 
 
@@ -541,18 +561,31 @@ def main() -> int:
             target.write_text(ns if ns.endswith("\n") else ns + "\n", encoding="utf-8")
             print(f"    wrote {target.relative_to(case_dir.parents[1])}")
     if args.write:
+        base = probe_base(stokes)
         probe = probe_text(stokes, widths)
-        if not probe.startswith(stokes if stokes.endswith("\n") else stokes + "\n"):
-            print("the probe is not a pure append of the shipped text -- refusing")
+        base_h = base if base.endswith("\n") else base + "\n"
+        if not probe.startswith(base_h):
+            print("the probe is not [the path-swapped shipped text + an appended tail] "
+                  "-- refusing")
+            return 1
+        # The one declared edit to the shipped text, stated as a count so a future third
+        # substitution cannot pass as "just the paths".
+        changed = [i for i, (a, b) in enumerate(zip(stokes.split("\n"), base.split("\n")))
+                   if a != b]
+        if len(changed) != 2 or not all(PROBE_PATH_SWAP[0] in stokes.split("\n")[i]
+                                        for i in changed):
+            print(f"probe_base changed {len(changed)} lines, not the 2 output paths "
+                  f"(lines {changed}) -- refusing")
             return 1
         pfile = case_dir.parent / "C-base_ns_re1" / "probe_syntax.edp"
         pfile.parent.mkdir(parents=True, exist_ok=True)
         pfile.write_text(probe, encoding="utf-8")
-        tail = probe[len(stokes):]
+        tail = probe[len(base_h):]
         phits = syntax_findings(probe)
-        print(f"wrote {pfile.relative_to(case_dir.parents[1])}: the shipped text plus "
-              f"{len(tail.splitlines())} appended lines, one construct each, rejectable "
-              f"tokens={len(phits)} -- run this before the levels, it costs one Stokes solve")
+        print(f"wrote {pfile.relative_to(case_dir.parents[1])}: the shipped text with its 2 "
+              f"output paths redirected, plus {len(tail.splitlines())} appended lines "
+              f"(one construct each), rejectable tokens={len(phits)} -- run this before the "
+              f"levels; it writes probe_syntax_raw.csv and probe_syntax_pair.csv, costs ~1.5 s")
         bad += len(phits)
     if bad:
         print("REFUSING TO SHIP: the emitted text is either not the shipped file plus a "

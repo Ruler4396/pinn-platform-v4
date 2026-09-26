@@ -29,7 +29,8 @@
 //   assignments u = 0.0 and u0 = u, and a solve statement inside a block.  The file
 //   model/cases/contraction_2d/cfd/C-base_ns_re1/probe_syntax.edp appends each of
 //   them, one per line and tagged with a '// PROBE' comment, to the shipped Stokes
-//   text; run that first, it costs about 1.5 s and no postprocessing.
+//   text with its two output paths redirected (the shipped /root/dev path does not
+//   exist on the instance: clean parse, then rc=8); run that first, ~1.5 s.
 // Dimensionless geometry and fields (star variables)
 // Inlet average velocity = 1, outlet pressure = 0
 

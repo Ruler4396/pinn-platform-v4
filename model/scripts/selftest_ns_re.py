@@ -220,10 +220,22 @@ def main() -> int:
     check("v4.9 lint: no emitted line uses a construct the instance rejected", not hits,
           "; ".join(f"line {n}: {k}" for n, k, _ in hits[:4]))
     probe = gen.probe_text(shipped, widths)
-    appended = len(probe.split("\n")) - len(shipped.split("\n"))
-    check("probe is a pure append of the shipped text and is itself lint-clean",
-          probe.startswith(shipped) and not gen.syntax_findings(probe),
-          f"{appended} appended lines")
+    base = gen.probe_base(shipped)
+    base_nl = base if base.endswith("\n") else base + "\n"
+    diff_lines = [i for i, (a, b) in enumerate(zip(shipped.split("\n"), base.split("\n")))
+                  if a != b]
+    appended = len(probe.split("\n")) - len(base_nl.split("\n"))
+    check("probe = shipped + exactly the 2 output-path edits + an appended tail, and it is "
+          "lint-clean",
+          probe.startswith(base_nl) and len(diff_lines) == 2
+          and gen.PROBE_PATH_SWAP[0] in shipped and gen.PROBE_PATH_SWAP[0] not in probe
+          and not gen.syntax_findings(probe),
+          f"paths at lines {diff_lines}, {appended} appended lines, "
+          f"absolute path present: {gen.PROBE_PATH_SWAP[0] in probe}")
+    check("control: the reason for that edit is still true (the shipped text does carry the "
+          "absolute path the instance has no /root/dev for)",
+          gen.SHIPPED_ABS in shipped and gen.SHIPPED_ABS not in probe,
+          "2026-09-26 21:12: parsed 158 lines cleanly, then rc=8 on that path")
     for script, flag in (("gen_ns_re_edp.py", "--check-syntax"),
                          ("finalize_ns_truth.py", "--selfcheck"),
                          ("check_ns_re_to_stokes.py", "--selfcheck")):

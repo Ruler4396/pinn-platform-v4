@@ -85,7 +85,7 @@ for (int be = 0; be < Th.nbe; ++be) {
   if (vTag[iv1] == 0 || ((lab == 1 || lab == 2) && vTag[iv1] == 3)) vTag[iv1] = lab;
 }
 
-ofstream fout("/root/dev/pinn_v3/cases/contraction_2d/cfd/C-base/C-base_raw.csv");
+ofstream fout("probe_syntax_raw.csv");
 fout << "x_star,y_star,u_star,v_star,p_star,bc_tag" << endl;
 for (int i = 0; i < Th.nv; ++i) {
   real xx = Th(i).x;
@@ -93,9 +93,11 @@ for (int i = 0; i < Th.nv; ++i) {
   fout << xx << "," << yy << "," << u(xx,yy) << "," << v(xx,yy) << "," << p(xx,yy) << "," << vTag[i] << endl;
 }
 
-cout << "Saved: /root/dev/pinn_v3/cases/contraction_2d/cfd/C-base/C-base_raw.csv" << endl;
-// --- T6-Re syntax probe. Appended to the shipped Stokes text unchanged; nothing
-//     below is a modelling choice, every line is a construct the NS file uses.
+cout << "Saved: probe_syntax_raw.csv" << endl;
+// --- T6-Re syntax probe. Nothing below is a modelling choice; every line is a
+//     construct the NS file uses. The only edit to the shipped text above is the
+//     two output paths, because the absolute /root/dev path does not exist on the
+//     instance and gave rc=8 after an otherwise clean parse (2026-09-26 21:12).
 // PROBE real-decl
 //   Re is set to 1 here, not to the level's value: the construct under test is a
 //   real declaration named Re (the name has no underscore), and at 1.0 the probe's
