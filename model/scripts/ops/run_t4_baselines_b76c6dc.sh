@@ -7,7 +7,7 @@
 # have metrics.json, and every file is re-fetched and hash-checked against the pinned commit.
 set -uo pipefail
 
-PIN=944055471d85e951175eb991073462c16e1e50fd
+PIN=680083f48ee32621debae8b8d705eba516d4e9ba
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 PHASE="${1:-check}"
@@ -23,7 +23,7 @@ export SWEEP_OUT_DIR="$WS/out"
 export UNIT_DENSE_TRAIN_SEC=85 UNIT_SPARSE_TRAIN_SEC=56 BEND_UNIT_SEC=118 UNIT_EVAL_SEC=2
 
 declare -A EXPECT=(
-  [model/scripts/sweep_lib.sh]=6a02654f5d289970df5c0915dfdf40d8252e7dd38a102cf84aa89c3310136afc
+  [model/scripts/sweep_lib.sh]=830aeec5b5c88dbbd7b045bb624699b3d1be076cdd2236de0768d044794d5448
   [model/scripts/sweep_t5.sh]=fabc15b442f6eebe2a2eca941548db867e4756512cd5914f8a1e84e9cc9960e7
   [model/scripts/train_joint_upnp_pin.py]=878006f3688ab480e5f52c179228c2c513a633e47a20cbc53bb5cafc0ace58d2
   [model/scripts/baselines_pod.py]=a1bc77cea2f5d24a34b1d8209de10e6e1f6212a87ec7560160e2e046c0381e14
