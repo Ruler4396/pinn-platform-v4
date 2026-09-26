@@ -8,7 +8,7 @@
 # Re-running is safe: nothing is deleted and every file is hash-checked before it lands.
 set -uo pipefail
 
-PIN=63a9309f9bf95ced2570334bbff8a89ef1a35563
+PIN=50bc8532e8b1bb9054c6f6479e6fc137017bfa0f
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="$WS/ffroot.tgz"
@@ -19,9 +19,10 @@ export PYTHONPATH="$WS/pylibs:${PYTHONPATH:-}"
 LEVELS="1e-3 1 10 50"
 
 declare -A EXPECT=(
-  [model/scripts/gen_ns_re_edp.py]=a9b025b3d94e90db780e4f3dfba13a3dad0bdc15225651b3b3603a18e7140d18
-  [model/scripts/finalize_ns_truth.py]=c08fc2d453d22e6f7006e74ab1f4a4a6e41ebdd43cabf8d1960ae20854ea7205
+  [model/scripts/gen_ns_re_edp.py]=5e3a3c7e52fb9f97e4fb699f6095a5881e21e664d37e57b6e10e529a61046a9c
+  [model/scripts/finalize_ns_truth.py]=52b89fc8f4c6e0b06dc3a201b68b1f5baaaaf4aa9cece180062e21525b86dcd6
   [model/scripts/check_ns_re_to_stokes.py]=d78495865b0fee8c4fe6a9d91146600e4ccdc0a18852451a4cc8156bb4af2b2c
+  [model/scripts/selftest_ns_re.py]=8f7028ccda7785768808ca6ce13ec276cc58f4c73bb6fa0fed8261dae2f0423f
 )
 
 log() { printf '%s | %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -73,6 +74,8 @@ _rc=0; for p in "${!EXPECT[@]}"; do fetch_one "$p" || _rc=1; done
 [ "$_rc" != 0 ] && { log "ABORT at deliver (hash/network)"; exit 1; }
 
 step gen_diff_proof fatal "python3 model/scripts/gen_ns_re_edp.py"
+step ns_syntax_gate fatal "python3 model/scripts/gen_ns_re_edp.py --check-syntax"
+step merger_selftest fatal "python3 model/scripts/selftest_ns_re.py"
 step finalize_selfcheck fatal "python3 model/scripts/finalize_ns_truth.py --selfcheck"
 step gate_selfcheck fatal "python3 model/scripts/check_ns_re_to_stokes.py --selfcheck"
 
