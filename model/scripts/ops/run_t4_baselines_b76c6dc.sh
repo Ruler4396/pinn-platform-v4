@@ -115,12 +115,33 @@ if [ "$PHASE" = check ]; then
   exit 0
 fi
 
+if [ "$PHASE" = train ]; then
+  # 20 trainings do not depend on arm C, and arm C currently crashes on its own self-check
+  # (baselines_pod.py:153 vs :163/:164). Running the long part with --no-pod means a 2-line
+  # fix in someone else's file doesn't sit on 24 minutes of CPU. Arm C runs in phase armc.
+  step seg09_nopod fatal "bash model/scripts/sweep_t5.sh --baseline --no-pod --seg 09 --budget-min 45"
+  step index_after_train fatal "python3 model/scripts/ops/build_runs_index.py"
+  log "TRAIN_DONE"
+  exit 0
+fi
+
+if [ "$PHASE" = armc ]; then
+  step armC_selfcheck fatal "cd model && python3 scripts/baselines_pod.py --self-check"
+  step armC_real fatal "cd model && python3 scripts/baselines_pod.py --family contraction_2d --eval-cases C-val,C-test-1,C-test-2 --obs-files obs_sparse_5pct.csv --out $SWEEP_OUT_DIR/pod_baseline_contraction.json"
+  log "ARMC_DONE"
+  exit 0
+fi
+
 if [ "$PHASE" = full ]; then
   # Arm C first: 必做1 needs three arms, so a still-broken POD baseline must stop the trip
   # in the first seconds rather than after 20 trainings that can't be claimed anyway.
   step armC_pre fatal "cd model && python3 scripts/baselines_pod.py --self-check"
   step seg09_baseline fatal "bash model/scripts/sweep_t5.sh --baseline --seg 09 --budget-min 45"
-  if grep -qa '"identical"' "$LOGD/step_obs_verify.txt" 2>/dev/null; then
+  log "FULL_TRAIN_DONE"
+fi
+
+if [ "$PHASE" = tail ] || [ "$PHASE" = full ]; then
+  if grep -qa 'identical' "$LOGD/step_obs_verify.txt" 2>/dev/null; then
     step seg10_t6 nonfatal "bash model/scripts/sweep_t5.sh --t6 --seg 10 --budget-min 30"
   else
     log "SKIP seg10_t6: obs_seed=0 verify-committed did not print an identical verdict (T6 needs it; 主矩阵不受影响)"
@@ -130,7 +151,7 @@ if [ "$PHASE" = full ]; then
   # silently skipped. Arm B numbers come out of the run index instead (metrics_root=supervised).
   step analyze nonfatal "python3 model/scripts/analyze_sweep.py --split test --metric rel_l2_speed --paired t5c21,t5c04 --paired t5c20,t5c01 --out out/analyze_t4.json"
   step index_final nonfatal "python3 model/scripts/ops/build_runs_index.py"
-  log "FULL_DONE"
+  log "TAIL_DONE"
   exit 0
 fi
 
