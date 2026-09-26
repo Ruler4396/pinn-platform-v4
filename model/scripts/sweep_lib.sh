@@ -450,9 +450,9 @@ train_mlp() {
 # 单网络联合 (u,v,p)、一次训练不拆阶段；评估由该脚本自己完成并写成与双模型同 schema 的
 # evaluations/metrics_*.json ⇒ 账本只写一行 train（phase=train），**不调用 eval_run**：
 # 双模型评估器加载不了单网络的 ckpt（键名与结构不同），硬调会假绿。
-train_joint() {  # $1=name $2=family $3=train $4=val $5=src $6=fmode $7=drop $8=cell $9=tseed $10=oseed $11=weights_preset
+train_joint() {  # $1..$11 同上，$12=eval_test_cases（不传就没有 test 评估件）
   local run_name="$1" family="$2" train_cases="$3" val_cases="$4" src="$5" fmode="$6" drop="$7"
-  local cell="$8" train_seed="$9" obs_seed="${10}" preset="${11:-strict-sparse}"
+  local cell="$8" train_seed="$9" obs_seed="${10}" preset="${11:-strict-sparse}" eval_test="${12:-}"
   assert_run_name "${run_name}" || exit 1
   local inlet_w outlet_w drop_w cont_w mom_w strict_flag=""
   case "${preset}" in
@@ -465,7 +465,7 @@ train_joint() {  # $1=name $2=family $3=train $4=val $5=src $6=fmode $7=drop $8=
   local run_dir="${PROJECT_ROOT}/results/pinn/${run_name}"
   local log="${LOG_DIR}/${run_name}.log"
   local drop_display="${drop}"; [[ -z "${drop}" ]] && drop_display='""'
-  local argv="python3 scripts/train_joint_upnp_pin.py --family ${family} --run-name ${run_name} --seed ${train_seed} --train-cases ${train_cases} --val-cases ${val_cases} --feature-mode ${fmode} --drop-features ${drop_display} --train-velocity-source ${src} --val-velocity-source ${src} --train-pressure-source ${src} --val-pressure-source ${src} --hidden-layers 128,128,128,128,128 --activation silu --epochs 480 --lr 6e-4 --patience 200 --print-every 40 --wall-weight 0.0 --inlet-flux-weight ${inlet_w} --outlet-pressure-weight ${outlet_w} --pressure-drop-weight ${drop_w} --continuity-weight ${cont_w} --momentum-weight ${mom_w} --velocity-wall-mode hard --hard-wall-sharpness 12 --max-physics-points 512 --require-param-ratio 1 --param-ratio-tol 0.05 --weights-preset ${preset} ${strict_flag} --max-retries 1"
+  local argv="python3 scripts/train_joint_upnp_pin.py --family ${family} --run-name ${run_name} --seed ${train_seed} --train-cases ${train_cases} --val-cases ${val_cases} --feature-mode ${fmode} --drop-features ${drop_display} --train-velocity-source ${src} --val-velocity-source ${src} --train-pressure-source ${src} --val-pressure-source ${src} --hidden-layers 128,128,128,128,128 --activation silu --epochs 480 --lr 6e-4 --patience 200 --print-every 40 --wall-weight 0.0 --inlet-flux-weight ${inlet_w} --outlet-pressure-weight ${outlet_w} --pressure-drop-weight ${drop_w} --continuity-weight ${cont_w} --momentum-weight ${mom_w} --velocity-wall-mode hard --hard-wall-sharpness 12 --max-physics-points 512 --require-param-ratio 1 --param-ratio-tol 0.05 --weights-preset ${preset} ${strict_flag} --max-retries 1 ${eval_test:+--eval-test-cases ${eval_test}}"
   argv="$(printf '%s' "${argv}" | tr -s ' ')"
   if [[ "${SWEEP_DRY_RUN:-0}" == 1 ]]; then
     echo "[dry-run][train-joint] ${run_name} cell=${cell} ts=${train_seed} os=${obs_seed} preset=${preset}"
@@ -477,7 +477,27 @@ train_joint() {  # $1=name $2=family $3=train $4=val $5=src $6=fmode $7=drop $8=
   # 冒烟产物（metrics.json 里 smoke=true）不算完成：续跑必须把它重训掉，
   # 否则一次 --max-steps 1 的探针会永久占住这个格子的名字。
   if [[ -f "${run_dir}/metrics.json" ]] && ! grep -aq '"smoke": true' "${run_dir}/metrics.json"; then
-    echo "[skip-train-joint] ${run_name}"; RUNS_SKIP=$((RUNS_SKIP + 1)); return 0
+    echo "[skip-train-joint] ${run_name}"
+    RUNS_SKIP=$((RUNS_SKIP + 1))
+    # 跳过训练 ≠ 跳过评估。9/26 的缺陷：sweep 从没把 test 工况递给臂A（grep eval-test-cases = 0），
+    # 于是 evaluations/ 里只有 metrics_val_dense.json ⇒ 必做1 的臂A 两个口径都进不了表。
+    if [[ -n "${eval_test}" && ! -f "${run_dir}/evaluations/metrics_test_dense.json" ]]; then
+      echo "[eval-only] ${run_name} 缺 test 评估件 ⇒ 只重做评估，不重训"
+      local et0 etrc=0
+      et0="$(_now_ns)"
+      if nice -n 10 python3 "${SWEEP_LIB_DIR}/train_joint_upnp_pin.py"           --family "${family}" --run-name "${run_name}" --seed "${train_seed}"           --train-cases "${train_cases}" --val-cases "${val_cases}"           --feature-mode "${fmode}" --drop-features "${drop}"           --train-velocity-source "${src}" --val-velocity-source "${src}"           --train-pressure-source "${src}" --val-pressure-source "${src}"           --hidden-layers 128,128,128,128,128 --weights-preset "${preset}" ${strict_flag}           --eval-only --eval-test-cases "${eval_test}" >>"${LOG_DIR}/${run_name}_evalonly.log" 2>&1; then
+        etrc=0
+      else
+        etrc=$?
+      fi
+      _progress_append "${run_name}" "${family}" "${cell}" "${train_seed}" "${obs_seed}" eval_test "$(elapsed_ms "${et0}")" "${etrc}" "{}"
+      if [[ "${etrc}" != 0 ]]; then
+        echo "[FAIL] eval-only rc=${etrc} ${run_name} 见 ${LOG_DIR}/${run_name}_evalonly.log" >&2
+        RUNS_FAIL=$((RUNS_FAIL + 1)); RUNS_EVAL_FAIL=$((RUNS_EVAL_FAIL + 1)); return 1
+      fi
+      echo "[ok-eval-only] ${run_name}"
+    fi
+    return 0
   fi
   echo "[train-joint] ${run_name} (cell=${cell} ts=${train_seed})" | tee "${log}"
   local t0 rc=0; t0="$(_now_ns)"
@@ -493,7 +513,7 @@ train_joint() {  # $1=name $2=family $3=train $4=val $5=src $6=fmode $7=drop $8=
       --outlet-pressure-weight "${outlet_w}" --pressure-drop-weight "${drop_w}" \
       --continuity-weight "${cont_w}" --momentum-weight "${mom_w}" \
       --velocity-wall-mode hard --hard-wall-sharpness 12 --max-physics-points 512 \
-      --require-param-ratio 1 --param-ratio-tol 0.05 --weights-preset "${preset}" ${strict_flag} --max-retries 1 >>"${log}" 2>&1; then
+      --require-param-ratio 1 --param-ratio-tol 0.05 --weights-preset "${preset}" ${strict_flag} --max-retries 1 ${eval_test:+--eval-test-cases "${eval_test}"} >>"${log}" 2>&1; then
     rc=0
   else
     rc=$?

@@ -218,6 +218,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--in-dim", dest="in_dim", type=int, default=0,
                     help="--dry-run 专用的离线逃生口：显式给特征列数即可在无 numpy/torch 的机器上看计划与参数量"
                          "（geometry 去掉 inlet_profile_star = 14，basic = 4）")
+    ap.add_argument("--eval-only", dest="eval_only", action="store_true",
+                    help="只加载 best.ckpt 重做评估并补写 evaluations/metrics_*_dense.json（用于训练已完成但缺 test 评估件的场合，不重训）")
     ap.add_argument("--max-steps", dest="max_steps", type=int, default=0,
                     help=">0 时只跑这么多步并打印 [smoke] 一行（冒烟用）；此时 metrics.json 会打 smoke 标记，续跑不会把它当已完成")
     ap.add_argument("--shape-selftest", dest="shape_selftest", action="store_true",
@@ -364,6 +366,12 @@ def main() -> int:
         p_norm, p_raw = dual.压力前向原值(phead, x, 压力标准化器)
         return v_norm, v_raw, p_norm, p_raw
 
+    if args.eval_only:
+        ckpt_path = out_dir / "best.ckpt"
+        if not ckpt_path.exists():
+            raise SystemExit(f"[FAIL] --eval-only 需要已有 ckpt：{ckpt_path} 不存在")
+        网络.load_state_dict(torch.load(ckpt_path, map_location=device)["联合模型参数"])
+        print("[eval-only] 已加载 %s，跳过训练只做评估" % ckpt_path.name)
     优化器 = torch.optim.Adam(网络.parameters(), lr=args.lr)
     vel_x, vel_y = dual.张量化特征(vel_train_split, device), dual.速度真值张量(vel_train_split, device)
     p_x, p_y = dual.张量化特征(p_train_split, device), dual.压力真值张量(p_train_split, device)
@@ -374,7 +382,8 @@ def main() -> int:
     坏 = 0
     # 观测子集是否同一批：两档训练源相同时只前向一次（稠密档就是这种情况）
     同观测源 = (args.train_pressure_source == args.train_velocity_source)
-    for epoch in range(1, (args.max_steps or args.epochs) + 1):
+    轮数上限 = 0 if args.eval_only else (args.max_steps or args.epochs)   # eval-only ⇒ 一步都不训
+    for epoch in range(1, 轮数上限 + 1):
         网络.train()
         # 监督项吃**观测子集**（vel/p 各自的 source），边界项吃**稠密网格**：
         # 9/26 的崩法就是把 dense 的 wall mask（12498 行）拿去索引观测子集的前向（496 行）。
@@ -478,7 +487,7 @@ def main() -> int:
     (出 / "metrics.json").write_text(json.dumps(
         {"run_name": args.run_name, "臂": "A_单网络联合PINN", "seed": args.seed,
          "best_epoch": best["epoch"], "final_val": val_metrics, "test": test_metrics,
-         "smoke": bool(args.max_steps), "max_steps": args.max_steps,
+         "smoke": bool(args.max_steps), "max_steps": args.max_steps, "eval_only": bool(args.eval_only),
          "param_scale": scale}, ensure_ascii=False, indent=2), encoding="utf-8")
     print("[done] %s val speed=%.4f p=%.4f (ep=%d)"
           % (args.run_name, val_metrics["rel_l2_speed"], val_metrics["rel_l2_p"], best["epoch"]))

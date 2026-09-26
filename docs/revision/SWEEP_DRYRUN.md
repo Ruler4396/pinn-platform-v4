@@ -368,3 +368,13 @@ python3 model/scripts/train_joint_upnp_pin.py --run-name smoke_a21 --family cont
 # 期望：[smoke] step1 total=… l_wall=<有限值> … 有限性=True 且 rc=0（dense 档把两个 source 换成 dense 再跑一次）
 ```
 `--max-steps 1` 写出的 `metrics.json` 带 `"smoke": true`，`train_joint` 的续跑判断**不把它当已完成**（遇 smoke 标记就重训），所以探针不会占住正式格子的名字。
+
+### 12.3 9/26 第三批：臂 A 缺 test 评估件（⑥）与 `--paired` 丢对（⑦），以及臂 C 的首次实测
+
+| # | 缺陷 | 修法 | 本机/实例证据 |
+| --- | --- | --- | --- |
+| ⑥ | `results/pinn/rev2609b_t5c20__s42__o0/evaluations/` 里只有 `metrics_val_dense.json`；`grep -c "eval-test-cases" sweep_lib.sh` = **0** ⇒ sweep 从没把 test 工况递给臂 A，臂 A 两个口径都进不了表。而臂 B（`train_supervised`+`evaluate_supervised`）四件齐 | `train_joint` 加第 12 参 `eval_test`，dump 与真跑 argv 都追加 `--eval-test-cases`；臂 A 脚本加 `--eval-only`（装 `best.ckpt`、`轮数上限=0`、只重做评估并补写 `metrics_test_dense.json`）；**跳过训练不等于跳过评估**：`[skip-train-joint]` 分支里若 test 评估件缺失就跑 `--eval-only` 并落一行 `phase=eval_test` | 本机：`grep -c eval-test-cases sweep_lib.sh=4`；`--baseline --dry-run` 里 **10/10** 个臂 A 单元带 `--eval-test-cases C-test-1,C-test-2`；`--shape-selftest` 七例全 OK。补评估那趟由统括官投 `--only-cells 20`（~10 s，不重训） |
+| ⑦ | `analyze_sweep.py --paired` 是普通参数 ⇒ 传三对只剩最后一对跑，且 `[accounting]` 行看不出来（静默丢对） | `--paired` 改 `action="append"` 并支持 `'a,b;c,d'`；新增 `解析配对()` 与 `核对配对数()`：请求 N 对 × M 口径 ⇒ 必须正好 N×M 条配对记录，少一条 `INVALID` 退出 | 本机：`解析配对` 四例全对；正对照「3 对×2 口径只出 2 条」当场 `INVALID`（rc=1），1 对×2 口径出 2 条则放行 ⇒ 不是永远绿 |
+| 臂 C | 首次真跑（我本机只能证断言集，数值路径此前无凭据） | 读数按统括官实测入工单 D2/表 5-10；`--self-check` 打印 `rank=1` ⇒ 三快照的 POD 只留 1 个模态，这本身要在正文里说明（不是"模态数足够"的证据） | 实例：armC_selfcheck rc=0（1 s）、armC_real rc=0（7 s），总 5,709 ms；产物 `out/pod_baseline_contraction.json` |
+
+**口径三分列（统括官 9/26 纠正，我此前引的 .psv 数是验证集）**：`.psv` 的 `rel_l2_*` 列 = **val**；第 5 章的 test 表只能用 `T5矩阵test口径读数-20260926.md`。已据此在工单里把消融换成 test 的 0.539923→0.148723（3.6 倍，val 为 0.5196→0.1362=3.8 倍）、弯曲「5%≈稠密」换成 test 的 +7.8%（val 是 +3.0%），并在 §0 立了「凡 .psv 得来的数标 (val)、凡进正文表的数标 (test)」的规则。

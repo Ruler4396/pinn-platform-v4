@@ -253,7 +253,7 @@ baseline_matrix() {
       run_name="${BL_PREFIX}_${cell_id}__s${s}__o0"
       echo "### 基线 格${nn} ${desc} train_seed=${s}（同观测表=${src}，与格1/格4 同源）"
       if [[ "${arm}" == "A" ]]; then
-        train_joint "${run_name}" contraction_2d "${CONTRA_TRAIN}" "${CONTRA_VAL}" "${src}" geometry           "inlet_profile_star" "${cell_id}" "${s}" "0" "${preset}" || return 1
+        train_joint "${run_name}" contraction_2d "${CONTRA_TRAIN}" "${CONTRA_VAL}" "${src}" geometry           "inlet_profile_star" "${cell_id}" "${s}" "0" "${preset}" "${CONTRA_TEST}" || return 1
       else
         train_mlp_with_test "${run_name}" contraction_2d "${CONTRA_TRAIN}" "${CONTRA_VAL}" "${src}"           "${cell_id}" "${s}" "0" "${CONTRA_TEST}" || return 1
       fi

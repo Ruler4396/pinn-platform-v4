@@ -167,6 +167,28 @@ def min_two_sided_p(n: int) -> float:
     return 2.0 / (2 ** n) if n > 0 else float("nan")
 
 
+def 解析配对(items) -> list:
+    """把 ['a,b', 'c,d;e,f'] 摊平成 [(a,b),(c,d),(e,f)]，顺序保留。"""
+    out = []
+    for chunk in (items if isinstance(items, (list, tuple)) else [items]):
+        for pair in str(chunk).split(";"):
+            if not pair.strip():
+                continue
+            parts = [x.strip() for x in pair.split(",")]
+            out.append((parts[0], parts[1] if len(parts) > 1 else ""))
+    return out
+
+
+def 核对配对数(要求: int, report: dict, bases) -> None:
+    """请求 N 对 × M 个口径 ⇒ 必须正好 N×M 条配对记录。少一条就是装置问题，当场红。"""
+    got = len(report.get("paired", []))
+    if got != 要求 * len(bases):
+        print("INVALID：请求 %d 对 × %d 口径 = %d 条配对记录，实得 %d 条 ⇒ 有对被静默丢了"
+              % (要求, len(bases), 要求 * len(bases), got), file=sys.stderr)
+        raise SystemExit(1)
+    print("[accounting-paired] 请求 %d 对，产出 %d 条配对记录（含全部口径）" % (要求, got))
+
+
 def judge(cell_a, cell_b, a, b, metric):
     """a/b 是 group_stats() 里**单个格**的统计字典（不是按 cell 索引的那层）。"""
     if a is None or b is None:
@@ -242,7 +264,9 @@ def main() -> None:
     ap.add_argument("--split", default="val", choices=["val", "test"])
     ap.add_argument("--metric", default="rel_l2_speed", choices=METRICS)
     ap.add_argument("--basis", default="both", choices=["both", "mean_of_cases", "pooled"])
-    ap.add_argument("--paired", default="", help="如 t5c04,t5c08（分层 vs 均匀）或 t6_region|region,t6_uniform|uniform")
+    ap.add_argument("--paired", action="append", default=[],
+                    help="可重复传，也可一次给多对：'t5c04,t5c08;t5c22,t5c01'。"
+                         "9/26 修：原来是普通参数，传三对只剩最后一对跑，且从 accounting 行看不出来")
     ap.add_argument("--out", default="", help="JSON 输出路径")
     ap.add_argument("--self-test", action="store_true", help="只跑合成数据正对照，不读产物")
     args = ap.parse_args()
@@ -287,43 +311,44 @@ def main() -> None:
 
     if args.paired:
         stats = require_scipy()
-        cell_a, cell_b = [x.strip() for x in args.paired.split(",")]
-        if len(cell_a) == 0 or len(cell_b) == 0:
-            raise SystemExit("--paired 需要两个格名")
-        for basis in bases:
-            pairs, keys, oa, ob = paired(rows, cell_a, cell_b, args.metric, basis)
-            n = len(pairs)
-            entry = {"cell_a": cell_a, "cell_b": cell_b, "basis": basis, "metric": args.metric,
-                     "n_pairs": n, "pair_keys": ["o%d_s%d" % k for k in keys],
-                     "orphan_a": ["o%d_s%d" % k for k in oa], "orphan_b": ["o%d_s%d" % k for k in ob],
-                     "min_reachable_two_sided_p": min_two_sided_p(n)}
-            if n < 2:
-                entry["error"] = "配对数<2，无法检验（这是装置问题，不是结论）"
-                print("\n=== 配对检验 %s vs %s（%s）===\n  [FAIL] %s" % (cell_a, cell_b, basis, entry["error"]))
+        for cell_a, cell_b in 解析配对(args.paired):
+            if not cell_a or not cell_b:
+                raise SystemExit("--paired 每对要两个格名，收到 '%s,%s'" % (cell_a, cell_b))
+            for basis in bases:
+                pairs, keys, oa, ob = paired(rows, cell_a, cell_b, args.metric, basis)
+                n = len(pairs)
+                entry = {"cell_a": cell_a, "cell_b": cell_b, "basis": basis, "metric": args.metric,
+                         "n_pairs": n, "pair_keys": ["o%d_s%d" % k for k in keys],
+                         "orphan_a": ["o%d_s%d" % k for k in oa], "orphan_b": ["o%d_s%d" % k for k in ob],
+                         "min_reachable_two_sided_p": min_two_sided_p(n)}
+                if n < 2:
+                    entry["error"] = "配对数<2，无法检验（这是装置问题，不是结论）"
+                    print("\n=== 配对检验 %s vs %s（%s）===\n  [FAIL] %s" % (cell_a, cell_b, basis, entry["error"]))
+                    report["paired"].append(entry)
+                    continue
+                xs = [p[0] for p in pairs]
+                ys = [p[1] for p in pairs]
+                wil = stats.wilcoxon(xs, ys, alternative="two-sided")
+                ttest = stats.ttest_rel(xs, ys)
+                entry["wilcoxon"] = {"W": float(wil.statistic), "p": float(wil.pvalue)}
+                entry["paired_t"] = {"t": float(ttest.statistic), "p": float(ttest.pvalue)}
+                entry["mean_diff"] = statistics.fmean([x - y for x, y in pairs])
                 report["paired"].append(entry)
-                continue
-            xs = [p[0] for p in pairs]
-            ys = [p[1] for p in pairs]
-            wil = stats.wilcoxon(xs, ys, alternative="two-sided")
-            ttest = stats.ttest_rel(xs, ys)
-            entry["wilcoxon"] = {"W": float(wil.statistic), "p": float(wil.pvalue)}
-            entry["paired_t"] = {"t": float(ttest.statistic), "p": float(ttest.pvalue)}
-            entry["mean_diff"] = statistics.fmean([x - y for x, y in pairs])
-            report["paired"].append(entry)
-            print("\n=== 配对检验 %s vs %s / %s / %s ===" % (cell_a, cell_b, args.metric, basis))
-            print("  配对单位 n=%d（单位=(obs_seed,train_seed)）；孤儿 A=%d B=%d" % (n, len(oa), len(ob)))
-            print("  **本组最小可达双侧 p = %.6f**%s" % (entry["min_reachable_two_sided_p"],
-                  "  ⇒ 该 n 下不可能得到 p<0.05，只能报 mean±std"
-                  if entry["min_reachable_two_sided_p"] >= 0.05 else ""))
-            print("  Wilcoxon W=%.1f p=%.6g | 配对 t=%.3f p=%.6g | 平均差 %.6f"
-                  % (wil.statistic, wil.pvalue, ttest.statistic, ttest.pvalue, entry["mean_diff"]))
-            if n < 8:
-                print("  [WARN] 配对单位不足 8：只用了 %d 个，功效低于方案 §5 的设定" % n)
+                print("\n=== 配对检验 %s vs %s / %s / %s ===" % (cell_a, cell_b, args.metric, basis))
+                print("  配对单位 n=%d（单位=(obs_seed,train_seed)）；孤儿 A=%d B=%d" % (n, len(oa), len(ob)))
+                print("  **本组最小可达双侧 p = %.6f**%s" % (entry["min_reachable_two_sided_p"],
+                      "  ⇒ 该 n 下不可能得到 p<0.05，只能报 mean±std"
+                      if entry["min_reachable_two_sided_p"] >= 0.05 else ""))
+                print("  Wilcoxon W=%.1f p=%.6g | 配对 t=%.3f p=%.6g | 平均差 %.6f"
+                      % (wil.statistic, wil.pvalue, ttest.statistic, ttest.pvalue, entry["mean_diff"]))
+                if n < 8:
+                    print("  [WARN] 配对单位不足 8：只用了 %d 个，功效低于方案 §5 的设定" % n)
+
+        核对配对数(len(解析配对(args.paired)), report, bases)
 
     # 判"不可判"只用组内离散度，不需要 scipy ⇒ 单独一段，保证没装 scipy 也能给正文用文字
     pairs_to_judge = []
-    if args.paired:
-        cell_a, cell_b = [x.strip() for x in args.paired.split(",")]
+    for cell_a, cell_b in 解析配对(args.paired):
         pairs_to_judge.append((cell_a, cell_b, "用户指定对照"))
     pairs_to_judge += [("t5c04", "t5c08", "分层 vs 均匀 @5%（表5-5）"),
                        ("t5c13", "t5c14", "basic vs geometry，两臂同 soft（表5-1 消融行）")]
