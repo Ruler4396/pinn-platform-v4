@@ -263,6 +263,26 @@ def main() -> int:
     check("control B: the drift is reported per field, not pooled",
           "v_star" in out_b and "p_star" in out_b, last(out_b))
 
+    # control C: the failure mode that actually stopped the 2026-09-26 instance run -- the
+    # four scripts re-pulled from the new pin while the .edp files in the working tree were
+    # still the previous pin's, so the widths on disk were a single 1e2 for all three fields.
+    stale = scratch / "cfd_stale"
+    for lvl in fz.LEVELS:
+        d = stale / f"C-base_ns_re{lvl}"
+        d.mkdir(parents=True, exist_ok=True)
+        txt = re.sub(r"floor\((h[uvp])\*1\.0e\d+\)/1\.0e\d+", r"floor(\1*1.0e2)/1.0e2", ns)
+        (d / f"C-base_ns_re{lvl}.edp").write_text(txt, encoding="utf-8")
+    keep = fz.CFD
+    fz.CFD = stale
+    rc_c, out_c = capture(fz.selfcheck, fz.LEVELS)
+    fz.CFD = keep
+    check("control C: .edp files that predate the per-field widths are caught",
+          rc_c == 1 and "emitted N=2, derived N=4" in out_c and "emitted N=2, derived N=6" in out_c,
+          last(out_c, 120))
+    check("control C: the refusal says which file to re-pull, so it is not read as a bad method",
+          "[HINT]" in out_c and "blob=" in out_c,
+          next((ln.strip() for ln in out_c.splitlines() if "blob=" in ln), "")[:150])
+
     print(f"\ntotal={n_pass + n_fail} failed={n_fail} "
           f"{'ALL GREEN' if not fails else 'SEE RED'}   (scratch: {scratch})")
     return fails

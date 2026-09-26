@@ -161,6 +161,21 @@ def edp_path(level: str) -> Path:
     return CFD / f"C-base_ns_re{level}" / f"C-base_ns_re{level}.edp"
 
 
+def _git_blob_id(path: Path) -> str:
+    """The git blob id of a file, if this checkout is a git repo and git is available.
+
+    Diagnostic only -- used to tell "stale working-tree artefact" from "wrong method".  It
+    never gates: no git, or the file outside a repo, prints `not-a-git-object`.
+    """
+    import subprocess
+    try:
+        out = subprocess.run(["git", "hash-object", str(path)],
+                             capture_output=True, text=True, timeout=10)
+    except Exception:                                          # noqa: BLE001
+        return "not-a-git-object"
+    return out.stdout.strip()[:16] if out.returncode == 0 else "not-a-git-object"
+
+
 def hi_decimals_from_edp(text: str) -> dict[str, int]:
     """Read the emitted rule back: field -> decimals, from the .edp text itself."""
     found: dict[str, int] = {}
@@ -227,26 +242,57 @@ def selfcheck(levels=LEVELS) -> int:
           ", ".join(f"{f}={scale[f]:.6g}" for f in FIELDS))
 
     # 1. artefact vs rule: what the .edp emits must be what hi_decimals_for() derives.
+    # A mismatch here has one known cause in practice: the scripts were re-pulled but the
+    # .edp files in the working tree are still the previous pin's, so the widths on disk
+    # predate the per-field derivation.  Say that, with the path and the blob id, because
+    # the alternative reading -- "the tightened assertion caught a bad method" -- is what
+    # this output looks like and it is wrong (the 2026-09-26 19:54 instance run was exactly
+    # this case; it reproduced locally against 63a9309's .edp to the last digit).
+    mismatch = [f for f in FIELDS if rule[f] != hi_decimals_for(scale[f])]
+    if mismatch:
+        print("  [HINT] the .edp on disk disagrees with the rule this script derives from "
+              "the measured magnitudes. Before reading that as a method failure, check that "
+              "the case files came from the same pin as the scripts:")
+        for level in levels:
+            p = edp_path(level)
+            if p.is_file():
+                print(f"    {p}  blob={_git_blob_id(p)}")
     for f in FIELDS:
         want = hi_decimals_for(scale[f])
         ok = rule[f] == want
         rc |= 0 if ok else 1
-        headroom = budget_scale(rule[f]) / max(scale[f], 1e-300)
+        head = budget_scale(want) / max(scale[f], 1e-300)
         print(f"[{'PASS' if ok else 'FAIL'}] {f}: emitted N={rule[f]}, derived N={want} "
-              f"(printable while |{f}| < {budget_scale(rule[f]):.6g}, i.e. "
-              f"{headroom:.1f}x headroom over the Stokes scale)")
+              f"(with the derived N, |{f}| may grow to {budget_scale(want):.6g} before hi "
+              f"loses digits = {head:.1f}x headroom over the Stokes scale)")
 
     # 2. the floor itself, replayed through the emitted rule on full-precision surrogates.
+    # Two columns are published per field, per ruling (a) of the 2026-09-26 19:54 work-order
+    # message: relative to that field's own max, AND absolute.  The gate is the relative one
+    # at FLOOR_LIMIT_REL, which is the number the work order wrote; what changed on
+    # 2026-09-26 is the DENOMINATOR (global max -> per-field max), and that change was
+    # ordered, not chosen by me -- it makes the assertion strictly harder, and it is the
+    # reason v_star went from "passing" to 1.05e-07.
+    print("  floor per field (both columns reported; gate = relative <= "
+          f"{FLOOR_LIMIT_REL:.0e}, denominator = that field's own max, per ruling (a) "
+          "of 2026-09-26 19:54 by the orchestrator):")
     worst = {}
     for f in FIELDS:
         xs = within_rounding_cell(mags[f])
         err = max(abs(roundtrip(x, rule[f]) - x) for x in xs)
         worst[f] = err / max(scale[f], 1e-300)
+        digits = -math.log10(worst[f]) if worst[f] > 0 else math.inf
+        print(f"    {f:7s} |max|={scale[f]:9.5g}  N={rule[f]}  abs<={err:8.2e}  "
+              f"rel<={worst[f]:8.2e}  = {digits:4.1f} significant digits")
     limit_ok = all(worst[f] <= FLOOR_LIMIT_REL for f in FIELDS)
     rc |= 0 if limit_ok else 1
     print(f"[{'PASS' if limit_ok else 'FAIL'}] per-field floor: " +
           ", ".join(f"{f} {worst[f]:.2e}" for f in FIELDS) +
           f" <= {FLOOR_LIMIT_REL:.0e} of each field's own scale")
+    print(f"[INFO] same numbers under the OLD global denominator (|max| over all fields = "
+          f"{max(scale.values()):.6g}): " +
+          ", ".join(f"{f} {worst[f] * scale[f] / max(scale.values()):.2e}" for f in FIELDS)
+          + " -- that is the figure that made a single width look adequate")
 
     # 3. controls: each one must be RED, or the assertion above proves nothing.
     ctrl_lo = {f: max(abs(roundtrip(x, rule[f], lo_digits=4) - x) for x in within_rounding_cell(mags[f]))
