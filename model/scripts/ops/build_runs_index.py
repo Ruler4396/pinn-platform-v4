@@ -14,7 +14,7 @@ LEDGER = os.path.join(ROOT, "out", "progress.jsonl")
 OUT = os.path.join(ROOT, "out", "runs_index.psv")
 
 HEADER = ["run", "cell", "train_seed", "obs_seed", "rc", "rel_l2_u",
-          "rel_l2_speed", "rel_l2_p", "wall_ms", "metrics_present"]
+          "rel_l2_speed", "rel_l2_p", "wall_ms", "metrics_present", "metrics_root"]
 
 
 def fmt(v):
@@ -40,12 +40,19 @@ def main():
             if d.get("phase") != "train":
                 continue
             run = str(d.get("run"))
-            metrics = os.path.join(ROOT, "model", "results", "pinn", run, "metrics.json")
+            # Two artifact roots: dual-model / joint-PINN write results/pinn, the pure-data
+            # MLP baseline (arm B) writes results/supervised. Probing only the first would
+            # make a healthy arm-B run read as "artifact missing".
+            root = ""
+            for cand in ("pinn", "supervised"):
+                if os.path.isfile(os.path.join(ROOT, "model", "results", cand, run, "metrics.json")):
+                    root = cand
+                    break
             rows.append([
                 run, str(d.get("cell")), str(d.get("train_seed")), str(d.get("obs_seed")),
                 str(d.get("rc")), fmt(d.get("rel_l2_u")), fmt(d.get("rel_l2_speed")),
                 fmt(d.get("rel_l2_p")), str(d.get("wall_ms")),
-                "YES" if os.path.isfile(metrics) else "NO",
+                "YES" if root else "NO", root or "none",
             ])
 
     with open(OUT, "w", encoding="utf-8") as fh:
@@ -55,7 +62,12 @@ def main():
 
     n_ok = sum(1 for r in rows if r[4] == "0")
     n_metrics = sum(1 for r in rows if r[9] == "YES")
-    print("rows=%d rc0=%d metrics_present=%d out=%s" % (len(rows), n_ok, n_metrics, OUT))
+    roots = {}
+    for r in rows:
+        roots[r[10]] = roots.get(r[10], 0) + 1
+    print("rows=%d rc0=%d metrics_present=%d roots=%s out=%s"
+          % (len(rows), n_ok, n_metrics,
+             ",".join("%s:%d" % kv for kv in sorted(roots.items())), OUT))
     if len(rows) == 0:
         print("INVALID: ledger parsed but zero train rows -> nothing to index")
         return 4
