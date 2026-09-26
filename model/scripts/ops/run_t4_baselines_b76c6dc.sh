@@ -7,7 +7,7 @@
 # have metrics.json, and every file is re-fetched and hash-checked against the pinned commit.
 set -uo pipefail
 
-PIN=680083f48ee32621debae8b8d705eba516d4e9ba
+PIN=504ab78e5ed1d2e3359b989ee0bdd421f04f82ff
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 PHASE="${1:-check}"
@@ -23,11 +23,11 @@ export SWEEP_OUT_DIR="$WS/out"
 export UNIT_DENSE_TRAIN_SEC=85 UNIT_SPARSE_TRAIN_SEC=56 BEND_UNIT_SEC=118 UNIT_EVAL_SEC=2
 
 declare -A EXPECT=(
-  [model/scripts/sweep_lib.sh]=830aeec5b5c88dbbd7b045bb624699b3d1be076cdd2236de0768d044794d5448
+  [model/scripts/sweep_lib.sh]=7ab286e521dd0f9a1edd02ceeee3579ce8b50dfa60347185d23e95c6ccd50244
   [model/scripts/sweep_t5.sh]=fabc15b442f6eebe2a2eca941548db867e4756512cd5914f8a1e84e9cc9960e7
   [model/scripts/train_joint_upnp_pin.py]=878006f3688ab480e5f52c179228c2c513a633e47a20cbc53bb5cafc0ace58d2
   [model/scripts/baselines_pod.py]=a1bc77cea2f5d24a34b1d8209de10e6e1f6212a87ec7560160e2e046c0381e14
-  [model/scripts/selftest_ledger.sh]=d43360b2d2c5216c74720bc71ebedcb77b0ecc53b4c512400e9962ec7d4da4cc
+  [model/scripts/selftest_ledger.sh]=5d4c1d06b3dd78511d9ec33bd602172bb311d0e3b7c5df6f1c7cad24e63e2bce
   [model/scripts/analyze_sweep.py]=0883a1066050127882b60661cdca2538374ef6d85063b30be6f34e53b9b20c69
   [model/scripts/generate_observations_seeded.py]=0cac210ca0a69f858c7669a66e14d8a268b14636117af353458ad278dbd47d28
   [model/scripts/ops/build_runs_index.py]=9ec4c8fc9f6c867695ace375f74f1fc9b7e5b6502690dbb8b4b14a3d39a9e95b
