@@ -101,7 +101,12 @@ if [ "$PHASE" = check ]; then
   step dryrun_t6 fatal "bash model/scripts/sweep_t5.sh --t6 --dry-run > $LOGD/t6_plan.txt 2>&1 && grep -q '实际要训练=12' $LOGD/t6_plan.txt"
   step argv_shapes fatal "test \$(grep -c train_joint_upnp_pin.py $LOGD/argv_baseline.txt) -eq 10 -a \$(grep -c scripts/train_supervised.py $LOGD/argv_baseline.txt) -eq 10"
   step armA_paramratio fatal "sed 's/--run-name rev2609b_t5c20__s42__o0/--run-name smokeparam__s42__o0/' $LOGD/argv_baseline.txt | head -1 | sed 's|\$| --dry-run --require-param-ratio 1 --param-ratio-tol 0.05|' > $LOGD/param.sh; cd model && bash $LOGD/param.sh"
-  step armC_selfcheck fatal "cd model && python3 scripts/baselines_pod.py --self-check"
+  # Arm C's documented first step crashes on this instance: baselines_pod.py:153 assigns
+  # args.eval_cases/obs_files as LISTS, and :163/:164 then call parse_list() on them
+  # ((text or "").strip() -> AttributeError). Only the --self-check branch is affected, so
+  # every real arm-C run is still untested. Reported to the baseline line; kept non-fatal here
+  # so the arm A/B smokes get measured in the same trip instead of one defect per round.
+  step armC_selfcheck nonfatal "cd model && python3 scripts/baselines_pod.py --self-check"
   step obs_verify nonfatal "python3 model/scripts/generate_observations_seeded.py --family contraction_2d --obs-seeds 0 --verify-committed"
   step smoke_armA fatal "sed 's/--run-name rev2609b_t5c20__s42__o0/--run-name smoke_joint6__s42__o0/; s/--epochs 480/--epochs 6/' '$LOGD/argv_baseline.txt' | head -1 > $LOGD/smokeA.sh; cd model && bash $LOGD/smokeA.sh"
   step smoke_armB fatal "sed 's/--run-name rev2609b_t5c22__s42__o0/--run-name smoke_mlp6__s42__o0/; s/--max-epochs 2000/--max-epochs 6/' '$LOGD/argv_baseline.txt' | sed -n '11p' > $LOGD/smokeB.sh; cd model && bash $LOGD/smokeB.sh"
@@ -111,6 +116,9 @@ if [ "$PHASE" = check ]; then
 fi
 
 if [ "$PHASE" = full ]; then
+  # Arm C first: 必做1 needs three arms, so a still-broken POD baseline must stop the trip
+  # in the first seconds rather than after 20 trainings that can't be claimed anyway.
+  step armC_pre fatal "cd model && python3 scripts/baselines_pod.py --self-check"
   step seg09_baseline fatal "bash model/scripts/sweep_t5.sh --baseline --seg 09 --budget-min 45"
   if grep -qa '"identical"' "$LOGD/step_obs_verify.txt" 2>/dev/null; then
     step seg10_t6 nonfatal "bash model/scripts/sweep_t5.sh --t6 --seg 10 --budget-min 30"
