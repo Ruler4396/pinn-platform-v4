@@ -7,7 +7,7 @@
 # have metrics.json, and every file is re-fetched and hash-checked against the pinned commit.
 set -uo pipefail
 
-PIN=fa81991ebde4161743ab8240eb4189252cf66648
+PIN=f6073c20f45645eba9ff0498ae63f82cffadb562
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 PHASE="${1:-check}"
@@ -23,9 +23,9 @@ export SWEEP_OUT_DIR="$WS/out"
 export UNIT_DENSE_TRAIN_SEC=85 UNIT_SPARSE_TRAIN_SEC=56 BEND_UNIT_SEC=118 UNIT_EVAL_SEC=2
 
 declare -A EXPECT=(
-  [model/scripts/sweep_lib.sh]=298f69686c083621e400e7a4cb48ff07948274354b7c0e1f691b3df96785e768
+  [model/scripts/sweep_lib.sh]=69a86b7c1a90d6b56f6a969140185ba7ac6848a493d9677c530f30fabf867401
   [model/scripts/sweep_t5.sh]=338290bbe7f815a0a90d93221f71d5c458b87ee2b275a826f15b47e8a064c16e
-  [model/scripts/train_joint_upnp_pin.py]=85b3c158f7679f4f31c673bcaf23c2c5e73a6361bcabadcc99ad7c149927ccf9
+  [model/scripts/train_joint_upnp_pin.py]=a44528a9142d601741d786d4b3e39f64ff51e5e5ead5e27ed29549c9e1392eff
   [model/scripts/baselines_pod.py]=a1bc77cea2f5d24a34b1d8209de10e6e1f6212a87ec7560160e2e046c0381e14
   [model/scripts/selftest_ledger.sh]=e5d4bc2dd077d9f84fd48d613f361d456d7d6d5f9078c241d0aab42662e282bb
   [model/scripts/analyze_sweep.py]=39f9de7ad4a6c63ebb6e039c05271787374add6da74b8de60e891fa94688d6e5
@@ -122,6 +122,15 @@ if [ "$PHASE" = train ]; then
   step seg09_nopod fatal "bash model/scripts/sweep_t5.sh --baseline --no-pod --seg 09 --budget-min 45"
   step index_after_train fatal "python3 model/scripts/ops/build_runs_index.py"
   log "TRAIN_DONE"
+  exit 0
+fi
+
+if [ "$PHASE" = sparse ]; then
+  # Arm A's sparse cell crashed on a point-set mismatch (fixed in 310b673: the boundary terms
+  # take the dense forward pass and a mismatch now raises a named error). 5 seeds x ~139 s.
+  step seg13_armA_sparse fatal "bash model/scripts/sweep_t5.sh --baseline --no-pod --only-cells 21 --seg 13 --budget-min 25"
+  step index_after_sparse fatal "python3 model/scripts/ops/build_runs_index.py"
+  log "SPARSE_DONE"
   exit 0
 fi
 
