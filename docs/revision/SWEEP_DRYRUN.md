@@ -325,8 +325,18 @@ bash model/scripts/sweep_t5.sh --baseline --dry-run | grep armC                 
 | 2 | `rc!=0` 的行不一定进失败计数（尤其 eval 阶段），"内存=0 账本=1"就是这么来的 | 每个 `rc!=0` 的行都进 `RUNS_FAIL`，并另计 `RUNS_EVAL_FAIL`；终态失败的 run、终态失败的评估都被列为 problem |
 | 3 | `[skip-train]` 归属不明（跳过 = 账上该有别人的成功行） | 新增等式 `段内终态成功 run 数 == 本次成功 + 本次跳过`，对不上即红；`RUNS_GATE_FAIL` 单列（观测预算/点位生成失败不再被当成"跑完"或"预算截断"） |
 
-自测（驱动**真实**的 `seal_segment`，不是复刻逻辑）：`bash model/scripts/selftest_ledger.sh` ⇒ 九例全符合 rc=0，
-其中 **③「账本缺一行」与 ⑥「段内 0 行」是必定 INVALID 的正对照**，证明闸门没被改成永远绿；②是段 01 那个假红的忠实回放（前进程 1 败 1 成 + 本进程 2 成 1 跳），现在判绿并打印"重试行 1"。
+自测（驱动**真实**的 `seal_segment`，不是复刻逻辑）：`bash model/scripts/selftest_ledger.sh` ⇒ **十二例全符合**（9/26 本机在已提交状态复跑，尾行 `总体：十二例全符合…`，rc=0），
+其中 **③「账本缺一行」、⑥「段内 0 行」、⑪「给失败的 run 补评估」、⑫「补评估数不符」是必定 INVALID 的正对照**，证明闸门没被改成永远绿；②是段 01 那个假红的忠实回放（前进程 1 败 1 成 + 本进程 2 成 1 跳），现在判绿并打印"重试行 1"。退出码判级也逐例断言：①②⑩=0，③⑦⑧⑫=4（仅记账不符），④⑤⑥⑨⑪=1（数据不可信）。
+
+### 11.5 臂 B 的指标进不了账本：`rel_l2_*` 整列 NA 是 schema 问题，不是漏跑（9/26 现查）
+
+统括官给出臂 B 的两个数只能来自 `analyze_sweep.py` 的 supervised 根。本工单把**原因**查到了代码层，避免下一个人再从账本重算一遍：
+
+1. 账本行的指标由 `sweep_lib.sh:_run_metrics_json()` 读取，它只认两套键：`metrics.json` 的 `最终验证指标.rel_l2_{u,v,p,speed}`（双模型/臂 A 的 payload），以及 `evaluations/metrics_val_dense.json` 的 `global_metrics.*`。
+2. 臂 B 的 trainer 是 `train_supervised.py`，它写的 `metrics.json` 顶层键是 `best_epoch / best_val_total / train_case_metrics / val_case_metrics / …`（`train_supervised.py:1040-1049`），**没有** `最终验证指标` 这一层；它的评估件名是 `evaluations/metrics_{split_name}.json` 且 `--split-name test_dense`（`evaluate_supervised.py:175`、`sweep_lib.sh:train_mlp_with_test`），也不叫 `metrics_val_dense.json`。⇒ 两个 `first()` 全部落空，`_run_metrics_json` 返回 `{}`，PSV/账本对应列就写成 `NA`。
+3. 实测核对：`T5矩阵run坐标索引-20260926.psv` 里 `metrics_root=supervised` 的 10 行（t5c22/t5c23 各 5）**全部** `rel_l2_u/speed/p = NA`，而 `wall_ms`、`rc`、`metrics_present=YES` 完好 ⇒ **NA 只发生在指标列，机时与存在性可信**。
+4. 所以：**臂 B 的精度数只能从 `analyze_sweep.py --supervised-root`（默认跟随 `--results-root`）出**；账本/PSV 只能用来核机时与终态。这不是把闸门修绿就能顺手解决的事——要修得改 `_run_metrics_json` 认两套 schema 并回填历史行，属于读数口径变更，**本轮不做**（统括官正在实例上现场复验封段判级，不动 `sweep_lib.sh`）。
+5. 顺带一条对表 5-9 有用的读数（同一枚索引现算，rc=0 各 5 粒，单位 s）：臂 A 稠密中位 139.6（136.7–146.7）、臂 A 分层5% 131.2（129.5–142.2）、**臂 B 稠密中位 199.3（120.9–212.9）**、**臂 B 分层5% 101.5（72.4–123.4）**。臂 B 两档区间都超过中位数的 1/3，散布来源未查（trainer 与批大小与 PINN 不同），所以正文引用只给区间、不给单点，也别把"无物理项"推成"更省机时"——稠密档实测它最慢。
 
 ## 12. 2026-09-26 第二批 · 统括官四条待办的处置与凭据
 
