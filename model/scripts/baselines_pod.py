@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import math
 import sys
@@ -344,6 +345,23 @@ def main() -> int:
         out.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
         json.loads(out.read_text(encoding="utf-8"))
         print("[out] %s 已写并读回校验（rank=%d, 档=%s）" % (out, r, ",".join(obs_files)))
+        # 自证三件套：路径 + sha256 + 字节数由程序自己算，回执不许手填
+        # （D2 表注要从"B 级·转引日志"升成"A 级·产物可回读"，靠的就是这一行能不能被复算）
+        blob = out.read_bytes()
+        repo = PROJECT_ROOT.parent
+        try:
+            shown = str(out.resolve().relative_to(repo)).replace("\\", "/")
+        except Exception:
+            shown = str(out)
+        print("[armC] 产物自证: path=%s  bytes=%d  sha256=%s"
+              % (shown, len(blob), hashlib.sha256(blob).hexdigest()))
+        for obs_name in sorted(results):          # 键是观测表文件名，不是 train/test 档
+            for c in results[obs_name]["cases"]:
+                extra = "  dp=%.6f" % c["pressure_drop_rel_error"] \
+                    if "pressure_drop_rel_error" in c else ""
+                print("    [armC] %s | %s  n_obs=%s  speed=%.6f  p=%.6f%s"
+                      % (obs_name, c["case_id"], c.get("n_obs"),
+                         c["rel_l2_speed"], c["rel_l2_p"], extra))
     if args.self_check:
         fails = 检查不变量(r, len(S), results)
         print("[self-check] %s" % ("PASS：rank=%d，两口径读数均在可解释范围，观测残差与点数满足前提" % r

@@ -516,3 +516,24 @@ INVALID（仅记账不符）：段内终态成功 run 数=0 ≠ 本次成功 0 +
 2. **`cells.*.values` 的数组顺序 = run 目录名排序，不是 `pair_keys` 顺序**（`s42__o0/o1/o2/o3` 排在前面）。按"前五个当 obs_seed=0"会算成 `0.032537`（统括官第一遍就错在这里，本工单未独立复现该值）。⇒ 引用坐标一律指 **keys 或索引集**（本次是 `{0,4,8,9,10}`），不许指"第几行"。
 3. **臂 B 在 `pooled` 口径下结构上没有配对，根因在文件层**：`model/results/supervised/<run>/evaluations/metrics_test_dense.json` 顶层没有 `global_metrics`（只有 `summary` + `case_metrics`），而 `pooled` 正是读 `global_metrics` ⇒ 臂 B 贡献 0 个配对键、`orphan_b` 列的是双模型侧多出的键。⇒ 表只能用 `mean_of_cases`；写"两口径都跑了"就要给臂 B 另注 pooled 无对。与 §11.5 是同一件事的两面：**ARM B 的 `rel_l2_*` 既进不了账本、也进不了 pooled**，它的数只有 `analyze` 的 supervised 根 + `mean_of_cases` 一条路。
 4. `analyze_t4_full.json` 含 **2 处裸 `NaN`**：`json.load` 能读、严格解析器（`JSON.parse`）会抛。将来若给 T2 的"论文数值↔产物自动核对闸"换解析器，要先归一（`null` 或 `allow_nan=False` 的产出路径），否则核对闸会红在装置上而不是数上。
+
+## 13. 9/26 23:3x · 一次实例往返带走两件"≤1 分钟便宜补算"（0b + E5）——命令、判据、以及**我没上机**的理由
+
+统括官 23:3x 自批了这一单（不需作者点头），并把硬截止设在 9/27 09:00。执行归他（既定分工"实例统一由我投递"，
+且他这条只说"不重开、不新申请"），**本线没有自投实例、没有新建会话**；我做的两件是让那趟往返变成一条命令 + 程序自证：
+
+| 件 | 命令（实例上跑，全部零训练） | 程序自己打印的东西 | 判据 |
+|---|---|---|---|
+| (i) 臂 C 重跑入库 | `python3 model/scripts/baselines_pod.py --family contraction_2d --eval-cases C-val,C-test-1,C-test-2 --obs-files obs_sparse_5pct.csv --out model/results/contraction_2d/baselines/pod_baseline_contraction.json`（≈5.7 s） | 新增 `[armC] 产物自证: path=… bytes=… sha256=…` 与逐工况行 `[armC] <观测表> | <case_id> n_obs=… speed=… p=… dp=…` | 产物落仓且 sha 可复算 ⇒ D2 表注从 **B 级·转引日志** 升 **A 级·产物可回读**；拿不到就**一字不改** |
+| (ii) E5 同机 CFD 单价 | `python3 model/scripts/e5_cfd_price.py --repeats 7`（默认 5 工况 = C-base/C-train-1/C-test-2/B-base/B-train-1，两族齐全；二进制默认 `FreeFem++`，真实名只有大写 F） | 每次一行 `<case> run k/7 wall=… ms rc=…`，然后 `[E5]` 汇总 median/区间/族级中位数之中位数，最后 `产物: docs/benchmarks/e5_cfd_price.json bytes=… sha256=…` | 中位数与区间**由程序算**，不许事后手填；两族齐全才允许删表 5-9 的"混合口径"限定句 |
+
+- **e5_cfd_price.py 的三条硬规矩**（写进代码，不靠人自觉）：① 跑前必须把入库 `.edp` 里写死的 `/root/dev/…` 改写掉，
+  **改写为空操作就直接 `INVALID` 退出**（防止"跑了个没改的件、拿到 rc=8 还继续统计"）；② 任一样本 `rc!=0` ⇒ 末尾打
+  `INVALID（数据不可信）` 并 **exit 1**，不产出可引用中位数；③ 求解器找不到 ⇒ **exit 3**（装置不可用，与"读数不可信"分开），
+  且 `repeats<7` 或族数<2 时打 NOTE：**限定句不许删**。
+- **本机可验的部分**（不需要 FreeFem++）：`python3 model/scripts/e5_cfd_price.py --self-test` ⇒
+  桩求解器跑 7 次、中位数由程序算、产物 sha256 与文件字节一致，并带一条**必定红的正对照**
+  （桩 `exit 8` 时 `all_zero_rc=False`、`rc_all=[8,8]`）⇒ 证明"成功"不是装出来的。本回合实测 exit=0。
+  臂 C 侧 `--assert-selftest` 全符（断言集 A1–A6 能红能绿），新增的自证块也在**真实 results 形状**上单测过（含缺 `dp` 的用例不 KeyError）。
+- **实例不可达时**按他的硬砍条款：不重开不新申请，两句限制句（D2 的 B 级、表 5-9 的混合口径）**全保留**，
+  只回"实例不可达 + 最后一条证据行（命令 + 返回码）"。机时封顶 2 min，超时只交已完成那半件。
