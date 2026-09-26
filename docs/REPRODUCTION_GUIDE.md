@@ -60,7 +60,7 @@
 - Linux
 - Python 3.10
 - CPU 即可完成展示、评估与小规模复训
-- 若要完全重建 CFD 真值，需要额外安装 `FreeFEM++`
+- 若要完全重建 CFD 真值，需要额外安装 `FreeFem++`
 
 ## 一、从零开始准备环境
 
@@ -170,7 +170,7 @@ bash scripts/run_contraction_independent_mainline_lowimpact.sh
 
 ### 1. 额外依赖
 
-- `FreeFEM++`
+- `FreeFem++`
 
 ### 2. 代表性命令
 
@@ -193,7 +193,7 @@ python3 scripts/generate_bend_case.py \
 ### 3. 注意
 
 - 当前仓库已经附带了正式 case 数据，因此大多数复现并不需要重新跑 FreeFEM
-- 真正需要全链路重建时，再安装并验证 `FreeFEM++`
+- 真正需要全链路重建时，再安装并验证 `FreeFem++`
 
 ## 六、当前复现边界
 
@@ -203,7 +203,7 @@ python3 scripts/generate_bend_case.py \
 - 弯曲流道并未把全部历史权重都并入整合仓
 - 一些历史文档仍保留旧项目名和旧工作区语义
 - 少量 `trainval_manifest` 中的路径字段仍是历史元数据，不作为当前运行时依赖
-- 全链路重建依赖外部 `FreeFEM++`
+- 全链路重建依赖外部 `FreeFem++`
 
 因此，更准确的说法是：
 
