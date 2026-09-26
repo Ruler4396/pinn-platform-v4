@@ -397,3 +397,22 @@ python3 model/scripts/train_joint_upnp_pin.py --run-name smoke_a21 --family cont
 ⑩ 是实例段 14 的忠实回放（别的段的 train 行 + 本段 3 条 eval_test）⇒ 判**绿**；
 ⑪⑫ 是两条必定 INVALID 的正对照（给一个从没训练成功的 run 补评估 / 内存数与账本不符）⇒ 判红并点名。
 连同原有的「账本缺一行」「段内 0 行」，共四条必定红的正对照 ⇒ 这次改动不是把闸门改成永远绿。
+
+### 12.5 段末判级分档：`fatal` 与"仅记账不符"给 runner 分开处理（9/26，回应统括官自认的那条）
+
+你那条"runner 把 seg14 当 fatal 会连带跳过 analyze/index"的根因在我这侧：**seal 只有一个退出码**，
+"数据不可信"和"只是我的计数没对上"在 runner 眼里长得一样。现在 `seal_segment` 先打一行机器可读的判级：
+
+```
+[seal] 判级=fatal|bookkeeping|clean  fatal=<n>  记账=<n>
+```
+- **rc=1（fatal，数据不可信）**：账本缺失/本段 0 行/坏行、有 run 终态训练失败、有 run 评估终态失败、
+  给"任何段都没有成功 train 行"的 run 补评估、前置闸门没过、有失败单元、完成数 ≠ `EXPECTED_RUNS`。
+  ⇒ runner 该停：这一段不能进分析。
+- **rc=4（bookkeeping，仅记账不符）**：只有内存计数与账本对不上（本进程成功数/失败数/补评估数、
+  跳过归属、同 run 多条成功行），**没有任何终态失败** ⇒ 产物完好，`analyze_sweep`/索引可以照跑，
+  但本段不算封板，当天要修。消息里明写"产物完好，analyze/索引可以跑"。
+- **rc=0（clean）**。
+
+`bash model/scripts/selftest_ledger.sh` 十二例带**精确退出码断言**（`RCWANT`）：①②⑩=0、③⑦⑧⑫=4、④⑤⑥⑨⑪=1，全 OK；
+其中 ③⑫ 是"缺一行/数不符"→ 必须落 4 而不是 1（否则你又会把完好的段当不可信跳过分析），⑤⑥⑨⑪ 必须落 1。

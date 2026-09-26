@@ -639,40 +639,46 @@ for r in all_rows:
 orphan_evalonly = [run for run in mine_evalonly
                    if not (all_latest.get((run, "train")) and all_latest[(run, "train")].get("rc") == 0)]
 
-problems = []
+fatal, book = [], []          # fatal=数据不可信(rc=1)；book=只是记账对不上(rc=4，产物完好)
 if len(mine_evalonly) != evalonly:
-    problems.append("补评估单元数 内存=%d 账本=%d（本段只做评估、无 train 行的 run）" % (evalonly, len(mine_evalonly)))
+    book.append("补评估单元数 内存=%d 账本=%d（本段只做评估、无 train 行的 run）" % (evalonly, len(mine_evalonly)))
 if mine_train_ok != done:
-    problems.append("本进程训练成功数 内存=%d 账本=%d（pid=%s 的行）" % (done, mine_train_ok, mypid))
+    book.append("本进程训练成功数 内存=%d 账本=%d（pid=%s 的行）" % (done, mine_train_ok, mypid))
 if mine_bad != fail:
-    problems.append("本进程失败数 内存=%d 账本=%d（rc!=0 的行都要记进失败，含 eval 阶段）" % (fail, mine_bad))
+    book.append("本进程失败数 内存=%d 账本=%d（rc!=0 的行都要记进失败，含 eval 阶段）" % (fail, mine_bad))
 if term_bad:
-    problems.append("有 %d 个 run 终态失败（最后一条 train 行 rc!=0）：%s"
+    fatal.append("有 %d 个 run 终态失败（最后一条 train 行 rc!=0）：%s"
                     % (len(term_bad), ", ".join(term_bad[:5])))
 if eval_bad:
-    problems.append("有 %d 个 run 的评估阶段终态失败：%s" % (len(eval_bad), ", ".join(eval_bad[:5])))
+    fatal.append("有 %d 个 run 的评估阶段终态失败：%s" % (len(eval_bad), ", ".join(eval_bad[:5])))
 if orphan_evalonly:
-    problems.append("有 %d 个 run 被补了评估但它所在任何段都没有终态成功的 train 行：%s ⇒ 给失败的 run 补评估没有意义"
+    fatal.append("有 %d 个 run 被补了评估但它所在任何段都没有终态成功的 train 行：%s ⇒ 给失败的 run 补评估没有意义"
                     % (len(orphan_evalonly), ", ".join(orphan_evalonly[:5])))
 if len(term_ok) + len(mine_evalonly) != done + skip + evalonly:
-    problems.append("段内终态成功 run 数=%d ≠ 本次成功 %d + 续跑跳过 %d ⇒ 有 run 被跳过但账上没有成功行"
+    book.append("段内终态成功 run 数=%d ≠ 本次成功 %d + 续跑跳过 %d ⇒ 有 run 被跳过但账上没有成功行"
                     % (len(term_ok) + len(mine_evalonly), done + evalonly, skip))
 if dup_ok:
-    problems.append("同一 run 有多条成功 train 行（run-name 撞车或重复铺排？）：%s" % ", ".join(dup_ok[:5]))
+    book.append("同一 run 有多条成功 train 行（run-name 撞车或重复铺排？）：%s" % ", ".join(dup_ok[:5]))
 print("%d runs / %d failures / %d skipped / %d gate-fail / %d eval-fail / %d eval-only  (账本段 %s：%d 行；本进程 pid=%s 成功 %d 失败 %d；"
       "段内 distinct train run %d = 终态成功 %d + 终态失败 %d；重试行 %d)"
       % (done, fail, skip, gate_fail, eval_fail, evalonly, seg, len(rows), mypid, mine_train_ok, mine_bad,
          len(term_train), len(term_ok), len(term_bad), repeats))
 if repeats:
     print("[ledger] 段内有 %d 行是重试/续跑的重复入账 ⇒ 单价与机时统计请按 distinct run 取最后一条" % repeats)
-if problems:
-    print("INVALID: 内存计数与落盘账对不上：%s ⇒ 判本段不可信" % "; ".join(problems), file=sys.stderr)
-    raise SystemExit(1)
 if fail:
-    print("[FAIL] 本段有 %d 个失败单元" % fail, file=sys.stderr)
-    raise SystemExit(1)
+    fatal.append("本段有 %d 个失败单元" % fail)
 if expected and done != int(expected):
-    print("[FAIL] 完成 %d ≠ 期望 %s（EXPECTED_RUNS=<n> 传本段应完成数）" % (done, expected), file=sys.stderr)
+    fatal.append("完成 %d ≠ 期望 %s（EXPECTED_RUNS=<n> 传本段应完成数）" % (done, expected))
+# 判级写成机器可读的一行，让 runner 能把"数据不可信"与"只是记账没对上"分开处理：
+# 前者必须停；后者可以跑完 analyze/索引再补修（9/26：runner 把 seg14 当 fatal 会连带跳过分析）。
+print("[seal] 判级=%s  fatal=%d  记账=%d" % ("fatal" if fatal else ("bookkeeping" if book else "clean"),
+                                              len(fatal), len(book)))
+if fatal:
+    print("INVALID（数据不可信）：%s ⇒ 本段读数与后续分析都不能用" % "; ".join(fatal), file=sys.stderr)
     raise SystemExit(1)
+if book:
+    print("INVALID（仅记账不符）：%s ⇒ 产物完好，analyze/索引可以跑，但本段仍不算封板"
+          % "; ".join(book), file=sys.stderr)
+    raise SystemExit(4)
 LEDGER_PY
 }
