@@ -5,21 +5,36 @@
 //   Stokes form times Re. Consequence: the pressure the solver solves for is P = Re*p,
 //   hence p_star is written as p/Re and stays comparable with the Stokes CSV.
 // Nonlinear scheme: Picard with the advecting velocity frozen at the previous iterate
-//   (u0, v0). The first iterate has u0 = v0 = 0, so it IS the shipped Stokes solve:
-//   convection is the only term that can move the answer.
-//   Criterion: squared relative L2 increment du2 < (1.0e-08)^2; cap 60 iters.
+//   (u0, v0). u and v are set to zero before the loop, so the first iterate advects
+//   with u0 = v0 = 0 and IS the shipped Stokes solve: convection is the only term
+//   that can move the answer, and nothing here depends on initialisation garbage.
+//   Criterion: squared relative L2 increment du2 < 1.0e-16, which is the
+//   relative increment 1.0e-08 squared (written as a literal because v4.9
+//   rejects underscore identifiers, so this file declares no named constants).
+//   Cap 60 iterations; it == 59 is the non-convergence report.
 //   Hitting the cap prints 'NS NOT CONVERGED' and the CSV is still written -- the
 //   cost table must then record the level as FAIL, never delete it.
 // Printing: v4.9 gives 6 significant digits and no setprecision, so *_raw_pair.csv
-//   carries (hi, lo) per field with hi = floor(x*1e2)/1e2; finalize_ns_truth.py merges
-//   them and asserts the reconstruction floor is below 1e-10 of the field scale.
+//   carries (hi, lo) per field with hi = floor(x*1.0eN)/1.0eN and
+//     N = 4 for u_star: |u_star| must stay below 100 or hi itself loses digits.
+//     N = 6 for v_star: |v_star| must stay below 1 or hi itself loses digits.
+//     N = 2 for p_star: |p_star| must stay below 10000 or hi itself loses digits.
+//   The widths are per field because the three fields span two decades of
+//   magnitude and no single width serves both ends of that range; finalize_ns_truth
+//   reads them back out of this file instead of trusting a copy of them, and
+//   finalize_ns_truth.py merges (hi, lo) and asserts the reconstruction floor.
+// Syntax: whole-line comments and underscore-free identifiers only, because
+//   v4.9's parser rejects the other two forms (measured on the instance).
+//   Four constructs here have not been run on this build yet: floor(), the field
+//   assignments u = 0.0 and u0 = u, and a solve statement inside a block.  The file
+//   model/cases/contraction_2d/cfd/C-base_ns_re1/probe_syntax.edp appends each of
+//   them, one per line and tagged with a '// PROBE' comment, to the shipped Stokes
+//   text; run that first, it costs about 1.5 s and no postprocessing.
 // Dimensionless geometry and fields (star variables)
 // Inlet average velocity = 1, outlet pressure = 0
 
 real beta = 0.7;
 real Re = 50;
-real CONV_TOL = 1.0e-08;
-int CONV_MAX = 60;
 real Lin = 4;
 real Lc = 4;
 real Lout = 8;
@@ -80,7 +95,8 @@ func real uIn(real yy) {
   return 1.5 * (1.0 - eta*eta);
 }
 
-for (int it = 0; it < CONV_MAX; ++it) {
+u = 0.0; v = 0.0;
+for (int it = 0; it < 60; ++it) {
   u0 = u; v0 = v;
 solve NS([u,v,p],[ut,vt,qt], solver=UMFPACK) =
     int2d(Th)(
@@ -95,11 +111,10 @@ solve NS([u,v,p],[ut,vt,qt], solver=UMFPACK) =
   + on(labWall, u=0, v=0)
   + on(labOut, p=0)
   ;
-  real du2 = int2d(Th)(pow(u-u0,2)+pow(v-v0,2)) / (int2d(Th)(pow(u,2)+pow(v,2)) + 1.0e-30);
-  if (du2 < CONV_TOL*CONV_TOL) break;
-  if (it == 59) cout << "NS NOT CONVERGED Re=50 iterations=" << it+1 << " du2=" << du2 << endl;
-cout << "NS it=" << it+1 << " du2=" << du2 << " Re=50" << endl;
-}  // end Picard iteration
+  real du2 = int2d(Th)((u-u0)*(u-u0)+(v-v0)*(v-v0)) / (int2d(Th)(u*u+v*v) + 1.0e-30);
+  cout << "NS it=" << it+1 << " du2=" << du2 << " Re=50" << endl;
+  if (du2 < 1.0e-16) break;
+  if (it == 59) cout << "NS NOT CONVERGED Re=50 iterations=" << it+1 << " du2=" << du2 << endl; }
 
 int[int] vTag(Th.nv);
 for (int i = 0; i < Th.nv; ++i) vTag[i] = 0;
@@ -121,17 +136,14 @@ for (int i = 0; i < Th.nv; ++i) {
 
 cout << "Saved: C-base_ns_re50_raw.csv" << endl;
 // companion hi/lo stream: reconstructing needs both files, neither is optional.
-// hi keeps 2 decimals, so it stays inside 6 significant digits for |x| < 1000;
-// lo = x - hi is then below 1e-2 and its own 6 digits carry ~5e-9 absolute.
 ofstream fpair("C-base_ns_re50_raw_pair.csv");
 fpair << "x_star,y_star,u_hi,u_lo,v_hi,v_lo,p_hi,p_lo" << endl;
-for (int i = 0; i < Th.nv; ++i) {   // companion loop: same vertex order, no renumbering
-  real hu = u(Th(i).x, Th(i).y);
-  real hv = v(Th(i).x, Th(i).y);
-  real hp = p(Th(i).x, Th(i).y)/Re;
-  real hi_u = floor(hu*1e2)/1e2;
-  real hi_v = floor(hv*1e2)/1e2;
-  real hi_p = floor(hp*1e2)/1e2;
-  fpair << Th(i).x << "," << Th(i).y << "," << hi_u << "," << hu - hi_u << ","
-        << hi_v << "," << hv - hi_v << "," << hi_p << "," << hp - hi_p << endl;
-}  // end hi/lo companion loop
+for (int ii = 0; ii < Th.nv; ++ii) {
+  real hu = u(Th(ii).x, Th(ii).y);
+  real hv = v(Th(ii).x, Th(ii).y);
+  real hp = p(Th(ii).x, Th(ii).y)/Re;
+  real uHi = floor(hu*1.0e4)/1.0e4;
+  real vHi = floor(hv*1.0e6)/1.0e6;
+  real pHi = floor(hp*1.0e2)/1.0e2;
+  fpair << Th(ii).x << "," << Th(ii).y << "," << uHi << "," << hu - uHi << ","
+        << vHi << "," << hv - vHi << "," << pHi << "," << hp - pHi << endl; }
