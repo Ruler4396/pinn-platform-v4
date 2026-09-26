@@ -365,7 +365,7 @@ python3 model/scripts/train_joint_upnp_pin.py --run-name smoke_a21 --family cont
   --train-cases C-base,C-train-1,C-train-2,C-train-3,C-train-4,C-train-5 --val-cases C-val \
   --train-velocity-source obs_sparse_5pct.csv --train-pressure-source obs_sparse_5pct.csv \
   --weights-preset strict-sparse --strict-sparse-scalers --max-steps 1
-# 期望：[smoke] step1 total=… l_wall=<有限值> … 有限性=True 且 rc=0（dense 档把两个 source 换成 dense 再跑一次）
+# 期望：[step1] … l_wall=… l_inlet=… l_outlet=… l_pdrop=… 边界项有限性=True，且 rc=0（dense 档把两个 source 换成 dense 再跑一次）
 ```
 `--max-steps 1` 写出的 `metrics.json` 带 `"smoke": true`，`train_joint` 的续跑判断**不把它当已完成**（遇 smoke 标记就重训），所以探针不会占住正式格子的名字。
 

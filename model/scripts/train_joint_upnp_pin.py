@@ -408,12 +408,16 @@ def main() -> int:
                  + weights["continuity"] * 物理["连续性"] + weights["momentum"] * 物理["动量"]
                  + args.wall_weight * l_wall + weights["inlet"] * l_in
                  + weights["outlet"] * l_out + weights["drop"] * l_drop)
-        if (args.max_steps or 0) == 1:
-            print("[smoke] step1 total=%.6e l_vel=%.4e l_pre=%.4e 连续性=%.4e 动量=%.4e "
-                  "l_wall=%.6e l_in=%.6e l_out=%.6e l_drop=%.6e 有限性=%s"
+        # 9/26：四个边界项在**第一 step** 就打印，不只冒烟模式。
+        # 原因：统括官跑的是 5 粒全量（480 epoch），per-run 日志里只有 [params] 与 [done]，
+        # 我在 §11.1 设的那道"看 [smoke] step1 的 l_wall"凭据在那种跑法下根本不会出现 ⇒ 凭据要绑在实际会打的行上。
+        # 边界项四个一起打（l_wall 单独看不够：稀疏档那次崩的就是"点集接错"，四个同源同批点）。
+        if epoch == 1:
+            print("[step1] total=%.6e l_vel=%.4e l_pre=%.4e 连续性=%.4e 动量=%.4e "
+                  "l_wall=%.6e l_inlet=%.6e l_outlet=%.6e l_pdrop=%.6e 边界项有限性=%s"
                   % (float(total), float(l_vel), float(l_pre), float(物理["连续性"]), float(物理["动量"]),
                      float(l_wall), float(l_in), float(l_out), float(l_drop),
-                     all(math.isfinite(float(x)) for x in (total, l_wall, l_in, l_out, l_drop))))
+                     all(math.isfinite(float(x)) for x in (l_wall, l_in, l_out, l_drop))))
         优化器.zero_grad(set_to_none=True)
         total.backward()
         优化器.step()
@@ -423,6 +427,8 @@ def main() -> int:
             row = {"stage": "joint", "epoch": epoch, "total_loss": float(total.detach()),
                    "vel_sup": float(l_vel.detach()), "pre_sup": float(l_pre.detach()),
                    "continuity": float(物理["连续性"].detach()), "momentum": float(物理["动量"].detach()),
+                   "l_wall": float(l_wall.detach()), "l_inlet": float(l_in.detach()),
+                   "l_outlet": float(l_out.detach()), "l_pdrop": float(l_drop.detach()),
                    "val_rel_l2_speed": float(验证指标["rel_l2_speed"]), "val_rel_l2_p": float(验证指标["rel_l2_p"])}
             history.append(row)
             print("[joint] ep=%d loss=%.4e speed=%.4f p=%.4f mom=%.3e"
