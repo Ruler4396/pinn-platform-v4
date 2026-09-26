@@ -5,14 +5,18 @@
 #   (2) the selftest expectation is total=271 (the five new k0_chain_contract cases);
 #   (3) it prints whether the guard actually exists in the fetched file, so a "green" run can
 #       never be the old pin arriving under a new name.
-# Verdict files are copied under a pin-specific name and only when rc=0.
+# Adoption rule (v2, after the first run at this pin): the gate exits 1 when K0 itself FAILS, and
+#   a FAIL verdict is exactly the reading this run exists to produce -- copying only on rc=0 threw
+#   away two published, fresh verdicts. So: adopt on publication evidence (the gate's own `json=`
+#   line + mtime >= this level's start), independent of pass/fail. Thresholds untouched.
+# Verdict files are copied under a pin-specific name.
 set -u
 PIN=381b7f3dc803500204af4f825fde06a94ff54326
 BASE=https://gh-proxy.com/https://raw.githubusercontent.com/Ruler4396/pinn-platform-v4/$PIN/model/scripts/route2
 D=/mnt/workspace/pinn-repro-2026/model/scripts/route2
 W=/mnt/workspace/pinn-repro-2026/route2_out/s1_54f2
 O=/mnt/workspace/pinn-repro-2026/out
-L=$O/k0_381b.log
+L=$O/k0_381b_v2.log
 export PYTHONPATH=/mnt/workspace/pinn-repro-2026/pylibs
 T00=$(date +%s)
 
@@ -58,19 +62,24 @@ get() {  # fetch, hash-check, only then replace
   echo "K0DRY_RC=$?"; tail -6 /tmp/k0d.txt
   for LV in h3 hgrade; do
     echo "=== K0 real TB-base level=$LV plans=a,b ==="
-    Tc=$(date +%s)
+    START=$(date +%s)
+    Tc=$START
     timeout 2700 python3 k0_truth_gate.py --case TB-base --level "$LV" --case-root "$W" --plans a,b > "/tmp/k0_$LV.txt" 2>&1
     rc=$?
     echo "K0_${LV}_RC=$rc K0_${LV}_s=$(( $(date +%s) - Tc ))"
     grep -E 'truth|model_|balance|fd_step|momentum_mse|reference|Traceback|rror|verdict|FAIL|K0-' "/tmp/k0_$LV.txt" | head -34
-    # Only copy the verdict when THIS run produced it; the gate writes k0_verdict.json at the end,
-    # so after a crash the file on disk belongs to the previous pin.
+    # Adopt the verdict on PUBLICATION EVIDENCE, not on rc: the gate exits 1 when K0 itself
+    # FAILS, and a FAIL verdict is the result this run exists to produce. Evidence = the gate's
+    # own `json=` line plus an mtime not older than this level's start. Defect ⑪ (no file at all)
+    # and a leftover file from the previous pin both fail this test.
     NEWF="$O/k0_381b7f3_verdict_$LV.json"
-    if [ "$rc" = 0 ] && [ -f "$W/data/TB-base/k0_verdict.json" ]; then
+    PUB=$(grep -c '^json=' "/tmp/k0_$LV.txt")
+    MT=$(stat -c %Y "$W/data/TB-base/k0_verdict.json" 2>/dev/null || echo 0)
+    if [ "$PUB" = 1 ] && [ "$MT" -ge "$START" ]; then
       cp -f "$W/data/TB-base/k0_verdict.json" "$NEWF"
-      echo "VERDICT_COPIED $LV mtime=$(stat -c %y "$NEWF" | cut -c1-19)"
+      echo "VERDICT_ADOPTED level=$LV rc=$rc publine=$PUB mtime=$MT start=$START -> $NEWF"
     else
-      echo "NO_VERDICT_FROM_THIS_RUN level=$LV rc=$rc (盘上的 k0_verdict.json 未采纳)"
+      echo "NO_VERDICT_FROM_THIS_RUN level=$LV rc=$rc publine=$PUB mtime=$MT start=$START (未采纳)"
       ls -l "$W/data/TB-base/k0_verdict.json" 2>&1 | cut -c1-70
       continue
     fi
