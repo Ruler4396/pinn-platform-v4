@@ -94,14 +94,17 @@ step ledger_selftest "$([ "$PHASE" = full ] && echo fatal || echo nonfatal)" "ba
 step index_regression fatal "python3 model/scripts/ops/build_runs_index.py"
 
 if [ "$PHASE" = check ]; then
-  step dryrun_baseline fatal "bash model/scripts/sweep_t5.sh --baseline --dry-run"
-  step dryrun_t6 fatal "bash model/scripts/sweep_t5.sh --t6 --dry-run"
-  step argv_count fatal "test \$(wc -l < out/dryrun_argv.txt) -eq 20"
-  step armA_paramratio fatal "sed 's/--run-name rev2609b_t5c20__s42__o0/--run-name smokeparam__s42__o0/' out/dryrun_argv.txt | head -1 | sed 's|\$| --dry-run --require-param-ratio 1 --param-ratio-tol 0.05|' > $LOGD/param.sh; cd model && bash $LOGD/param.sh"
+  # Both dry-runs write to the SAME out/dryrun_argv.txt, so the baseline plan has to be
+  # snapshotted before --t6 overwrites it. (First run of this script aborted exactly here:
+  # the count gate read the T6 plan and said rc=1. The gate was right; the script was wrong.)
+  step dryrun_baseline fatal "bash model/scripts/sweep_t5.sh --baseline --dry-run > $LOGD/base_plan.txt 2>&1 && cp out/dryrun_argv.txt $LOGD/argv_baseline.txt && test \$(wc -l < $LOGD/argv_baseline.txt) -eq 20"
+  step dryrun_t6 fatal "bash model/scripts/sweep_t5.sh --t6 --dry-run > $LOGD/t6_plan.txt 2>&1 && grep -q '实际要训练=12' $LOGD/t6_plan.txt"
+  step argv_shapes fatal "test \$(grep -c train_joint_upnp_pin.py $LOGD/argv_baseline.txt) -eq 10 -a \$(grep -c scripts/train_supervised.py $LOGD/argv_baseline.txt) -eq 10"
+  step armA_paramratio fatal "sed 's/--run-name rev2609b_t5c20__s42__o0/--run-name smokeparam__s42__o0/' $LOGD/argv_baseline.txt | head -1 | sed 's|\$| --dry-run --require-param-ratio 1 --param-ratio-tol 0.05|' > $LOGD/param.sh; cd model && bash $LOGD/param.sh"
   step armC_selfcheck fatal "cd model && python3 scripts/baselines_pod.py --self-check"
   step obs_verify nonfatal "python3 model/scripts/generate_observations_seeded.py --family contraction_2d --obs-seeds 0 --verify-committed"
-  step smoke_armA fatal "sed -n '1p' out/dryrun_argv.txt | sed 's/--run-name rev2609b_t5c20__s42__o0/--run-name smoke_joint6__s42__o0/; s/--epochs 480/--epochs 6/' > $LOGD/smokeA.sh; cd model && bash $LOGD/smokeA.sh"
-  step smoke_armB fatal "sed -n '11p' out/dryrun_argv.txt | sed 's/--run-name rev2609b_t5c22__s42__o0/--run-name smoke_mlp6__s42__o0/; s/--max-epochs 2000/--max-epochs 6/' > $LOGD/smokeB.sh; cd model && bash $LOGD/smokeB.sh"
+  step smoke_armA fatal "sed 's/--run-name rev2609b_t5c20__s42__o0/--run-name smoke_joint6__s42__o0/; s/--epochs 480/--epochs 6/' '$LOGD/argv_baseline.txt' | head -1 > $LOGD/smokeA.sh; cd model && bash $LOGD/smokeA.sh"
+  step smoke_armB fatal "sed 's/--run-name rev2609b_t5c22__s42__o0/--run-name smoke_mlp6__s42__o0/; s/--max-epochs 2000/--max-epochs 6/' '$LOGD/argv_baseline.txt' | sed -n '11p' > $LOGD/smokeB.sh; cd model && bash $LOGD/smokeB.sh"
   step smoke_artifacts nonfatal "ls -l model/results/pinn/smoke_joint6__s42__o0/ model/results/supervised/smoke_mlp6__s42__o0/ 2>&1; echo '--- rel_l2 from whatever metrics landed:'; find model/results/pinn/smoke_joint6__s42__o0 model/results/supervised/smoke_mlp6__s42__o0 -name 'metrics*.json' -exec cat {} \; 2>/dev/null | tr -d '\\n' | cut -c1-600"
   log "CHECK_DONE"
   exit 0
@@ -114,7 +117,10 @@ if [ "$PHASE" = full ]; then
   else
     log "SKIP seg10_t6: obs_seed=0 verify-committed did not print an identical verdict (T6 needs it; 主矩阵不受影响)"
   fi
-  step analyze nonfatal "python3 model/scripts/analyze_sweep.py --split test --metric rel_l2_speed --paired t5c21,t5c04 --paired t5c23,t5c04 --paired t5c20,t5c01 --out out/analyze_t4.json"
+  # NOTE: analyze_sweep.py only globs model/results/pinn/<prefix>*, so arm B (the pure-data
+  # MLP, writes to model/results/supervised) is invisible to it and its pairs would be
+  # silently skipped. Arm B numbers come out of the run index instead (metrics_root=supervised).
+  step analyze nonfatal "python3 model/scripts/analyze_sweep.py --split test --metric rel_l2_speed --paired t5c21,t5c04 --paired t5c20,t5c01 --out out/analyze_t4.json"
   step index_final nonfatal "python3 model/scripts/ops/build_runs_index.py"
   log "FULL_DONE"
   exit 0
