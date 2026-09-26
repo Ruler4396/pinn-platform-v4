@@ -394,10 +394,34 @@ def fd_derivs(t, nets, xy_norm, plan, geom, sigma, sharpness, detach_features=Fa
     return out
 
 
-def _rel_err(auto: "t.Tensor", ref: List[List[float]]) -> float:
-    a = auto.detach().cpu().numpy().ravel().tolist()
-    num = math.sqrt(sum((x - y) ** 2 for x, y in zip(a, ref)))
-    den = math.sqrt(sum(y * y for y in ref))
+def _flatten(x) -> List[float]:
+    """Tensors and plain nested lists through the same door.
+
+    Defect 8, reproduced by the line that calls this: `contract_first_derivatives` returns
+    dict of lists-of-lists, and `jacobian_err = max(_rel_err(contract[k], ref[k]) ...)`
+    then died with `AttributeError: 'list' object has no attribute 'detach'` at the old
+    `.detach()` line -- so plan b's total-derivative comparison has never produced a
+    number on any machine.  Both shapes are legitimate inputs to the same comparison.
+    """
+    if hasattr(x, "detach"):
+        return [float(v) for v in x.detach().cpu().numpy().ravel().tolist()]
+    if isinstance(x, (list, tuple)):
+        out: List[float] = []
+        for e in x:
+            out.extend(_flatten(e)) if isinstance(e, (list, tuple)) else out.append(float(e))
+        return out
+    return [float(x)]
+
+
+def _rel_err(auto, ref) -> float:
+    a = _flatten(auto)
+    b = _flatten(ref)
+    if len(a) != len(b):
+        # zip() would stop at the shorter one and hand back a flattering number
+        raise ValueError(f"_rel_err: shape mismatch {len(a)} vs {len(b)} flattened values; "
+                         f"refusing to compare a truncated pair")
+    num = math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+    den = math.sqrt(sum(y * y for y in b))
     return num / max(den, 1.0e-30)
 
 
@@ -503,7 +527,10 @@ def run_gate(case_root: Path, case_id: str, level: str, sigma: float,
     truth = truth_score(case_root, case_id, level, geom)
     print(f"[truth] momentum_mse={truth['momentum_mse']:.6g} "
           f"balance={truth['balance_ratio']:.4g} n={truth['n_stencils']} "
-          f"fd_step={truth['fd_step_gate']}")
+          f"fd_step={truth['fd_step_gate']} "
+          f"fd_step_estimates(coarse,fine)="
+          f"{truth['fd_step_same_lattice']['coarse_momentum_mse']:.6g},"
+          f"{truth['fd_step_same_lattice']['fine_momentum_mse']:.6g}")
 
     rows = load_dense(data_dir)
     coll = pick_collocation(rows, TRAIN_BUDGET["collocation"], TRAIN_BUDGET["seed"])
@@ -573,6 +600,8 @@ def run_gate(case_root: Path, case_id: str, level: str, sigma: float,
         "ratio_truth_over_model": {k: truth["momentum_mse"] / max(v, 1.0e-30)
                                    for k, v in model_scores.items()},
         "chain": chain, "extra": extra,
+        "fd_step_same_lattice": truth["fd_step_same_lattice"],
+        "axis_uniformity_worst": truth.get("axis_uniformity_worst"),
         "denominator_is": "fixed-budget supervised fit on the dense truth "
                           "(a best-case model reading, not the final S3 PINN)",
         "elapsed_s": round(time.time() - t0, 1), "env": art.env_lock(),

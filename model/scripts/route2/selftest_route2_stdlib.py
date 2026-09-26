@@ -1623,6 +1623,60 @@ def flux_section_checks(ck: Check, geom: TGeometry) -> None:
            "anti-vacuous: 'nothing to compare' may not read as 'perfectly conserved'")
 
 
+class _FakeArray:
+    """The smallest thing with .detach().cpu().numpy().ravel().tolist() -- so defect 8's
+    tensor side can be exercised on a machine without torch."""
+
+    def __init__(self, rows: List[List[float]]) -> None:
+        self.rows = rows
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return _FakeFlat([v for row in self.rows for v in row])
+
+
+class _FakeFlat(list):
+    def ravel(self):
+        return self
+
+    def tolist(self):
+        return [float(v) for v in self]
+
+
+def defect8_checks(ck: Check) -> None:
+    """Why 257 green assertions coexisted with a plan-b comparison that never ran."""
+    import k0_truth_gate as kg
+
+    rows = [[1.0, 2.0], [3.0, 4.0]]
+    pert = [[1.0, 2.0], [3.0, 5.0]]
+    want = 1.0 / math.sqrt(39.0)                     # derived: |4-5| / sqrt(sum ref^2)
+    ck.add("defect8.list_rows_reach_a_number",
+           kg._rel_err(rows, rows) == 0.0 and abs(kg._rel_err(rows, pert) - want) < 1.0e-12,
+           {"list vs list": kg._rel_err(rows, rows), "list vs perturbed": kg._rel_err(rows, pert),
+            "hand-derived": want}, "0.0 and 1/sqrt(39)=0.1601281537...")
+    ck.add("defect8.tensor_and_list_agree_to_bit",
+           abs(kg._rel_err(_FakeArray(rows), pert) - kg._rel_err(rows, pert)) < 1.0e-15
+           and kg._rel_err(_FakeArray(rows), rows) == 0.0,
+           kg._rel_err(_FakeArray(rows), pert), "same number through either door")
+    try:
+        kg._rel_err([[1.0, 2.0, 3.0]], [[1.0, 2.0]])
+        mismatch = "no exception"
+    except ValueError as exc:
+        mismatch = str(exc)[:56]
+    ck.add("defect8.shape_mismatch_is_refused", mismatch != "no exception", mismatch,
+           "anti-vacuous: zip() would have compared a truncated pair and looked fine")
+    ck.add("defect8.why_the_device_missed_it",
+           not hasattr(rows, "detach") and not hasattr(pert, "detach"),
+           {"the analytic path hands over": type(rows).__name__,
+            "the old first line asked for": "detach()"},
+           "list has no .detach, and no assertion ever called _rel_err with a list before")
+
+
 def _lens_area_note(geom: TGeometry) -> float:
     if "lens_area" not in _AGREEMENT:
         _AGREEMENT.update(_polygon_matches_frames(geom))
@@ -1723,6 +1777,7 @@ def main() -> int:
     mesh_gate_checks(ck)
     k0_verdict_checks(ck)
     module_hygiene_checks(ck)
+    defect8_checks(ck)
     real_artefact_checks(ck)
     impedance_checks(ck, summaries, tmp_root)
 
