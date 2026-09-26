@@ -485,3 +485,25 @@ INVALID（仅记账不符）：段内终态成功 run 数=0 ≠ 本次成功 0 +
 复验（本机，都在临时目录）：`selftest_ledger.sh` **十七例 exit=0**（⑬=seg14 现场回放判 clean、⑭无人背书判 4、⑮名单少两个判 4、⑯no-op 判 clean 并打提示行、⑰0 行却有读数判 1）；`selftest_joint_evalonly.sh` **五组 exit=0**，其中第 4 组是**真实 `train_joint` 代码路径**产出的纯跳过段（test 件已齐 ⇒ 10 skip、0 补评估）判 `clean`，第 5 组把背书抽掉判 rc=4 并点名 ⇒ 名单确实由产品代码填出来，不是夹具手搓。
 
 统括官侧下一次读法：那 10 个 `[skip-train-joint]` 应当给 `判级=clean` rc=0；no-op 提示行**不该**出现（本段账本里还留着上一趟崩掉的 10 条 `eval_test` 行 ⇒ 不是 0 行）。你 `d3d4007` 把 rc=4 改成"继续 + WARN"与本改动同向。
+
+### 12.8 9/26 第七批 · 判级码在真实入口上被压回 1：`a797ce0` 的 rc=4 承诺原先**兑现不了**（统括官 21:01 实测）
+
+```
+21:01:37 | STEP seg14_armA_testeval rc=1 wall=4s fatal=rc4ok
+21:01:37 | WARN seg14_armA_testeval rc=1 判级=bookkeeping ⇒ 产物可用，继续后面的步骤
+```
+
+- **缺陷具名**：`sweep_t5.sh:336` 原先是 `seal_segment "${EXPECTED_RUNS:-}" || exit 1`。`a797ce0` 把 seal 分成 rc=1(数据不可信)/rc=4(仅记账)，但**中间这层把两者都压成 1** ⇒ "runner 可以按 rc=4 继续 analyze/index"这句承诺在唯一被使用的入口上不成立。
+- **为什么十七例自测没抓到**：①–⑰ 全是 `bash -c "source sweep_lib.sh; seal_segment …"`，**直驱函数、不经 `sweep_t5.sh`** ——本文件反复出现的那一种病：装置跑的不是真实入口。统括官那边先用 `0bc31ad` 把自己解套（改读 `[seal] 判级=` 行，六种组合逐个驱动），所以这条不阻塞他；但承诺是我给的，码得从我这层透传出去。
+- **修法**（`sweep_t5.sh` 收尾段）：`seal_rc=0; seal_segment … || seal_rc=$?`，再按**严重程度**分流——`rc=1` 立刻 `exit 1`（数据不可信时"没跑完"不重要）；预算截断仍 `exit 3`（若同时又是仅记账，先打一行 WARN 说明两个都成立，不静默丢信息）；只有"跑完且无终态失败、只是记账不符"才 `exit 4`。`|| exit 1` 那种一把压平的写法删除。
+- **新增第六组：端到端驱动真实 `sweep_t5.sh`，只断言进程退出码**（`selftest_joint_evalonly.sh` 的 `e2e_rc`）：把 `sweep_t5.sh`+`sweep_lib.sh` 复制进临时树（`PROJECT_ROOT` 随脚本位置落到临时目录）、预置 10 个"已训完"的 run 目录与前段 train 行，再跑真的 `--baseline --no-pod --only-cells 20,21 --seg s1`。四格实测：
+
+  | 形状 | 期望 | 实得 |
+  |---|---|---|
+  | 补评估（缺 test 件）+ 前段有背书 | 0 | **0**（日志尾行 `[seal] 判级=clean`）|
+  | 纯跳过（test 件已齐）+ 前段有背书 | 0 | **0** |
+  | 补评估 + 无任何背书（`orphan_evalonly`）| 1 | **1** |
+  | 纯跳过 + 无任何背书（`orphan_skip`）| 4 | **4** |
+
+- **本机跑真实入口需要的唯一代办**：没有 torch/numpy ⇒ `sweep_lib.sh:161/163` 两道解释器探测过不去。夹具在临时 `bin/` 放一个 `python3` 垫片，**只对** `-c` 且句子里含 `torch`/`numpy` 的探测返回 0 / 伪造版本号，其余一律 `exec` 真解释器。⇒ 这一组证明的是"shell 层的判级透传"，**不证明训练或评估能跑**（那仍归实例）。
+- 全量回归（本机）：`selftest_joint_evalonly.sh` 六组 **exit=0**；`selftest_ledger.sh` 十七例 **exit=0**；`train_joint_upnp_pin.py --shape-selftest` 7 例全符；`bash -n` 三个脚本通过；`sweep_t5.sh --dry-run --baseline --only-cells 20,21` 仍出 10 条且每条含 `--eval-test-cases`。

@@ -333,9 +333,23 @@ if [[ "${SWEEP_DRY_RUN:-0}" == 1 ]]; then
   exit 0
 fi
 
-seal_segment "${EXPECTED_RUNS:-}" || exit 1
+# 判级码必须**透传**：a797ce0 把 seal 分成 rc=1(数据不可信)/rc=4(仅记账)，但这一层原先写成
+# `|| exit 1`，于是真实入口上 runner 永远只看到 1 ⇒ "按 rc=4 继续 analyze/index"这句承诺不成立
+# （实例 21:01 实测：`STEP seg14_armA_testeval rc=1 … 判级=bookkeeping`；自测绿是因为它直驱 seal_segment，
+# 不经这一层 ⇒ 装置条件≠真实条件，见 SWEEP_DRYRUN §12.8）。
+seal_rc=0
+seal_segment "${EXPECTED_RUNS:-}" || seal_rc=$?
+if [[ "${seal_rc}" == 1 ]]; then
+  echo "[exit 1] 判级=fatal ⇒ 本段读数不可信，后面的 analyze/index 都不该跑" >&2
+  exit 1
+fi
 if [[ "${SWEEP_STOPPED}" == 1 ]]; then
-  echo "[exit 3] 本段被预算截断，未跑完 ⇒ 用同一段名重投续跑（rc=3 专指'没跑完'，与'跑失败'区分）" >&2
+  [[ "${seal_rc}" == 4 ]] && echo "[WARN] 本段既被预算截断、又仅记账不符（判级=bookkeeping）⇒ 先按 rc=3 处理续跑，记账随后修" >&2
+  echo "[exit 3] 本段被预算截断，未跑完 ⇒ 用同一段名重投续跑（rc=3 专指'没跑完'，与判级不是一回事）" >&2
   exit 3
+fi
+if [[ "${seal_rc}" == 4 ]]; then
+  echo "[exit 4] 判级=bookkeeping ⇒ 产物完好，analyze/索引可以照跑，但本段不算封板（当天要修记账）" >&2
+  exit 4
 fi
 echo "[done] segment=${SEGMENT_TAG} 产物包=${OUT_DIR}/segment_${SEGMENT_TAG}.tar.gz ⇒ 立刻 push/回传；未落回持久层的结果视为未发生"

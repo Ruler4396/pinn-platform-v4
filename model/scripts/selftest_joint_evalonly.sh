@@ -15,8 +15,11 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/joint_evalonly.XXXXXX")"
-trap 'rm -rf "${WORK}"' EXIT
+trap '[[ -n "${KEEP_WORK:-}" ]] || rm -rf "${WORK}"   # KEEP_WORK=1 ⇒ 跑完不清场，方便看 e2e 日志' EXIT
+[ -n "${KEEP_WORK:-}" ] && echo "[fixture] WORK=${WORK}（KEEP_WORK=1，结束后不清理）"
 SEEDS="42 43 44 45 46"
+REAL_PY3="$(command -v python3)"     # 假 python3 垫片要 exec 回真解释器
+REAL_PY3="$(command -v python3)"     # 假 python3 垫片要 exec 回真解释器
 
 # 非 ASCII 标识符静态闸：扫一棵目录下的所有 .sh，命中就打印 文件:行:内容
 lint_nonascii() {  # $1=目录
@@ -183,9 +186,67 @@ printf '%s' "${out5}" | grep -q '被跳过但账上任何段都没有终态成�
   && ck "名单点名为无人背书的跳过" 0 0 || ck "名单点名为无人背书的跳过" 0 1
 [[ "${rc5}" == 4 ]] && ck "退出码=4（产物完好、仅记账不符）" 0 0 || ck "退出码=4（产物完好、仅记账不符）实得=${rc5}" 0 1
 
+# 6 组：端到端驱动**真实的 sweep_t5.sh**，只看进程的退出码是不是把判级透传出来了
+# （实例 21:01 抓到的缺陷：seal 给 4，但 sweep_t5.sh 那层写的是 `|| exit 1` ⇒ runner 永远只看到 1；
+#   ① 前 5 组全是直驱函数，测不到这一层 ⇒ 装置条件≠真实条件，见 SWEEP_DRYRUN §12.8）
+e2e_rc() {  # $1=case 目录 $2=是否已有 test 评估件(1/0) $3=账本里是否有前段 train 行(1/0) ⇒ 回显退出码
+  local cdir="$1" have_te="$2" prior="$3" root="$1/model/results/pinn" s nn r
+  mkdir -p "${cdir}/model/scripts" "${cdir}/bin"
+  # 本机没有 torch/numpy ⇒ 只把 sweep_lib.sh:161/163 那两道**解释器探测**（`import torch, numpy, pandas`
+  # 与 `print(numpy.__version__)`）判过去；其余 python3 调用（_progress_append、seal、训练桩）
+  # 一律 exec 真解释器 ⇒ 绕的是探测，不是产品代码。
+  cat >"${cdir}/bin/python3" <<'SHIM'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-c" ]]; then
+  case "${2:-}" in
+    *torch*) exit 0 ;;
+    *numpy*) echo "2.2.6" ; exit 0 ;;
+  esac
+fi
+exec "${SELFTEST_REAL_PY3:?fixture 未传 SELFTEST_REAL_PY3}" "$@"
+SHIM
+  chmod +x "${cdir}/bin/python3"
+  cp "${HERE}/sweep_t5.sh" "${HERE}/sweep_lib.sh" "${cdir}/model/scripts/" || { echo "cp失败"; return 90; }
+  cat >"${cdir}/model/scripts/train_joint_upnp_pin.py" <<'STUB'
+import os, sys
+argv = sys.argv[1:]
+run = argv[argv.index("--run-name") + 1] if "--run-name" in argv else "?"
+root = os.environ.get("RESULT_ROOT", "")
+d = os.path.join(root, run, "evaluations") if root else ""
+if d:
+    os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, "metrics_test_dense.json"), "w", encoding="utf-8").write(
+        '{"split_name": "test_dense", "global_metrics": {"rel_l2_speed": 0.02}}\n')
+print("[stub] run=%s eval_only=%s" % (run, "--eval-only" in argv))
+sys.exit(0)
+STUB
+  for s in ${SEEDS}; do
+    for nn in 20 21; do
+      r="${root}/rev2609b_t5c${nn}__s${s}__o0"
+      mkdir -p "${r}"
+      printf '{"best_epoch": 480}\n' > "${r}/metrics.json"
+      [[ "${have_te}" == 1 ]] && { mkdir -p "${r}/evaluations"; printf '{}\n' > "${r}/evaluations/metrics_test_dense.json"; }
+    done
+  done
+  mkdir -p "${cdir}/out" "${root}"
+  : >"${cdir}/out/progress.jsonl"
+  [[ "${prior}" == 1 ]] && seed_prior_ledger "${cdir}/out/progress.jsonl" "${root}"
+  RESULT_ROOT="${root}" SWEEP_OUT_DIR="${cdir}/out" PATH="${cdir}/bin:${PATH}" SELFTEST_REAL_PY3="${REAL_PY3}" \
+    bash "${cdir}/model/scripts/sweep_t5.sh" --baseline --no-pod --only-cells 20,21 --seg s1 --budget-min 5 \
+    >"${cdir}/stdout.log" 2>&1
+  echo $?
+}
+
+echo "== 6 端到端：真实 sweep_t5.sh 的退出码必须等于判级（0 clean / 1 fatal / 4 仅记账）=="
+for spec in "补评估+有背书:0:1:0" "纯跳过+有背书:1:1:0" "补评估+无背书:0:0:1" "纯跳过+无背书:1:0:4"; do
+  label="${spec%%:*}"; rest="${spec#*:}"; have_te="${rest%%:*}"; rest="${rest#*:}"; prior="${rest%%:*}"; want="${rest#*:}"
+  got="$(e2e_rc "${WORK}/e2e_${label}" "${have_te}" "${prior}")"
+  [[ "${got}" == "${want}" ]] && ck "${label} ⇒ 退出码=${want}" 0 0 || ck "${label} ⇒ 退出码期望=${want} 实得=${got}" 0 1
+done
+
 echo
 if [[ ${FAILS} -eq 0 ]]; then
-  echo "总体：五组全符合 ⇒ [skip-train-joint] 两条分支（补评估 / 纯跳过）都能走到封段并给出正确判级；中文变量名这一类缺陷有静态闸 + 动态正对照两道把守"
+  echo "总体：六组全符合 ⇒ 两条分支（补评估 / 纯跳过）都能走到封段、判级正确，且**真实 sweep_t5.sh 的退出码等于判级**；中文变量名这一类缺陷有静态闸 + 动态正对照两道把守"
   exit 0
 fi
 echo "总体：有 ${FAILS} 条断言不符 ⇒ 这条分支仍不可信，别投实例"
