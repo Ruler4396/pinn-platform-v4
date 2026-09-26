@@ -75,7 +75,12 @@ step() {
   log "STEP $name rc=$rc wall=$(( $(date +%s) - t0 ))s fatal=$fatal"
   if [ "$rc" != 0 ]; then
     tail -14 "$out" | sed "s/^/    E| /"
-    [ "$fatal" = fatal ] && { log "ABORT at $name (see $out)"; exit 1; }
+    # rc=4 from a sealing segment means "products usable, bookkeeping only" (a797ce0's own
+    # grade), so treating it like rc=1 threw away the rest of the trip. Only "数据不可信" aborts.
+    if [ "$fatal" = fatal ] || { [ "$fatal" = rc4ok ] && [ "$rc" != 4 ]; }; then
+      log "ABORT at $name (see $out)"; exit 1
+    fi
+    [ "$fatal" = rc4ok ] && log "WARN $name rc=4 仅记账不符 ⇒ 产物可用，继续后面的步骤（判级行已在上面 E| 里）"
   else
     tail -5 "$out" | sed "s/^/    > /"
   fi
@@ -153,7 +158,7 @@ if [ "$PHASE" = evalextra ]; then
   # 44559b2 gives arm A a test-evaluation chain (--eval-test-cases). The 10 arm-A runs already
   # have metrics.json, so the sweep takes the [skip-train] path and only produces evaluations:
   # this is a backfill, not a retrain.
-  step seg14_armA_testeval fatal "bash model/scripts/sweep_t5.sh --baseline --no-pod --only-cells 20,21 --seg 14 --budget-min 15"
+  step seg14_armA_testeval rc4ok "bash model/scripts/sweep_t5.sh --baseline --no-pod --only-cells 20,21 --seg 14 --budget-min 15"
   step analyze_full nonfatal "python3 model/scripts/analyze_sweep.py --split test --metric rel_l2_speed --paired t5c04,t5c08 --paired t5c22,t5c01 --paired t5c23,t5c04 --paired t5c20,t5c01 --paired t5c21,t5c04 --out out/analyze_t4_full.json"
   step index_final2 fatal "python3 model/scripts/ops/build_runs_index.py"
   log "EVALEXTRA_DONE"
