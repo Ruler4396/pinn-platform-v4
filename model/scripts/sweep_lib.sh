@@ -479,7 +479,9 @@ train_joint() {  # $1..$11 同上，$12=eval_test_cases（不传就没有 test �
   # 否则一次 --max-steps 1 的探针会永久占住这个格子的名字。
   if [[ -f "${run_dir}/metrics.json" ]] && ! grep -aq '"smoke": true' "${run_dir}/metrics.json"; then
     echo "[skip-train-joint] ${run_name}"
-    local 是补评估=0
+    # 变量名必须是 ASCII：bash 的标识符不接受多字节字母，`local "是补评估=0"` 在实例上
+    # 直接炸（seg14：`不是有效的标识符` + `错误的替换`），而这条分支 dry-run 永不执行 ⇒ 本机也没抓到。
+    local is_eval_only=0
     # 跳过训练 ≠ 跳过评估。9/26 的缺陷：sweep 从没把 test 工况递给臂A（grep eval-test-cases = 0），
     # 于是 evaluations/ 里只有 metrics_val_dense.json ⇒ 必做1 的臂A 两个口径都进不了表。
     if [[ -n "${eval_test}" && ! -f "${run_dir}/evaluations/metrics_test_dense.json" ]]; then
@@ -497,9 +499,9 @@ train_joint() {  # $1..$11 同上，$12=eval_test_cases（不传就没有 test �
         RUNS_FAIL=$((RUNS_FAIL + 1)); RUNS_EVAL_FAIL=$((RUNS_EVAL_FAIL + 1)); return 1
       fi
       echo "[ok-eval-only] ${run_name}"
-      是补评估=1
+      is_eval_only=1
     fi
-    if [[ "${是补评估}" == 1 ]]; then RUNS_EVALONLY=$((RUNS_EVALONLY + 1)); else RUNS_SKIP=$((RUNS_SKIP + 1)); fi
+    if [[ "${is_eval_only}" == 1 ]]; then RUNS_EVALONLY=$((RUNS_EVALONLY + 1)); else RUNS_SKIP=$((RUNS_SKIP + 1)); fi
     return 0
   fi
   echo "[train-joint] ${run_name} (cell=${cell} ts=${train_seed})" | tee "${log}"

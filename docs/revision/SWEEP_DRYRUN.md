@@ -426,3 +426,38 @@ python3 model/scripts/train_joint_upnp_pin.py --run-name smoke_a21 --family cont
 
 `bash model/scripts/selftest_ledger.sh` 十二例带**精确退出码断言**（`RCWANT`）：①②⑩=0、③⑦⑧⑫=4、④⑤⑥⑨⑪=1，全 OK；
 其中 ③⑫ 是"缺一行/数不符"→ 必须落 4 而不是 1（否则你又会把完好的段当不可信跳过分析），⑤⑥⑨⑪ 必须落 1。
+
+### 12.6 9/26 第五批：中文变量名让补评估段**走不到封段就炸**（实例 seg14），修完本机重放到 `[seal] 判级=clean`
+
+实例原报错（统括官回传）：
+
+```
+[skip-train-joint] rev2609b_t5c20__s42__o0
+sweep_lib.sh: 第 482 行： local: "是补评估=0": 不是有效的标识符
+sweep_lib.sh: 行 502: ${是补评估}: 错误的替换
+```
+
+- **根因与封段逻辑无关**：bash 的变量名只接受 ASCII（字母/数字/下划线）。`local 是补评估=0` 报 *not a valid identifier*，
+  下一行 `是补评估=1` 被当成"找不到命令"，`${是补评估}` 再报 *bad substitution* ——**三处连炸**，`set -e` 下 `train_joint` 直接死，`[seal]` 根本没机会跑。
+  本机同一形态复现（bash 5.2.37）：`local: '是补评估=0': not a valid identifier`。
+  Python 里中文标识符合法（`train_joint_upnp_pin.py` 的 `速度头/核对点数` 就是），所以这个习惯被顺手带进了 shell ——**shell 与 Python 的标识符规则不同，这条要记进纪律**。
+- **为什么两道既有防线都漏了**：① `--dry-run` 在 `[skip-train-joint]` 之前就 return；② `selftest_ledger.sh` 驱动的是 `seal_segment` 本身，不经过 `train_joint`；
+  ③ `bash -n` 只查语法不做名称解析。⇒ **覆盖缺口不是运气，是"这条分支只在续跑时才活"**。
+- **修法**：改名 `is_eval_only`（ASCII），并在原地留一句为什么不许再写中文变量名。范围只这一处函数，`sweep_t5.sh` 未动。
+- **新增防线（两条，都自带必定红的正对照）**：`bash model/scripts/selftest_joint_evalonly.sh`（本机可跑，不碰实例、不写仓库）
+  - **静态闸**：扫 `model/scripts/**/*.sh` 的声明位/使用位/赋值位非 ASCII 标识符，本机现跑 **HITS=0**；
+    把 `is_eval_only` 用 sed 改回中文名的**变异副本**上同一道闸报 **HITS=3** ⇒ 证明闸不是摆设。
+  - **动态重放**：用桩 python 把真实 `train_joint` 的"已训完 + 缺 test 件"分支跑满 **10 粒（格 20/21 × seed 42–46）**，再接真实 `seal_segment` ⇒
+    `10 × [ok-eval-only]`、计数 `done=0 fail=0 skip=0 evalonly=10 evalfail=0`、`[seal] 判级=clean fatal=0 记账=0`、整段 **rc=0**。
+    变异副本同法重放则出现 bash 错误、rc≠0、且**打不出** `判级=clean`（= seg14 的真实形态）。
+  - **第三条正对照**：让桩 python 对某一粒 `exit 7` ⇒ `fail=1 / evalfail=1`、`[seal] 判级=fatal`、**rc=1**，
+    证明"补评估失败"不会被读成"这一段干净"（这一档如果也放绿，上面那条 clean 就等于没测）。
+- **实例验收口径（统括官侧，~20 s）**：命令**必须带 `--baseline`**——
+  `bash model/scripts/sweep_t5.sh --baseline --only-cells 20,21`（`--baseline` 会把 RUN_T5/RUN_T6 关掉、只铺三件套）；
+  本机 dry-run 实测该组合出 **10 条** `[dry-run][train-joint]` 且**每条都含 `--eval-test-cases`**。
+  **陷阱（本机实测，不是我推测）**：只写 `--only-cells 20,21` 而不带 `--baseline` ⇒ 三件套一条都不跑，
+  而 **T6 配对单元不受 `--only-cells` 约束**（`cell_wanted` 只挂在 T5 主矩阵与基线两个循环上，`t6_matrix` 没挂），
+  于是 plan 行显示"实际要训练=12"、dry-run 里出来的是 `t5c04` 与 `t5c08` **各 8 条 train 铺排**（12 个新单元 + 4 条与 T5 格4/格8 同名重复），臂 A 铺排数 **0**——**这一段的机时全花在 T6 上，臂 A 拿到 0 粒**。
+  修法我没做（那是 T6 的准入面，且你正在实例上跑），先用"必须带 `--baseline`"这条绕开；要不要把 `--only-cells` 也挂到 `t6_matrix`，等你这一轮复验完再定。
+  期望读数：10 个 `[ok-eval-only]` + 一行 `[seal] 判级=…` + rc（0=封上；4=只有计数没对上、产物仍可用；1=有终态失败，本段读数不可信）。
+  若这些 run 的 `evaluations/metrics_test_dense.json` 其实都已存在，就会走成 `RUNS_SKIP`（10 个 skip、0 个 eval-only）——那是 seg14 之外的另一种终态，判级同样应为 clean。
