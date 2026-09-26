@@ -507,3 +507,12 @@ INVALID（仅记账不符）：段内终态成功 run 数=0 ≠ 本次成功 0 +
 
 - **本机跑真实入口需要的唯一代办**：没有 torch/numpy ⇒ `sweep_lib.sh:161/163` 两道解释器探测过不去。夹具在临时 `bin/` 放一个 `python3` 垫片，**只对** `-c` 且句子里含 `torch`/`numpy` 的探测返回 0 / 伪造版本号，其余一律 `exec` 真解释器。⇒ 这一组证明的是"shell 层的判级透传"，**不证明训练或评估能跑**（那仍归实例）。
 - 全量回归（本机）：`selftest_joint_evalonly.sh` 六组 **exit=0**；`selftest_ledger.sh` 十七例 **exit=0**；`train_joint_upnp_pin.py --shape-selftest` 7 例全符；`bash -n` 三个脚本通过；`sweep_t5.sh --dry-run --baseline --only-cells 20,21` 仍出 10 条且每条含 `--eval-test-cases`。
+
+### 12.9 9/26 第八批 · 分析产物侧三条读数陷阱（统括官坐标表 §二提出，本工单独立复核后收口）
+
+正本：`out/analyze_t4_full.json`（20,055 B，`n_runs=127`、`unparsable_or_missing_eval=[]`，请求 5 对 × 两口径 = 实跑 10 条配对记录）+ `out/runs_index.psv`（rows=129 / rc0=127 / roots=pinn:119, supervised:10）。
+
+1. **同一行并排的均值与配对差必须来自同一 `obs_seed` 子集**（⇒ 工单 B4/B5/C3 定档甲）。`t5c04` 的 `0.029925±0.004515` 是 **n=11**（含 T6 多点位），而两条稀疏档配对只用 `obs_seed=0` 的五粒。独立复核用两条反推：`0.023144+0.008058` 与 `0.051029−0.019827` 都给 **0.0312020**，两者之差 `3.5e-18` ⇒ 不是抄错。两值相差 0.001277（相对 4.27%），会把"臂A 低 22.7%/双模型低 41.4%"改写成"25.8%/38.9%" ⇒ 这不是排版问题，是**结论数字**问题。n=11 那个值只留在 5.4 的"分层 vs 均匀"格（两臂同为 n=11，同源成立）。
+2. **`cells.*.values` 的数组顺序 = run 目录名排序，不是 `pair_keys` 顺序**（`s42__o0/o1/o2/o3` 排在前面）。按"前五个当 obs_seed=0"会算成 `0.032537`（统括官第一遍就错在这里，本工单未独立复现该值）。⇒ 引用坐标一律指 **keys 或索引集**（本次是 `{0,4,8,9,10}`），不许指"第几行"。
+3. **臂 B 在 `pooled` 口径下结构上没有配对，根因在文件层**：`model/results/supervised/<run>/evaluations/metrics_test_dense.json` 顶层没有 `global_metrics`（只有 `summary` + `case_metrics`），而 `pooled` 正是读 `global_metrics` ⇒ 臂 B 贡献 0 个配对键、`orphan_b` 列的是双模型侧多出的键。⇒ 表只能用 `mean_of_cases`；写"两口径都跑了"就要给臂 B 另注 pooled 无对。与 §11.5 是同一件事的两面：**ARM B 的 `rel_l2_*` 既进不了账本、也进不了 pooled**，它的数只有 `analyze` 的 supervised 根 + `mean_of_cases` 一条路。
+4. `analyze_t4_full.json` 含 **2 处裸 `NaN`**：`json.load` 能读、严格解析器（`JSON.parse`）会抛。将来若给 T2 的"论文数值↔产物自动核对闸"换解析器，要先归一（`null` 或 `allow_nan=False` 的产出路径），否则核对闸会红在装置上而不是数上。
