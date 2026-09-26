@@ -474,7 +474,9 @@ train_joint() {  # $1=name $2=family $3=train $4=val $5=src $6=fmode $7=drop $8=
     return 0
   fi
   mkdir -p "${run_dir}" "${LOG_DIR}"
-  if [[ -f "${run_dir}/metrics.json" ]]; then
+  # 冒烟产物（metrics.json 里 smoke=true）不算完成：续跑必须把它重训掉，
+  # 否则一次 --max-steps 1 的探针会永久占住这个格子的名字。
+  if [[ -f "${run_dir}/metrics.json" ]] && ! grep -aq '"smoke": true' "${run_dir}/metrics.json"; then
     echo "[skip-train-joint] ${run_name}"; RUNS_SKIP=$((RUNS_SKIP + 1)); return 0
   fi
   echo "[train-joint] ${run_name} (cell=${cell} ts=${train_seed})" | tee "${log}"

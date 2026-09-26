@@ -67,6 +67,109 @@ def 规模对照(in_dim: int, joint_hidden: list[int], dual_hidden: list[int]) -
             "joint_hidden": joint_hidden, "dual_hidden": dual_hidden}
 
 
+def 核对点数(n_tensor: int, n_rows: int, 名称: str) -> bool:
+    """边界项的 mask 与网络前向输出必须同批同数，否则就是 9/26 那个 IndexError（12498 vs 496）。
+    把它变成具名错误：报"哪一项、两侧各多少行、该吃哪批点"，而不是让 torch 抛形状错。"""
+    if int(n_tensor) != int(n_rows):
+        raise ValueError(
+            "[FAIL] %s 的点集形状不匹配：网络前向 %d 行 vs 目标 split %d 行 ⇒ "
+            "该项的 mask 与被索引的张量不是同一批点。规则（与双模型一致）：壁面/入口流量/出口压力/压降"
+            "吃**稠密网格上的对应点，与观测稀疏度无关**；只有监督项吃观测子集。" % (名称, n_tensor, n_rows))
+    return True
+
+
+def 检查自测() -> int:
+    """纯 stdlib 的形状/接线自测：不需要 torch，也不需要 cases/ 数据。
+    它验的是「结构」——边界项是否被接到稠密 split 上——这正是 9/26 崩掉的那件事。"""
+    import ast
+    bad = 0
+
+    def expect(label, fn, want_ok, want_sub=""):
+        nonlocal bad
+        try:
+            ok = bool(fn())
+            msg = ""
+        except Exception as exc:                       # noqa: BLE001
+            ok, msg = False, "%s: %s" % (type(exc).__name__, exc)
+        good = (ok == want_ok) and (want_sub == "" or want_sub in msg)
+        if not good:
+            bad += 1
+        print("  [%s] %-42s 期望=%s 实得=%s %s" % ("OK" if good else "BAD", label,
+              "过" if want_ok else "具名报错", "过" if ok else "错", msg[:88]))
+
+    print("== 臂 A 形状/接线自测（纯 stdlib；dense 与 sparse 两档的壁面点集）==")
+    expect("形状一致时放行（稠密档：200 vs 200）", lambda: 核对点数(200, 200, "壁面无滑移"), True)
+    expect("形状不一致时报具名错（稀疏档：496 vs 12498）",
+           lambda: 核对点数(496, 12498, "壁面无滑移"), False, "壁面无滑移 的点集形状不匹配")
+    expect("错误文案点名了正确规则（稠密网格、与观测稀疏度无关）",
+           lambda: 核对点数(1, 2, "入口流量"), False, "稠密网格")
+
+    src = Path(__file__).resolve().read_text(encoding="utf-8")
+    problems = 结构检查(src)
+    if problems:
+        bad += len(problems)
+    for one in problems:
+        print("  [BAD] %s" % one)
+    if not problems:
+        print("  [OK ] 结构检查四条全过（四个边界项都在、吃 dense_train_split、过形状闸、两个点集各一次前向）")
+
+    # 正对照：把三类退化手工塞回源码，结构检查必须各自变红并点名是哪一条（证明它不是永远绿）
+    mutations = [
+        ("变异A·边界张量改回观测子集前向（9/26 的真实错法）",
+         src.replace("_, v_raw_d, _, p_raw_d = 联合前向(dense_train_split)",
+                     "_, v_raw_d, _, p_raw_d = 联合前向(vel_train_split)"), "dense_train_split"),
+        ("变异B·四道形状闸全部摘掉", src.replace("核对点数(", "形状闸已关闭("), "形状闸"),
+        ("变异C·压降项被删", src.replace("l_drop = dual.压降损失(p_raw_d, dense_train_split, train_cases, device)",
+                                        "l_drop = p_raw_d.new_tensor(0.0)"), "四个边界项不齐"),
+    ]
+    for label, mutated, want in mutations:
+        found = 结构检查(mutated)
+        ok = bool(found) and any(want in x for x in found)
+        if not ok:
+            bad += 1
+        print("  [%s] %-40s 抓到=%s  %s" % ("OK" if ok else "BAD", label, bool(found),
+                                            ("；".join(found))[:88]))
+    print("总体：%s" % ("全符 ⇒ 结构上边界项不会再把观测子集喂给稠密 mask"
+                        if bad == 0 else "有 %d 例不符 ⇒ 结构不对，别上机" % bad))
+    return 0 if bad == 0 else 1
+
+
+def 结构检查(src: str) -> list[str]:
+    """读源码本身做结构断言（不需要 torch）：边界项是否接在稠密 split 上、是否过形状闸。"""
+    import ast
+    tree = ast.parse(src)
+    wanted = {"壁面无滑移损失", "入口流量损失", "出口压力损失", "压降损失"}
+
+    def 被调名(node) -> str:
+        # 这些损失是 `dual.壁面无滑移损失(...)` 形式（Attribute 调用），只认 Name 会全数漏掉
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                return node.func.id
+            if isinstance(node.func, ast.Attribute):
+                return node.func.attr
+        return ""
+
+    calls = [n for n in ast.walk(tree) if 被调名(n) in wanted or 被调名(n) == "核对点数"]
+    names = {被调名(c) for c in calls}
+    problems: list[str] = []
+    if not names >= wanted:
+        problems.append("四个边界项不齐（缺 %s）" % ",".join(sorted(wanted - names)))
+    # 真正的不变量：喂给边界项的那两个张量必须来自"对稠密 split 的前向"，
+    # 光看"调用参数里出现了 dense_train_split"不够（mask 是稠密的、张量却可能是观测子集 —— 那正是 9/26 的崩法）
+    稠密前向赋值 = [n for n in ast.walk(tree)
+                    if isinstance(n, ast.Assign)
+                    and any(isinstance(t, ast.Tuple) and "v_raw_d" in ast.unparse(t) for t in n.targets)
+                    and "联合前向(dense_train_split)" in ast.unparse(n.value)]
+    if not 稠密前向赋值:
+        problems.append("边界项的张量不是从稠密 split 前向得到的（v_raw_d 没有取自 联合前向(dense_train_split)）"
+                        " ⇒ 稀疏档会拿稠密 mask 去索引观测子集（9/26 的崩法）")
+    if "核对点数" not in names:
+        problems.append("没有 核对点数 这道形状闸 ⇒ 形状错会抛裸 IndexError 而不是具名错")
+    if not ("联合前向(dense_train_split)" in src and "联合前向(vel_train_split)" in src):
+        problems.append("联合前向没有对 dense 与 obs 各调一次（两个点集被混用）")
+    return problems
+
+
 # ------------------------------------------------------------------ CLI
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="臂 A：单网络联合 (u,v,p) 一次训练")
@@ -115,6 +218,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--in-dim", dest="in_dim", type=int, default=0,
                     help="--dry-run 专用的离线逃生口：显式给特征列数即可在无 numpy/torch 的机器上看计划与参数量"
                          "（geometry 去掉 inlet_profile_star = 14，basic = 4）")
+    ap.add_argument("--max-steps", dest="max_steps", type=int, default=0,
+                    help=">0 时只跑这么多步并打印 [smoke] 一行（冒烟用）；此时 metrics.json 会打 smoke 标记，续跑不会把它当已完成")
+    ap.add_argument("--shape-selftest", dest="shape_selftest", action="store_true",
+                    help="纯 stdlib 的形状/接线自测：不需要 torch 也不需要 cases/，验边界项是否接在稠密 split 上")
     ap.add_argument("--dry-run", action="store_true", help="只打印计划与参数量对照，不 import torch")
     return ap
 
@@ -132,6 +239,8 @@ def 解析层(text: str) -> list[int]:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.shape_selftest:
+        return 检查自测()
     joint_hidden = 解析层(args.hidden_layers)
     dual_hidden = 解析层(args.dual_reference_hidden)
 
@@ -263,21 +372,39 @@ def main() -> int:
     history: list[dict[str, float | str]] = []
     best = {"loss": math.inf, "epoch": 0}
     坏 = 0
-    for epoch in range(1, args.epochs + 1):
+    # 观测子集是否同一批：两档训练源相同时只前向一次（稠密档就是这种情况）
+    同观测源 = (args.train_pressure_source == args.train_velocity_source)
+    for epoch in range(1, (args.max_steps or args.epochs) + 1):
         网络.train()
-        v_norm, v_raw, p_norm, p_raw = 联合前向(vel_train_split)
+        # 监督项吃**观测子集**（vel/p 各自的 source），边界项吃**稠密网格**：
+        # 9/26 的崩法就是把 dense 的 wall mask（12498 行）拿去索引观测子集的前向（496 行）。
+        # 规则与双模型一致，且写在代码里而不只在注释里：每个边界项前都过一次 核对点数。
+        v_norm, _, p_norm_vel_src, _ = 联合前向(vel_train_split)
+        p_norm = p_norm_vel_src if 同观测源 else 联合前向(p_train_split)[2]
         l_vel = dual.速度监督损失(v_norm, vel_y, 速度标准化器)[0]
         l_pre = dual.压力监督损失(p_norm, p_y, 压力标准化器)
         物理 = dual.方程耦合损失(vhead, phead, dense_train_split, 输入标准化器, 速度标准化器,
                                   压力标准化器, device, args.max_physics_points, 约束信息)
-        l_wall = dual.壁面无滑移损失(v_raw, dense_train_split)
-        l_in = dual.入口流量损失(v_raw, dense_train_split, train_cases, device)
-        l_out = dual.出口压力损失(p_raw, dense_train_split)
-        l_drop = dual.压降损失(p_raw, dense_train_split, train_cases, device)
+        _, v_raw_d, _, p_raw_d = 联合前向(dense_train_split)
+        n_dense = len(dense_train_split.targets_raw)
+        核对点数(v_raw_d.shape[0], n_dense, "壁面无滑移")
+        核对点数(v_raw_d.shape[0], n_dense, "入口流量")
+        核对点数(p_raw_d.shape[0], n_dense, "出口压力")
+        核对点数(p_raw_d.shape[0], n_dense, "压降")
+        l_wall = dual.壁面无滑移损失(v_raw_d, dense_train_split)
+        l_in = dual.入口流量损失(v_raw_d, dense_train_split, train_cases, device)
+        l_out = dual.出口压力损失(p_raw_d, dense_train_split)
+        l_drop = dual.压降损失(p_raw_d, dense_train_split, train_cases, device)
         total = (args.velocity_supervision_weight * l_vel + args.pressure_supervision_weight * l_pre
                  + weights["continuity"] * 物理["连续性"] + weights["momentum"] * 物理["动量"]
                  + args.wall_weight * l_wall + weights["inlet"] * l_in
                  + weights["outlet"] * l_out + weights["drop"] * l_drop)
+        if (args.max_steps or 0) == 1:
+            print("[smoke] step1 total=%.6e l_vel=%.4e l_pre=%.4e 连续性=%.4e 动量=%.4e "
+                  "l_wall=%.6e l_in=%.6e l_out=%.6e l_drop=%.6e 有限性=%s"
+                  % (float(total), float(l_vel), float(l_pre), float(物理["连续性"]), float(物理["动量"]),
+                     float(l_wall), float(l_in), float(l_out), float(l_drop),
+                     all(math.isfinite(float(x)) for x in (total, l_wall, l_in, l_out, l_drop))))
         优化器.zero_grad(set_to_none=True)
         total.backward()
         优化器.step()
@@ -351,6 +478,7 @@ def main() -> int:
     (出 / "metrics.json").write_text(json.dumps(
         {"run_name": args.run_name, "臂": "A_单网络联合PINN", "seed": args.seed,
          "best_epoch": best["epoch"], "final_val": val_metrics, "test": test_metrics,
+         "smoke": bool(args.max_steps), "max_steps": args.max_steps,
          "param_scale": scale}, ensure_ascii=False, indent=2), encoding="utf-8")
     print("[done] %s val speed=%.4f p=%.4f (ep=%d)"
           % (args.run_name, val_metrics["rel_l2_speed"], val_metrics["rel_l2_p"], best["epoch"]))

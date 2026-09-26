@@ -288,7 +288,7 @@ bash model/scripts/sweep_t5.sh --t5 --seeds "42,x,44" --dry-run
 
 | 臂 | 入口 | 与双模型逐项对齐的部分 | 唯一被试变量 | 产物 |
 | --- | --- | --- | --- | --- |
-| A 单网络联合 PINN | `model/scripts/train_joint_upnp_pin.py`（`sweep_lib.sh:train_joint`，格 20/21） | 数据切分、观测表来源、输入/输出标准化（含 `--strict-sparse-scalers`）、**物理项直接复用双模型的 `方程耦合损失`**（把单网络包成"速度头/压力头"两个切片代理传进去）⇒ 求导链、尺度因子、512 点等距取点、硬包络作用位置与双模型同源而非近似 | ① 一个网络而不是两个；② 一次训练而不是三阶段 | `results/pinn/<run>/{config.json,best.ckpt,history.csv,metrics.json,evaluations/metrics_{val,test}_dense.json}`，schema 与双模型评估产物同名 ⇒ `analyze_sweep.py` 不改即可读 |
+| A 单网络联合 PINN | `model/scripts/train_joint_upnp_pin.py`（`sweep_lib.sh:train_joint`，格 20/21） | 数据切分、观测表来源、输入/输出标准化（含 `--strict-sparse-scalers`）、**物理项直接复用双模型的 `方程耦合损失`**（把单网络包成"速度头/压力头"两个切片代理传进去）⇒ 求导链、尺度因子、512 点等距取点与双模型同源而非近似。**边界项的适用范围（9/26 更正）**：壁面/入口流量/出口压力/压降这四项要求"稠密网格上的对应点，与观测稀疏度无关"；臂 A 原先只在**稠密档**因"观测集=稠密集"侥幸成立，稀疏档第一粒即 `IndexError: mask[12498] vs tensor[496]`（实例 seg09）。现改为对 dense 与 obs 各一次前向、四项前都过 `核对点数()` 形状闸（不符时报具名 ValueError 而非裸 IndexError）。**验证状态**：形状/结构层已由 `--shape-selftest` 在本机证到（7 例全 OK，含变异 A/B/C 三条正对照）；稠密档实测过（5/5），**稀疏档修完后尚未在实例上跑过一步** ⇒ 在拿到 `[smoke] step1 … l_wall=有限值` 之前，不得写"两档均与双模型同源" | ① 一个网络而不是两个；② 一次训练而不是三阶段 | `results/pinn/<run>/{config.json,best.ckpt,history.csv,metrics.json,evaluations/metrics_{val,test}_dense.json}`，schema 与双模型评估产物同名 ⇒ `analyze_sweep.py` 不改即可读 |
 | B 纯数据 MLP | 既有 `train_supervised.py`（`sweep_lib.sh:train_mlp_with_test`，格 22/23） | 同特征集、同网络规模、同观测表 | 物理项与壁面包络**全为 0**（该脚本本来就没有这两项） | `results/supervised/<run>/...` |
 | C POD + 观测点最小二乘 | `model/scripts/baselines_pod.py`（`sweep_t5.sh:run_pod_baseline`） | 同一批稠密真值构造基；观测点用**与格1/格4 同一张 CSV** | 无网络、无训练 | **单独 JSON**（默认 `out/pod_baseline_contraction.json`）；**不写 progress.jsonl** —— 它没有 train 阶段，写一行 `phase=train, wall_ms=0` 等于骗账本 |
 
@@ -350,3 +350,21 @@ bash model/scripts/sweep_t5.sh --baseline --dry-run | grep armC                 
 消融 Δsd `1.888`（t=45.41）、1% 档 Δsd `1.052`（t=2.62）、表5-8 Δsd `0.003`（t=1.57）。
 弯曲稠密单价与 K\* 同步改为**格19 五粒中位 171.6 s**（我原先用的 174.6 s 是 s42 单粒，且它出现在效率表的一处过期备注里，已一并改掉）：
 `K*(用C)=49`、`K*(用C')=53`。表注固定句：「本表 sd 为 5 个训练种子的样本标准差（ddof=1）」。
+
+### 12.2 臂 A 的真实单价、稀疏档崩点与对账第一次变红（9/26 seg09 实测，pin b76c6dc）
+
+| 事实 | 数值 | 影响 |
+| --- | --- | --- |
+| 臂 A 稠密 5/5 成功 | 墙钟 136.7 / 138.4 / 139.6 / 140.9 s 量级（逐粒见 `wall_ms`） | **臂 A 的单价 ≈139 s，不是双模型的 81.4 s，也不是 runner 里拍的 85 s**。引用臂 A 的 K\* 必须用它：收缩族 `K\*=139/(0.501−0.083)=333`（完整推理口径）、`139/(0.501−0.228)=510`（在线重建口径）⇒ 工单表 5-9 按臂分行，避免"拿别臂的价钱当自己的" |
+| 臂 A 分层 5% 第一粒崩 | `IndexError: mask[12498] vs tensor[496]`（`train_joint_upnp_pin.py:259` 把 dense 的 wall mask 拿去索引观测子集的前向） | 修法见 §11.1 的"边界项适用范围"；runner 单价随后调保守（稠密 145 s / 稀疏 100 s） |
+| 段末对账第一次在真实缺陷上变红 | `5 runs / 1 failures / 0 skipped / 0 gate-fail / 0 eval-fail (账本段 09：6 行；本进程 pid=34914 成功 5 失败 1；段内 distinct train run 6 = 终态成功 5 + 终态失败 1；重试行 0)` → `INVALID: 有 1 个 run 终态失败：rev2609b_t5c21__s42__o0` | 旧口径会记成"失败 0"并放行。这是 pid 核 + `(run,phase)` 末行终态核的现场证据，与 `selftest_ledger.sh` 的合成正对照互补 ⇒ 闸门既没被改绿也没被改死 |
+
+**臂 A 冒烟（补跑 seg12 之前先跑，秒级）**：
+```bash
+python3 model/scripts/train_joint_upnp_pin.py --run-name smoke_a21 --family contraction_2d \
+  --train-cases C-base,C-train-1,C-train-2,C-train-3,C-train-4,C-train-5 --val-cases C-val \
+  --train-velocity-source obs_sparse_5pct.csv --train-pressure-source obs_sparse_5pct.csv \
+  --weights-preset strict-sparse --strict-sparse-scalers --max-steps 1
+# 期望：[smoke] step1 total=… l_wall=<有限值> … 有限性=True 且 rc=0（dense 档把两个 source 换成 dense 再跑一次）
+```
+`--max-steps 1` 写出的 `metrics.json` 带 `"smoke": true`，`train_joint` 的续跑判断**不把它当已完成**（遇 smoke 标记就重训），所以探针不会占住正式格子的名字。
