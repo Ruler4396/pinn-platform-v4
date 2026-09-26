@@ -7,7 +7,7 @@
 # have metrics.json, and every file is re-fetched and hash-checked against the pinned commit.
 set -uo pipefail
 
-PIN=b76c6dc08adab13f95e994ff82824ea5b55f200c
+PIN=fa81991ebde4161743ab8240eb4189252cf66648
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 PHASE="${1:-check}"
@@ -23,12 +23,12 @@ export SWEEP_OUT_DIR="$WS/out"
 export UNIT_DENSE_TRAIN_SEC=85 UNIT_SPARSE_TRAIN_SEC=56 BEND_UNIT_SEC=118 UNIT_EVAL_SEC=2
 
 declare -A EXPECT=(
-  [model/scripts/sweep_lib.sh]=e6bd2c060fd6f8390ed0a691cee084c1fffb54c1a6f061696ff104e043ea4ed0
-  [model/scripts/sweep_t5.sh]=e7f61e873d35de3799390c6b37a1e24c724d559d98e6ffdf435bbc4d36baedb7
-  [model/scripts/train_joint_upnp_pin.py]=c67f608430d7968fe1a087d60627b1e37752f1e43835b19a340be12df4031605
-  [model/scripts/baselines_pod.py]=1bc291edbffbe4dc9f138461d06a1d2881394e3ed174746c30d3bce1935f4bb3
+  [model/scripts/sweep_lib.sh]=298f69686c083621e400e7a4cb48ff07948274354b7c0e1f691b3df96785e768
+  [model/scripts/sweep_t5.sh]=338290bbe7f815a0a90d93221f71d5c458b87ee2b275a826f15b47e8a064c16e
+  [model/scripts/train_joint_upnp_pin.py]=85b3c158f7679f4f31c673bcaf23c2c5e73a6361bcabadcc99ad7c149927ccf9
+  [model/scripts/baselines_pod.py]=a1bc77cea2f5d24a34b1d8209de10e6e1f6212a87ec7560160e2e046c0381e14
   [model/scripts/selftest_ledger.sh]=e5d4bc2dd077d9f84fd48d613f361d456d7d6d5f9078c241d0aab42662e282bb
-  [model/scripts/analyze_sweep.py]=968acfa2eb1a21e1ee5ad30495022f1c91182d296043b17a3f7544add14eec31
+  [model/scripts/analyze_sweep.py]=39f9de7ad4a6c63ebb6e039c05271787374add6da74b8de60e891fa94688d6e5
   [model/scripts/generate_observations_seeded.py]=0cac210ca0a69f858c7669a66e14d8a268b14636117af353458ad278dbd47d28
   [model/scripts/ops/build_runs_index.py]=9ec4c8fc9f6c867695ace375f74f1fc9b7e5b6502690dbb8b4b14a3d39a9e95b
 )
