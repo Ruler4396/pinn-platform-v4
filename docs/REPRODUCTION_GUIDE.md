@@ -39,7 +39,9 @@
 - 重新构造稀疏观测
 - 重新训练与评估
 
-这一层额外依赖 `FreeFEM++`，门槛最高。
+这一层额外依赖 `FreeFem++`（二进制名只有大写 F：`command -v freefem++` 会假报未装），门槛最高。
+
+> **可移植性边界（2026-09-26 逐行现查，38 份 tracked `.edp`）**：入库的 **32 份 Stokes 生成脚本**（23 份 `model/cases/bend_2d/cfd/**` + 9 份 `model/cases/contraction_2d/cfd/**`）把输出路径写死为原作者机器的绝对路径——22 份写 `/root/dev/pinn_v3/…`、10 份（`__ip_skewed_*` 族）写 `/root/dev/pinn-platform-v4/model/…`——**换机器直接跑会以 `FreeFem++ err code 8` 退出，且不报权限错**（FreeFem 既不建目录）。两条出路：先自建那个目录，或改掉 `ofstream` 那一行。四份有限 Re 探针主件 `C-base_ns_re{1e-3,1,10,50}.edp` 与 `probe_syntax.edp` 的写路径已是相对路径，**取回即跑**。逐位复算凭据见 `docs/revision/CFD真值同机复算-20260925.md` 与 `docs/revision/派单-复现声明-edp硬编码旧主机路径-20260926.md` §〇。
 
 ## 环境基线
 
