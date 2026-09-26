@@ -524,7 +524,7 @@ INVALID（仅记账不符）：段内终态成功 run 数=0 ≠ 本次成功 0 +
 
 | 件 | 命令（实例上跑，全部零训练） | 程序自己打印的东西 | 判据 |
 |---|---|---|---|
-| (i) 臂 C 重跑入库 | `python3 model/scripts/baselines_pod.py --family contraction_2d --eval-cases C-val,C-test-1,C-test-2 --obs-files obs_sparse_5pct.csv --out model/results/contraction_2d/baselines/pod_baseline_contraction.json`（≈5.7 s） | 新增 `[armC] 产物自证: path=… bytes=… sha256=…` 与逐工况行 `[armC] <观测表> | <case_id> n_obs=… speed=… p=… dp=…` | 产物落仓且 sha 可复算 ⇒ D2 表注从 **B 级·转引日志** 升 **A 级·产物可回读**；拿不到就**一字不改** |
+| (i) 臂 C 重跑入库 | `python3 model/scripts/baselines_pod.py --family contraction_2d --eval-cases C-val,C-test-1,C-test-2 --obs-files obs_sparse_5pct.csv --out model/results/contraction_2d/baselines/pod_baseline_contraction.json`（≈5.7 s） | 新增 `[armC] 产物自证: path=… bytes=… sha256=…` 与逐工况行 `[armC] <观测表> \| <case_id> n_obs=… speed=… p=… dp=…` | 产物落仓且 sha 可复算 ⇒ D2 表注从 **B 级·转引日志** 升 **A 级·产物可回读**；拿不到就**一字不改** |
 | (ii) E5 同机 CFD 单价 | `python3 model/scripts/e5_cfd_price.py --repeats 7`（默认 5 工况 = C-base/C-train-1/C-test-2/B-base/B-train-1，两族齐全；二进制默认 `FreeFem++`，真实名只有大写 F） | 每次一行 `<case> run k/7 wall=… ms rc=…`，然后 `[E5]` 汇总 median/区间/族级中位数之中位数，最后 `产物: docs/benchmarks/e5_cfd_price.json bytes=… sha256=…` | 中位数与区间**由程序算**，不许事后手填；两族齐全才允许删表 5-9 的"混合口径"限定句 |
 
 - **e5_cfd_price.py 的三条硬规矩**（写进代码，不靠人自觉）：① 跑前必须把入库 `.edp` 里写死的 `/root/dev/…` 改写掉，
