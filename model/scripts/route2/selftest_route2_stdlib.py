@@ -1797,6 +1797,69 @@ def _unbound_global_refs(src: str, name: str):
     return sorted(refs - bound - set(dir(builtins)) - _MODULE_DUNDER)
 
 
+def k0_chain_contract_checks(ck: Check) -> None:
+    """Defect 11: the per-plan chain map carried a dict into the frozen scorer.
+
+    The referee added `chain[plan]["second_reference_scan"]`, but
+    `residual_scorers.k0_verdict` walks every leaf of every per-plan map and calls
+    `math.isfinite` on it -- so both real levels died with
+    `TypeError: must be real number, not dict` *inside the D7 file*, before any verdict JSON
+    was written.  The fix moved the scan to its own map; this group pins the contract from
+    both sides, because a guard nobody fed a bad value to is decoration:
+
+    * a well-formed map is accepted and the scorer mints exactly the derivative items;
+    * the instance's shape (a dict leaf) is refused **by name** by the producer's guard;
+    * feeding it straight to the scorer still reproduces the original crash, which is the
+      evidence that the guard sits on the path that used to die;
+    * a `bool` leaf is refused too -- `bool` is an int subclass, so `isfinite(True)` passes
+      and `True <= limit` silently evaluates, turning a flag into a measurement.
+    """
+    import k0_truth_gate as kg
+    good = {"a": {"first_total_derivative": 1.2e-3, "second_total_derivative": 4.0e-2},
+            "b": {"first_total_derivative": 3.0e-3, "second_total_derivative": 6.0e-2},
+            "b_contract": {"first_total_derivative": 3.1e-3,
+                           "second_total_derivative": 6.0e-2}}
+    fd_gate = {"value": 0.6530811, "limit": 0.3, "pass": False}
+    try:
+        kg.assert_chain_is_numeric(good)
+        accepted = ""
+    except ValueError as exc:
+        accepted = str(exc)
+    ck.add("k0_chain_contract.well_formed_map_is_accepted", accepted == "", accepted[:120])
+    verdict = rs.k0_verdict(0.412749, 1135.4836, good, fd_gate, 1.003)
+    names = sorted(verdict["checks"])
+    ck.add("k0_chain_contract.scorer_mints_exactly_the_derivative_items",
+           len(names) == 4 + 2 * len(good)
+           and not any("scan" in n for n in names),
+           {"n_checks": len(names), "failed": verdict["failed"]},
+           "4 gates + 2 items x 3 plans, and no K0-C_*_second_reference_scan")
+    bad = {pl: dict(m, second_reference_scan={"kind": "scan"}) for pl, m in good.items()}
+    guard = ""
+    try:
+        kg.assert_chain_is_numeric(bad)
+    except ValueError as exc:
+        guard = str(exc)
+    ck.add("k0_chain_contract.control_a_dict_leaf_is_named_by_the_guard",
+           "a.second_reference_scan" in guard and "b.second_reference_scan" in guard,
+           guard[:150])
+    try:
+        rs.k0_verdict(0.412749, 1135.4836, bad, fd_gate, 1.003)
+        crash = "no error raised"
+    except TypeError as exc:
+        crash = str(exc)
+    ck.add("k0_chain_contract.control_the_scorer_still_crashes_on_it",
+           "real number" in crash, crash[:150],
+           "this is defect 11's exact failure shape, and the guard runs before it")
+    boolmsg = ""
+    try:
+        kg.assert_chain_is_numeric({"a": {"first_total_derivative": True,
+                                          "second_total_derivative": 1.0}})
+    except ValueError as exc:
+        boolmsg = str(exc)
+    ck.add("k0_chain_contract.control_a_bool_leaf_is_refused",
+           "a.first_total_derivative" in boolmsg, boolmsg[:150])
+
+
 def module_hygiene_checks(ck: Check) -> None:
     """Defect 5's second face: `--selfcheck-raw` also used `json` without importing it.
 
@@ -1866,6 +1929,7 @@ def main() -> int:
     module_hygiene_checks(ck)
     defect8_checks(ck)
     k0_referee_checks(ck)
+    k0_chain_contract_checks(ck)
     real_artefact_checks(ck)
     impedance_checks(ck, summaries, tmp_root)
 

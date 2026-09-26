@@ -610,6 +610,27 @@ def pick_collocation(rows: List[dict], n: int, seed: int) -> List[dict]:
     return [interior[int(i * step)] for i in range(n)]
 
 
+# ------------------------------------------------- the scorer's input contract
+def assert_chain_is_numeric(chain: Dict[str, Dict[str, float]]) -> None:
+    """Fail loudly, here, if the per-plan chain map stopped matching the scorer's contract.
+
+    `residual_scorers.k0_verdict` iterates every leaf of every per-plan map and calls
+    `math.isfinite` on it, so any non-float parked in there raises
+    `TypeError: must be real number, not dict` from *inside the frozen judgement file* --
+    which reads like a scorer bug and, on the instance (defect 11), killed both real levels
+    before a verdict JSON existed.  That file is under D7 and is not the place to fix it, so
+    the producer checks its own output and names the offending key.
+    """
+    bad = sorted(f"{plan}.{order}" for plan, errs in chain.items()
+                 for order, value in errs.items()
+                 if isinstance(value, bool) or not isinstance(value, (int, float)))
+    if bad:
+        raise ValueError(
+            "chain map must hold only real numbers (residual_scorers.k0_verdict calls "
+            f"math.isfinite on every leaf); non-numeric entries: {bad}. Publication-only data "
+            f"belongs beside it, not inside it -- see second_scan")
+
+
 # --------------------------------------------------------------------- gate main
 def run_gate(case_root: Path, case_id: str, level: str, sigma: float,
              plans: Sequence[str]) -> dict:
@@ -636,7 +657,11 @@ def run_gate(case_root: Path, case_id: str, level: str, sigma: float,
     targets_z = (raw - mean) / std
     sharp = TRAIN_BUDGET["envelope_sharpness"]
 
+    # `chain` is annotated Dict[str, Dict[str, float]] because that is the contract
+    # residual_scorers.k0_verdict walks (every leaf goes through math.isfinite).  Defect 11
+    # was this map carrying a dict, which killed the verdict step on both real levels.
     chain: Dict[str, Dict[str, float]] = {}
+    second_scan: Dict[str, dict] = {}
     model_scores: Dict[str, float] = {}
     extra: Dict[str, object] = {}
     for plan in plans:
@@ -665,9 +690,13 @@ def run_gate(case_root: Path, case_id: str, level: str, sigma: float,
         reading = residual_from({k: auto[k] for k in ("u_xx", "u_yy", "v_xx", "v_yy",
                                                       "p_x", "p_y", "u_x", "v_y")})
         model_scores[plan] = reading["momentum_mse"]
-        chain[plan] = {"first_total_derivative": first, "second_total_derivative": second,
-                       "second_reference_scan": reference_resolution_scan(scan_err,
-                                                                          scan_steps)}
+        chain[plan] = {"first_total_derivative": first, "second_total_derivative": second}
+        # The reference-resolution scan goes in its OWN map, not into chain[plan]:
+        # `residual_scorers.k0_verdict` walks every value of every per-plan map and calls
+        # math.isfinite on it, so a dict parked in there crashes the verdict step (and would
+        # mint a bogus check named K0-C_<plan>_second_reference_scan).  It surfaced as
+        # defect 11 on the instance, where both real levels died before writing a verdict.
+        second_scan[plan] = reference_resolution_scan(scan_err, scan_steps)
         extra[f"plan_{plan}"] = {"supervised_loss_z": final_loss,
                                  "continuity_mse": reading["continuity_mse"],
                                  "momentum_by_fd": residual_from({
@@ -695,6 +724,10 @@ def run_gate(case_root: Path, case_id: str, level: str, sigma: float,
                                        "second_total_derivative"]}
     if not model_scores:
         raise ValueError("no plan gated")
+    # b_contract inherits b's second-derivative reading, so it inherits b's scan too.
+    if "b" in second_scan:
+        second_scan.setdefault("b_contract", second_scan["b"])
+    assert_chain_is_numeric(chain)
     denominator = min(model_scores.values())
     verdict = rs.k0_verdict(truth["momentum_mse"], denominator, chain,
                             truth["fd_step_gate"], truth["balance_ratio"])
@@ -710,10 +743,10 @@ def run_gate(case_root: Path, case_id: str, level: str, sigma: float,
         "fd_step_same_lattice": truth["fd_step_same_lattice"],
         "reference_resolution": {
             "truth_mse_step_scan": truth.get("fd_step_scan"),
-            "chain_second_scan": {pl: chain[pl].get("second_reference_scan") for pl in chain},
+            "chain_second_scan": dict(second_scan),
             "second_order_items": {
                 f"K0-C_{pl}_second_total_derivative":
-                    second_order_status(chain[pl].get("second_reference_scan"),
+                    second_order_status(second_scan.get(pl),
                                         chain[pl]["second_total_derivative"],
                                         rs.K0_CHAIN_SECOND_REL_MAX) for pl in chain},
             "rule": "pre-registered 2026-09-26: a second-derivative item is only called "
