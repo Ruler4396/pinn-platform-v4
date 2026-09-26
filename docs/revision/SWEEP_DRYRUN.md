@@ -323,9 +323,9 @@ bash model/scripts/sweep_t5.sh --baseline --dry-run | grep armC                 
 | --- | --- | --- |
 | 1 | 账本是**追加式**的：同段重投续跑、失败后重试都会留新行，旧口径拿"段内 train 行数"比内存计数 ⇒ 必然假红 | 分两层核：① 本进程核（账本新增 `pid` 字段，`SWEEP_PID` 可注入以便自测）；② 段终态核（按 `(run, phase)` 取**最后一行**）；重试行单独打印 `重试行 N` 不判红 |
 | 2 | `rc!=0` 的行不一定进失败计数（尤其 eval 阶段），"内存=0 账本=1"就是这么来的 | 每个 `rc!=0` 的行都进 `RUNS_FAIL`，并另计 `RUNS_EVAL_FAIL`；终态失败的 run、终态失败的评估都被列为 problem |
-| 3 | `[skip-train]` 归属不明（跳过 = 账上该有别人的成功行） | 新增等式 `段内终态成功 run 数 == 本次成功 + 本次跳过`，对不上即红；`RUNS_GATE_FAIL` 单列（观测预算/点位生成失败不再被当成"跑完"或"预算截断"） |
+| 3 | `[skip-train]` 归属不明（跳过 = 账上该有别人的成功行） | **原先的修法本身是第二次假红**：等式 `段内终态成功 run 数 == 本次成功 + 本次跳过` 仍隐含"背书的 train 行在本段"。9/26 定档改为**按 run 归属**（见 §12.6 第六批）：跳过名单逐个回查**任意段**的终态成功行；`RUNS_GATE_FAIL` 单列（观测预算/点位生成失败不再被当成"跑完"或"预算截断"） |
 
-自测（驱动**真实**的 `seal_segment`，不是复刻逻辑）：`bash model/scripts/selftest_ledger.sh` ⇒ **十二例全符合**（9/26 本机在已提交状态复跑，尾行 `总体：十二例全符合…`，rc=0），
+自测（驱动**真实**的 `seal_segment`，不是复刻逻辑）：`bash model/scripts/selftest_ledger.sh` ⇒ **十七例全符合**（9/26 20:5x 本机在已提交状态复跑，尾行 `总体：十七例全符合…`，rc=0；原十二例 + 9/26 定档甲新增的 ⑬–⑰），
 其中 **③「账本缺一行」、⑥「段内 0 行」、⑪「给失败的 run 补评估」、⑫「补评估数不符」是必定 INVALID 的正对照**，证明闸门没被改成永远绿；②是段 01 那个假红的忠实回放（前进程 1 败 1 成 + 本进程 2 成 1 跳），现在判绿并打印"重试行 1"。退出码判级也逐例断言：①②⑩=0，③⑦⑧⑫=4（仅记账不符），④⑤⑥⑨⑪=1（数据不可信）。
 
 ### 11.5 臂 B 的指标进不了账本：`rel_l2_*` 整列 NA 是 schema 问题，不是漏跑（9/26 现查）
@@ -403,7 +403,7 @@ python3 model/scripts/train_joint_upnp_pin.py --run-name smoke_a21 --family cont
 - 两条新硬条件：① 本段补评估的 run 必须在**任意段**有一条终态成功的 train 行，否则报
   「给失败的 run 补评估没有意义」并红；② 内存的补评估数必须等于账本推出的数量。
 
-**自测（`bash model/scripts/selftest_ledger.sh`，现在十二例，rc=0）**：
+**自测（`bash model/scripts/selftest_ledger.sh`，现在十七例，rc=0）**：
 ⑩ 是实例段 14 的忠实回放（别的段的 train 行 + 本段 3 条 eval_test）⇒ 判**绿**；
 ⑪⑫ 是两条必定 INVALID 的正对照（给一个从没训练成功的 run 补评估 / 内存数与账本不符）⇒ 判红并点名。
 连同原有的「账本缺一行」「段内 0 行」，共四条必定红的正对照 ⇒ 这次改动不是把闸门改成永远绿。
@@ -420,11 +420,11 @@ python3 model/scripts/train_joint_upnp_pin.py --run-name smoke_a21 --family cont
   给"任何段都没有成功 train 行"的 run 补评估、前置闸门没过、有失败单元、完成数 ≠ `EXPECTED_RUNS`。
   ⇒ runner 该停：这一段不能进分析。
 - **rc=4（bookkeeping，仅记账不符）**：只有内存计数与账本对不上（本进程成功数/失败数/补评估数、
-  跳过归属、同 run 多条成功行），**没有任何终态失败** ⇒ 产物完好，`analyze_sweep`/索引可以照跑，
+  跳过无人背书、同 run 多条成功行），**没有任何终态失败** ⇒ 产物完好，`analyze_sweep`/索引可以照跑，
   但本段不算封板，当天要修。消息里明写"产物完好，analyze/索引可以跑"。
 - **rc=0（clean）**。
 
-`bash model/scripts/selftest_ledger.sh` 十二例带**精确退出码断言**（`RCWANT`）：①②⑩=0、③⑦⑧⑫=4、④⑤⑥⑨⑪=1，全 OK；
+`bash model/scripts/selftest_ledger.sh` 十七例带**精确退出码断言**（`RCWANT`）：①②⑩**⑬⑯**=0、③⑦⑧⑫**⑭⑮**=4、④⑤⑥⑨⑪**⑰**=1，全 OK；
 其中 ③⑫ 是"缺一行/数不符"→ 必须落 4 而不是 1（否则你又会把完好的段当不可信跳过分析），⑤⑥⑨⑪ 必须落 1。
 
 ### 12.6 9/26 第五批：中文变量名让补评估段**走不到封段就炸**（实例 seg14），修完本机重放到 `[seal] 判级=clean`
@@ -461,3 +461,27 @@ sweep_lib.sh: 行 502: ${是补评估}: 错误的替换
   修法我没做（那是 T6 的准入面，且你正在实例上跑），先用"必须带 `--baseline`"这条绕开；要不要把 `--only-cells` 也挂到 `t6_matrix`，等你这一轮复验完再定。
   期望读数：10 个 `[ok-eval-only]` + 一行 `[seal] 判级=…` + rc（0=封上；4=只有计数没对上、产物仍可用；1=有终态失败，本段读数不可信）。
   若这些 run 的 `evaluations/metrics_test_dense.json` 其实都已存在，就会走成 `RUNS_SKIP`（10 个 skip、0 个 eval-only）——那是 seg14 之外的另一种终态，判级同样应为 clean。
+
+### 12.7 9/26 第六批 · 定档（**甲：改判据**）——纯跳过段按 run 归属核，不再按段计数
+
+统括官 20:37 实测（`--baseline --no-pod --only-cells 20,21 --seg 14`）：ASCII 修好后**一行 bash 错都没有**，10 个 `[skip-train-joint]` 之后封段给出的是
+
+```
+[seal] 判级=bookkeeping  fatal=0  记账=1
+INVALID（仅记账不符）：段内终态成功 run 数=0 ≠ 本次成功 0 + 续跑跳过 10 ⇒ …产物完好，analyze/索引可以跑，但本段仍不算封板
+```
+
+**定档：甲。** 理由不是"我想让它绿"，是这条等式和 `fbbabc6` 已经认下的形状自相矛盾——该批只承认了**补评估**的 run 其 train 行可以在别的段，而 `[skip-train]` 的**前提就是盘上有 `metrics.json`**，它的成功行按定义在别的段。同一种"续跑"形状，一支按 run 核、一支按段核，被顶回去的必然是后者。**判据的强弱没动**（term_bad / eval_bad / `orphan_evalonly` / gate_fail 仍是 fatal；a797ce0 的 rc=1/4 语义不变），改的是"跳过"这一支的归属口径。
+
+改动逐条（都在 `model/scripts/sweep_lib.sh`）：
+
+1. 新增全局 `SKIP_RUNS=""`（逗号连接，**不用 bash 数组**——第一版用数组 + `IFS=, read` 在夹具里没切开，名单被当成 1 个元素，判级就错；改成串以后 `read` 整个去掉）。三处跳过分支填名单：`train`（`[skip-train]`）、`train_mlp`（`[skip-train-mlp]`）、`train_joint` 的 `is_eval_only=0` 一支。
+2. `seal_segment` 的 python 多收一个 argv（跳过名单），旧等式 `len(term_ok)+len(mine_evalonly) != done+skip+evalonly` **删除**，换成三条：
+   - `len(名单) != RUNS_SKIP` ⇒ 记账（有 `[skip-train]` 忘了进名单，防止以后新加分支漏填）；
+   - `orphan_skip`＝名单里在任何段都没有终态成功 train 行的 run ⇒ **仅记账 rc=4 并点名**（不是 fatal：产物在盘上，缺的是账）；
+   - `len(term_ok)+len(mine_evalonly) != done+evalonly+len(本段内有背书的跳过)` ⇒ 记账（本段自己跑出来的单元没全部上账）。
+3. "本段账本 0 行 ⇒ fatal" 加一条 **no-op 豁免**：纯跳过段按定义不写行。豁免只问形状（名单非空、名单数==内存跳过数、`done=fail=evalonly=0`），**不问背书**；背书与否交给 `orphan_skip` ⇒ 有背书 clean、无背书 rc=4。⑰ 那条正对照钉住它不会被扩大：0 行却有成功读数 ⇒ 仍然 fatal。
+
+复验（本机，都在临时目录）：`selftest_ledger.sh` **十七例 exit=0**（⑬=seg14 现场回放判 clean、⑭无人背书判 4、⑮名单少两个判 4、⑯no-op 判 clean 并打提示行、⑰0 行却有读数判 1）；`selftest_joint_evalonly.sh` **五组 exit=0**，其中第 4 组是**真实 `train_joint` 代码路径**产出的纯跳过段（test 件已齐 ⇒ 10 skip、0 补评估）判 `clean`，第 5 组把背书抽掉判 rc=4 并点名 ⇒ 名单确实由产品代码填出来，不是夹具手搓。
+
+统括官侧下一次读法：那 10 个 `[skip-train-joint]` 应当给 `判级=clean` rc=0；no-op 提示行**不该**出现（本段账本里还留着上一趟崩掉的 10 条 `eval_test` 行 ⇒ 不是 0 行）。你 `d3d4007` 把 rc=4 改成"继续 + WARN"与本改动同向。

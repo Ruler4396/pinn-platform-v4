@@ -183,6 +183,7 @@ RUNS_SKIP=0
 RUNS_GATE_FAIL=0
 RUNS_EVAL_FAIL=0
 RUNS_EVALONLY=0
+SKIP_RUNS=""                        # 本段被判为"续跑跳过"的 run 名，逗号连接（封段要逐个回查它的 train 行在哪个段）
 SWEEP_PID="${SWEEP_PID:-$$}"   # 可由环境注入（selftest_ledger.sh 用它来扮演"本进程"），默认取当前 shell pid
 
 _progress_append() {  # $1=run $2=family $3=cell $4=train_seed $5=obs_seed $6=phase $7=wall_ms $8=rc $9=metrics_json
@@ -322,7 +323,7 @@ train_dual() {  # $1..: name|family|train_cases|val_cases|src_train|src_val|feat
 
   if [[ -f "${run_dir}/metrics.json" ]]; then
     echo "[skip-train] ${run_name}"
-    RUNS_SKIP=$((RUNS_SKIP + 1))
+    RUNS_SKIP=$((RUNS_SKIP + 1)); SKIP_RUNS="${SKIP_RUNS:+${SKIP_RUNS},}${run_name}"
   else
     echo "[train] ${run_name} (cell=${cell} ts=${train_seed} os=${obs_seed})" | tee "${log}"
     t0="$(_now_ns)"
@@ -421,7 +422,7 @@ train_mlp() {
     return 0
   fi
   if [[ -f "${run_dir}/metrics.json" ]]; then
-    echo "[skip-train-mlp] ${run_name}"; RUNS_SKIP=$((RUNS_SKIP + 1)); return 0
+    echo "[skip-train-mlp] ${run_name}"; RUNS_SKIP=$((RUNS_SKIP + 1)); SKIP_RUNS="${SKIP_RUNS:+${SKIP_RUNS},}${run_name}"; return 0
   fi
   mkdir -p "${run_dir}" "${LOG_DIR}"
   echo "[train-mlp] ${run_name}" | tee "${log}"
@@ -501,7 +502,7 @@ train_joint() {  # $1..$11 同上，$12=eval_test_cases（不传就没有 test �
       echo "[ok-eval-only] ${run_name}"
       is_eval_only=1
     fi
-    if [[ "${is_eval_only}" == 1 ]]; then RUNS_EVALONLY=$((RUNS_EVALONLY + 1)); else RUNS_SKIP=$((RUNS_SKIP + 1)); fi
+    if [[ "${is_eval_only}" == 1 ]]; then RUNS_EVALONLY=$((RUNS_EVALONLY + 1)); else RUNS_SKIP=$((RUNS_SKIP + 1)); SKIP_RUNS="${SKIP_RUNS:+${SKIP_RUNS},}${run_name}"; fi
     return 0
   fi
   echo "[train-joint] ${run_name} (cell=${cell} ts=${train_seed})" | tee "${log}"
@@ -572,14 +573,15 @@ seal_segment() {
   #      且"成功 + 续跑跳过"的 run 数 = 段内终态成功的 run 数。
   # grep -c 在"没匹配"时返回合法的 0 ⇒ "本段 0 行"一律 INVALID，不能当通过。
   python3 - "${PROGRESS}" "${SEGMENT_TAG}" "${RUNS_DONE}" "${RUNS_FAIL}" "${RUNS_SKIP}" "${expected}" \
-    "${SWEEP_PID}" "${RUNS_GATE_FAIL}" "${RUNS_EVAL_FAIL}" "${RUNS_EVALONLY}" "${SWEEP_FORCE_LEDGER_BREAK:-}" <<'LEDGER_PY'
+    "${SWEEP_PID}" "${RUNS_GATE_FAIL}" "${RUNS_EVAL_FAIL}" "${RUNS_EVALONLY}" "${SWEEP_FORCE_LEDGER_BREAK:-}" \
+    "${SKIP_RUNS}" <<'LEDGER_PY'
 import json, os, sys
 for _s in (sys.stdout, sys.stderr):
     try:
         _s.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-path, seg, done, fail, skip, expected, mypid, gate_fail, eval_fail, evalonly, breakage = sys.argv[1:14]
+path, seg, done, fail, skip, expected, mypid, gate_fail, eval_fail, evalonly, breakage, skip_list = sys.argv[1:15]
 done, fail, skip = int(done), int(fail), int(skip)
 gate_fail, eval_fail = int(gate_fail or 0), int(eval_fail or 0)
 evalonly = int(evalonly or 0)
@@ -609,8 +611,18 @@ if bad_lines:
     print("INVALID: 账本里有 %d 行无法解析（被截断？）⇒ 本段结果不可信" % bad_lines, file=sys.stderr)
     raise SystemExit(1)
 if not rows:
-    print("INVALID: 段 %s 在账本里 0 行 ⇒ 这不是'全部通过'，是没记上账或段名写错" % seg, file=sys.stderr)
-    raise SystemExit(1)
+    # 纯续跑段（本段一个单元都没新跑，全是 [skip-train]）按定义不写任何行 ⇒ "0 行"在这里是**预期**，
+    # 不是"记账没开"。豁免条件只问形状、不问背书：内存 0 成功 0 失败 0 补评估，且名单非空、名单数 == 内存跳过数。
+    # 背书与否交给后面的 orphan_skip 判级：有背书 ⇒ clean；没背书 ⇒ 仅记账不符(rc=4，产物在盘上)。
+    # ⇒ 这一段仍然"不算封板"，但不会再被当成数据不可信而连累 analyze/index。
+    sk = [x.strip() for x in skip_list.split(",") if x.strip()]
+    pure_skip_shape = bool(sk) and len(sk) == skip and done == 0 and fail == 0 and evalonly == 0
+    if pure_skip_shape:
+        print("[seal] 本段是纯续跑（no-op）：%d 个 run 全部 [skip-train] ⇒ 本段无新产物，账本 0 行属预期"
+              "（若这不是你要的那一段，问题在段名不在账本）" % len(sk))
+    else:
+        print("INVALID: 段 %s 在账本里 0 行 ⇒ 这不是'全部通过'，是没记上账或段名写错" % seg, file=sys.stderr)
+        raise SystemExit(1)
 
 def is_train(rec):
     return str(rec.get("phase", "")).startswith("train")
@@ -640,8 +652,28 @@ for r in all_rows:
     all_latest[(r.get("run"), str(r.get("phase", "")))] = r
 orphan_evalonly = [run for run in mine_evalonly
                    if not (all_latest.get((run, "train")) and all_latest[(run, "train")].get("rc") == 0)]
+# 续跑跳过（9/26 定档，改的就是原来那条"段内终态成功数 == 成功 + 跳过"）：
+# 被跳过的 run，它的 train 行**按定义就在别的段**（fbbabc6 已经承认这个形状，但只给了补评估分支）。
+# 所以跳过要逐个按 run 归属回查，而不是按段计数：
+#   账上有终态成功的 train 行 ⇒ 正常续跑（seg14 实测形态：10 skip 全部由 seg09/13 的行背书 ⇒ 应判 clean）；
+#   账上一个 train 行都没有 ⇒ 只是**没上账**（产物在盘上，因为 `[skip-train]` 的前提就是 metrics.json 存在）
+#   ⇒ 判"仅记账不符"(rc=4) 并点名，不判数据不可信：这两档的分界是"读数可不可信"，不是"我有没有记全"。
+skipped = [x.strip() for x in skip_list.split(",") if x.strip()]
+backed_skip = [r for r in skipped
+               if all_latest.get((r, "train")) and all_latest[(r, "train")].get("rc") == 0]
+orphan_skip = sorted(set(skipped) - set(backed_skip))
+in_seg_backed_skip = [r for r in skipped if r in term_ok]     # train 行恰好也在本段（同段续跑）
 
-fatal, book = [], []          # fatal=数据不可信(rc=1)；book=只是记账对不上(rc=4，产物完好)
+fatal, book = [], []          # 数据不可信(rc=1)；book=只是记账对不上(rc=4，产物完好)
+if len(skipped) != skip:
+    book.append("跳过 run 数 内存=%d 名单=%d ⇒ 有 [skip-train] 没进 SKIP_RUNS 名单（新加了跳过分支？）" % (skip, len(skipped)))
+if orphan_skip:
+    book.append("有 %d 个 run 被跳过但账上任何段都没有终态成功的 train 行：%s ⇒ 产物在盘上但没上账，本段不算封板"
+                % (len(orphan_skip), ", ".join(orphan_skip[:5])))
+# 本段"该有终态成功 train 行"的 run = 本次训练的 + 本段里被补评估的 + train 行也在本段的跳过 run
+if len(term_ok) + len(mine_evalonly) != done + evalonly + len(in_seg_backed_skip):
+    book.append("段内终态成功 run 数=%d + 补评估=%d ≠ 本次成功 %d + 补评估 %d + 本段内有背书的跳过 %d ⇒ 本段跑出来的单元没全部上账"
+                % (len(term_ok), len(mine_evalonly), done, evalonly, len(in_seg_backed_skip)))
 if len(mine_evalonly) != evalonly:
     book.append("补评估单元数 内存=%d 账本=%d（本段只做评估、无 train 行的 run）" % (evalonly, len(mine_evalonly)))
 if mine_train_ok != done:
@@ -656,9 +688,6 @@ if eval_bad:
 if orphan_evalonly:
     fatal.append("有 %d 个 run 被补了评估但它所在任何段都没有终态成功的 train 行：%s ⇒ 给失败的 run 补评估没有意义"
                     % (len(orphan_evalonly), ", ".join(orphan_evalonly[:5])))
-if len(term_ok) + len(mine_evalonly) != done + skip + evalonly:
-    book.append("段内终态成功 run 数=%d ≠ 本次成功 %d + 续跑跳过 %d ⇒ 有 run 被跳过但账上没有成功行"
-                    % (len(term_ok) + len(mine_evalonly), done + evalonly, skip))
 if dup_ok:
     book.append("同一 run 有多条成功 train 行（run-name 撞车或重复铺排？）：%s" % ", ".join(dup_ok[:5]))
 print("%d runs / %d failures / %d skipped / %d gate-fail / %d eval-fail / %d eval-only  (账本段 %s：%d 行；本进程 pid=%s 成功 %d 失败 %d；"

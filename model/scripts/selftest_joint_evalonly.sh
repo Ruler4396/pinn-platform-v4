@@ -42,13 +42,18 @@ PY
 }
 
 # 造一格"已训完、缺 test 评估件"的现场：metrics.json 存在且不是 smoke，evaluations/ 里没有 test 件
-make_run_dir() {  # $1=root $2=run
+make_run_dir() {  # $1=root $2=run   （HAVE_TEST_EVAL=1 ⇒ 连 test 评估件也齐 ⇒ 本段只会 [skip-train]）
   mkdir -p "$1/$2"
   printf '{"note": "fixture：本段之前的正式训练产物（非 smoke）", "best_epoch": 480}\n' >"$1/$2/metrics.json"
+  if [[ "${HAVE_TEST_EVAL:-0}" == 1 ]]; then
+    mkdir -p "$1/$2/evaluations"
+    printf '{"split_name": "test_dense", "global_metrics": {"rel_l2_speed": 0.02}}\n' >"$1/$2/evaluations/metrics_test_dense.json"
+  fi
 }
 
 # 账本里预置"别的段（s00）已把这些 run 训成"——seg14 的真实形态，orphan 判据要能过
-seed_prior_ledger() {  # $1=ledger $2=pinn root
+seed_prior_ledger() {  # $1=ledger $2=pinn root   （NO_PRIOR=1 ⇒ 什么都不预置，用来验"跳过无人背书"）
+  [[ "${NO_PRIOR:-0}" == 1 ]] && { echo "[fixture] 不预置前段 train 行 ⇒ 10 个跳过都无人背书"; return 0; }
   local root="$2" s nn
   for s in ${SEEDS}; do
     for nn in 20 21; do
@@ -161,9 +166,26 @@ printf '%s' "${out3}" | grep -q "fail=1" && ck "失败被计入 RUNS_FAIL" 0 0 |
 [[ "${rc3}" == 1 ]] && ck "退出码=1（数据不可信档）" 0 0 || ck "退出码=1（数据不可信档）实得=${rc3}" 0 1
 printf '%s' "${out3}" | grep -q '判级=fatal' && ck "判级行写明 fatal" 0 0 || ck "判级行写明 fatal" 0 1
 
+echo "== 4 纯跳过段（test 件已齐 ⇒ 10 个 [skip-train]、0 个补评估；SKIP_RUNS 由真实代码填）=="
+out4="$(HAVE_TEST_EVAL=1 replay "${WORK}/case4" "${HERE}/sweep_lib.sh")" ; rc4=$?
+printf '%s\n' "${out4}" | grep -aE 'skipped|seal|no-op' | tail -2 | sed 's/^/       /'
+printf '%s' "${out4}" | grep -q "计数 done=0 fail=0 skip=10 evalonly=0 evalfail=0" \
+  && ck "真实代码把 10 个跳过都进了名单" 0 0 || ck "真实代码把 10 个跳过都进了名单" 0 1
+if printf '%s' "${out4}" | grep -q '\[ok-eval-only\]'; then ck "这一趟不该有补评估" 0 1; else ck "这一趟不该有补评估" 0 0; fi
+printf '%s' "${out4}" | grep -q '\[seal\] 判级=clean' && ck "纯跳过段判级=clean（定档甲：按 run 归属，不按段计数）" 0 0 \
+  || ck "纯跳过段判级=clean（定档甲：按 run 归属，不按段计数）" 0 1
+[[ "${rc4}" == 0 ]] && ck "整段 rc=0" 0 0 || ck "整段 rc=0（实得 ${rc4}）" 0 1
+
+echo "== 5 正对照·同样 10 个跳过，但账上没有任何前段成功行 ⇒ 必须红并点名 =="
+out5="$(HAVE_TEST_EVAL=1 NO_PRIOR=1 replay "${WORK}/case5" "${HERE}/sweep_lib.sh")" ; rc5=$?
+printf '%s\n' "${out5}" | grep -aE 'INVALID|seal' | tail -1 | cut -c1-160 | sed 's/^/       /'
+printf '%s' "${out5}" | grep -q '被跳过但账上任何段都没有终态成功的 train 行' \
+  && ck "名单点名为无人背书的跳过" 0 0 || ck "名单点名为无人背书的跳过" 0 1
+[[ "${rc5}" == 4 ]] && ck "退出码=4（产物完好、仅记账不符）" 0 0 || ck "退出码=4（产物完好、仅记账不符）实得=${rc5}" 0 1
+
 echo
 if [[ ${FAILS} -eq 0 ]]; then
-  echo "总体：三组全符合 ⇒ [skip-train-joint] 分支能走到封段，且中文变量名这一类缺陷有静态闸 + 动态正对照两道把守"
+  echo "总体：五组全符合 ⇒ [skip-train-joint] 两条分支（补评估 / 纯跳过）都能走到封段并给出正确判级；中文变量名这一类缺陷有静态闸 + 动态正对照两道把守"
   exit 0
 fi
 echo "总体：有 ${FAILS} 条断言不符 ⇒ 这条分支仍不可信，别投实例"
