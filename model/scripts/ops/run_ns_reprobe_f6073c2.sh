@@ -8,7 +8,7 @@
 # Re-running is safe: nothing is deleted and every file is hash-checked before it lands.
 set -uo pipefail
 
-PIN=50bc8532e8b1bb9054c6f6479e6fc137017bfa0f
+PIN=1eba9884d6107ad9403e85b1e2d2d44652a5a9dd
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="$WS/ffroot.tgz"
@@ -20,9 +20,9 @@ LEVELS="1e-3 1 10 50"
 
 declare -A EXPECT=(
   [model/scripts/gen_ns_re_edp.py]=5e3a3c7e52fb9f97e4fb699f6095a5881e21e664d37e57b6e10e529a61046a9c
-  [model/scripts/finalize_ns_truth.py]=52b89fc8f4c6e0b06dc3a201b68b1f5baaaaf4aa9cece180062e21525b86dcd6
-  [model/scripts/check_ns_re_to_stokes.py]=d78495865b0fee8c4fe6a9d91146600e4ccdc0a18852451a4cc8156bb4af2b2c
-  [model/scripts/selftest_ns_re.py]=8f7028ccda7785768808ca6ce13ec276cc58f4c73bb6fa0fed8261dae2f0423f
+  [model/scripts/finalize_ns_truth.py]=1af30ad14426fcdc6397948fc79eedcd0cdfa061a09193fcec61f6123fa456ae
+  [model/scripts/check_ns_re_to_stokes.py]=912f17e0a8088ff0ccfb01cbb938823aa1ff642c10723d2fa5ff37d7d40b9336
+  [model/scripts/selftest_ns_re.py]=cf47df668a85861f464d840304ca9188799a92d63cfd5c0f2cbebee185903e34
 )
 
 log() { printf '%s | %s\n' "$(date '+%H:%M:%S')" "$*"; }
