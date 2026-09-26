@@ -35,6 +35,8 @@ source "${SCRIPT_DIR}/sweep_lib.sh"
 
 RUN_T5=1
 RUN_T6=1
+RUN_BASE=0        # 必做1 基线三件套（臂 A 单网络联合 PINN / 臂 B 纯数据 MLP / 臂 C POD+最小二乘）
+RUN_POD=1
 SEEDS="42 43 44 45 46"
 OBS_SEEDS="0 1 2 3"
 T6_SEEDS="42 43"
@@ -52,6 +54,8 @@ while [[ $# -gt 0 ]]; do
     --only-cells) ONLY_CELLS="$2"; shift 2 ;;
     --prefix) RUN_PREFIX="$2"; shift 2 ;;
     --t5) RUN_T5=1; RUN_T6=0; shift ;;
+    --baseline) RUN_T5=0; RUN_T6=0; RUN_BASE=1; shift ;;
+    --no-pod) RUN_POD=0; shift ;;
     --t6) RUN_T6=1; RUN_T5=0; shift ;;
     --dry-run) SWEEP_DRY_RUN=1; shift ;;
     *) echo "未知参数 $1" >&2; exit 2 ;;
@@ -80,8 +84,8 @@ validate_sweep_lists() {
     local tok
     for tok in "${toks[@]}"; do
       [[ "${tok}" == "t6" ]] && continue
-      [[ "${tok}" =~ ^([1-9]|1[0-9])$ ]] \
-        || { echo "[FAIL] --only-cells 只许 1..19 或 t6，收到 '${tok}'（原值='${ONLY_CELLS_RAW}'）" >&2; return 1; }
+      [[ "${tok}" =~ ^([1-9]|1[0-9]|2[0-3])$ ]] \
+        || { echo "[FAIL] --only-cells 只许 1..19（主矩阵）、20..23（基线三件套）或 t6，收到 '${tok}'（原值='${ONLY_CELLS_RAW}'）" >&2; return 1; }
     done
   fi
   echo "[args] seeds=[${SEEDS}] obs_seeds=[${OBS_SEEDS}] t6_seeds=[${T6_SEEDS}] only_cells=[${ONLY_CELLS}]"
@@ -207,7 +211,7 @@ t6_matrix() {
   for o in ${OBS_SEEDS}; do
     for s in ${T6_SEEDS}; do
       suf="$(osuffix "${o}")"
-      assert_obs_budget "${PROJECT_ROOT}/cases/contraction_2d/data/${CONTRA_VAL}" 5 "${suf}" || return 1
+      assert_obs_budget "${PROJECT_ROOT}/cases/contraction_2d/data/${CONTRA_VAL}" 5 "${suf}"         || { RUNS_GATE_FAIL=$((RUNS_GATE_FAIL + 1)); return 1; }
       budget_guard "$(unit_cost contraction_2d sparse)" || return 1
       echo "### T6 配对单元 obs_seed=${o} train_seed=${s}（后缀='${suf}'；格4=分层臂 格8=均匀臂）"
       cell_id="$(cell_of_num "${T6_REGION_CELL}")"
@@ -220,6 +224,53 @@ t6_matrix() {
         "${CONTRA_VAL}" "${CONTRA_TEST}" "${cell_id}" "${s}" "${o}" "${STRICT}" "strict-sparse" "" || return 1
     done
   done
+  return 0
+}
+
+# ---------------------------------------------------------- 必做1 基线三件套（臂 A/B/C）
+# 命名与主矩阵分开（前缀 rev2609b_）且格号续到 20-23 ⇒ 绝不与全量产物撞名。
+# 臂 A：单网络联合 PINN（一次训练）；臂 B：纯数据 MLP（无物理项、无壁面包络）；
+# 两臂都吃与格1/格4 **同一张观测表**（obs_seed=0），每档 5 个种子 42-46。
+# 臂 C：POD + 观测点最小二乘，不训练 ⇒ 不进账本（它没有 train 阶段，塞一行 phase=train 等于骗账本），
+#       单独落一个 JSON。
+BL_PREFIX="rev2609b"
+BL_CELLS=(
+  "20|臂A 单网络联合PINN·稠密主线(对照格1)|dense|A|mainline-dense"
+  "21|臂A 单网络联合PINN·分层5%(对照格4)|obs_sparse_5pct|A|strict-sparse"
+  "22|臂B 纯数据MLP·稠密主线(无物理无壁面包络)|dense|B|mainline-dense"
+  "23|臂B 纯数据MLP·分层5%(对照格4)|obs_sparse_5pct|B|strict-sparse"
+)
+
+baseline_matrix() {
+  local row nn desc src arm preset s cell_id run_name cost
+  for row in "${BL_CELLS[@]}"; do
+    IFS='|' read -r nn desc src arm preset <<<"${row}"
+    cell_wanted "${nn}" || continue
+    cell_id="t5c$(printf '%02d' "${nn}")"
+    cost="$(unit_cost contraction_2d "$([[ "${src}" == "dense" ]] && echo dense || echo sparse)")"
+    for s in ${SEEDS}; do
+      budget_guard "${cost}" || return 1
+      run_name="${BL_PREFIX}_${cell_id}__s${s}__o0"
+      echo "### 基线 格${nn} ${desc} train_seed=${s}（同观测表=${src}，与格1/格4 同源）"
+      if [[ "${arm}" == "A" ]]; then
+        train_joint "${run_name}" contraction_2d "${CONTRA_TRAIN}" "${CONTRA_VAL}" "${src}" geometry           "inlet_profile_star" "${cell_id}" "${s}" "0" "${preset}" || return 1
+      else
+        train_mlp_with_test "${run_name}" contraction_2d "${CONTRA_TRAIN}" "${CONTRA_VAL}" "${src}"           "${cell_id}" "${s}" "0" "${CONTRA_TEST}" || return 1
+      fi
+    done
+  done
+  return 0
+}
+
+run_pod_baseline() {
+  local cmd="python3 scripts/baselines_pod.py --family contraction_2d --eval-cases ${CONTRA_VAL},${CONTRA_TEST} --obs-files obs_sparse_5pct.csv --out ${OUT_DIR}/pod_baseline_contraction.json"
+  if [[ "${SWEEP_DRY_RUN:-0}" == 1 ]]; then
+    echo "[dry-run][armC] ${cmd}"
+    echo "[dry-run][armC] 臂 C 不写 progress.jsonl（无训练阶段），产物是上面这个独立 JSON"
+    return 0
+  fi
+  echo "[armC] POD + 观测点最小二乘（不训练网络，几秒）"
+  python3 "${SWEEP_LIB_DIR}/baselines_pod.py" --family contraction_2d     --eval-cases "${CONTRA_VAL},${CONTRA_TEST}" --obs-files "obs_sparse_5pct.csv"     --out "${OUT_DIR}/pod_baseline_contraction.json"     || { echo "[FAIL] 臂 C 失败 ⇒ 基线三件套缺一臂，不能声称必做1 完成" >&2; RUNS_GATE_FAIL=$((RUNS_GATE_FAIL + 1)); return 1; }
   return 0
 }
 
@@ -245,6 +296,7 @@ if [[ "${RUN_T6}" == 1 ]]; then
 fi
 n_dup_t6=0
 [[ "${RUN_T5}" == 1 && "${RUN_T6}" == 1 ]] && n_dup_t6=$(( 2 * n_t6s ))   # T6 的 obs_seed=0 两臂与 T5 格4/格8 同名
+if [[ "${RUN_BASE}" == 1 ]]; then echo "[plan] 基线三件套：臂A/B 共 4 格 × $(echo ${SEEDS} | wc -w) 种子 = $(( 4 * $(echo ${SEEDS} | wc -w) )) 次训练 + 臂C（POD，不训练、不进账本）"; fi
 echo "[plan] segment=${SEGMENT_TAG} 实际要训练=${n_planned}；铺排行=${n_planned}+${n_dup_t6} 条同名重复（运行时走 [skip-train]）（T5=${RUN_T5} T6=${RUN_T6}; n_seed=${n_seed} n_obs=${n_obs}）预算=${BUDGET_MIN}min dry-run=${SWEEP_DRY_RUN:-0}"
 echo "[plan] 串行总墙钟≈$(( eta_sec / 60 )) min；6 路并行按 1/4 折损≈$(( eta_sec / 240 )) min ⇒ 约需 $(( eta_sec / 60 / BUDGET_MIN + 1 )) 个 ${BUDGET_MIN}min 段"
 echo "[plan] 弯曲单价 ${BEND_UNIT_SEC}s（ESTIMATED=${BEND_IS_ESTIMATE}：0=已标定，1=未标定则本 ETA 不可信）"
@@ -256,9 +308,11 @@ if [[ "${SWEEP_DRY_RUN:-0}" == 1 ]]; then
   : >"${SWEEP_DUMP_ARGV}"
 fi
 
-generate_obs || { echo "[FAIL] 观测生成失败，停止" >&2; exit 1; }
+generate_obs || { echo "[FAIL] 观测生成失败 ⇒ 前置闸门没过，不是'跑完了'" >&2; RUNS_GATE_FAIL=$((RUNS_GATE_FAIL + 1)); exit 1; }
 SWEEP_STOPPED=0
 if [[ "${RUN_T5}" == 1 ]]; then t5_matrix || { echo "[STOP] T5 未到预算上限即停 ⇒ 重投同段续跑" >&2; SWEEP_STOPPED=1; }; fi
+if [[ "${RUN_BASE}" == 1 && "${SWEEP_STOPPED}" != 1 ]]; then baseline_matrix || { echo "[STOP] 基线段未到预算即停或被闸门拦下" >&2; SWEEP_STOPPED=1; }; fi
+if [[ "${RUN_BASE}" == 1 && "${RUN_POD}" == 1 && "${SWEEP_STOPPED}" != 1 ]]; then run_pod_baseline; fi
 if [[ "${RUN_T6}" == 1 && "${SWEEP_STOPPED}" != 1 ]]; then t6_matrix || { echo "[STOP] T6 提前退出" >&2; SWEEP_STOPPED=1; }; fi
 
 if [[ "${SWEEP_DRY_RUN:-0}" == 1 ]]; then

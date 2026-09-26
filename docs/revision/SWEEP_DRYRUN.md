@@ -281,3 +281,49 @@ bash model/scripts/sweep_t5.sh --t5 --seeds "42,x,44" --dry-run
 中途看数的人可能把"这条没印"读成"没什么可报"。一行改法（等你点头再动）：
 把跳过条件收紧成"两臂都不在" —— `if (cell_a not in grouped and cell_b not in grouped): continue`，
 这样缺臂那对会走 `judge()` 印出「不可判：对照两臂里有一格没有读数」。
+
+## 11. 2026-09-26 · 必做1 基线三件套（臂 A/B/C）+ 段末对账重做
+
+### 11.1 接口（统括官定死，代码照此实现）
+
+| 臂 | 入口 | 与双模型逐项对齐的部分 | 唯一被试变量 | 产物 |
+| --- | --- | --- | --- | --- |
+| A 单网络联合 PINN | `model/scripts/train_joint_upnp_pin.py`（`sweep_lib.sh:train_joint`，格 20/21） | 数据切分、观测表来源、输入/输出标准化（含 `--strict-sparse-scalers`）、**物理项直接复用双模型的 `方程耦合损失`**（把单网络包成"速度头/压力头"两个切片代理传进去）⇒ 求导链、尺度因子、512 点等距取点、硬包络作用位置与双模型同源而非近似 | ① 一个网络而不是两个；② 一次训练而不是三阶段 | `results/pinn/<run>/{config.json,best.ckpt,history.csv,metrics.json,evaluations/metrics_{val,test}_dense.json}`，schema 与双模型评估产物同名 ⇒ `analyze_sweep.py` 不改即可读 |
+| B 纯数据 MLP | 既有 `train_supervised.py`（`sweep_lib.sh:train_mlp_with_test`，格 22/23） | 同特征集、同网络规模、同观测表 | 物理项与壁面包络**全为 0**（该脚本本来就没有这两项） | `results/supervised/<run>/...` |
+| C POD + 观测点最小二乘 | `model/scripts/baselines_pod.py`（`sweep_t5.sh:run_pod_baseline`） | 同一批稠密真值构造基；观测点用**与格1/格4 同一张 CSV** | 无网络、无训练 | **单独 JSON**（默认 `out/pod_baseline_contraction.json`）；**不写 progress.jsonl** —— 它没有 train 阶段，写一行 `phase=train, wall_ms=0` 等于骗账本 |
+
+参数量对齐（臂 A）：单网络 `14→128×5→3` = **68,355**，双模型 `14→128×3→2` + `14→128×3→1` = **70,275** ⇒ 比值 **0.9727**。这条不是注释里的话，是闸门：
+`--require-param-ratio 1 --param-ratio-tol 0.05`，超窗直接 `exit 1`（实测负例 `--hidden-layers 128,128,128` ⇒ 比值 0.5028 ⇒ `[FAIL] 参数量比值 … 不在 [0.95,1.05]`，rc=1）。
+
+命名与主矩阵完全分开：前缀 `rev2609b_`、格号续到 `t5c20..t5c23`（臂 A/B 各两档），`--only-cells` 已放开 20..23 并对越界报红。
+
+### 11.2 argv 清单（本机 dry-run 实跑，20 条训练命令）
+
+```bash
+bash model/scripts/sweep_t5.sh --baseline --dry-run | grep -cE "dry-run..train-(joint|mlp)"      # 20
+bash model/scripts/sweep_t5.sh --baseline --dry-run >/dev/null; wc -l < <仓外产物目录>/dryrun_argv.txt   # 20（10 臂A + 10 臂B）
+bash model/scripts/sweep_t5.sh --baseline --dry-run | grep armC                                  # 臂 C 的命令行与"不进账本"声明
+```
+机时对账：臂 A/B 各 2 档 × 5 种子 = 20 次训练。单价用本实例实测（收缩稠密 81.4 s、稀疏 53.7 s）⇒
+串行 ≈ 10×81.4 + 10×53.7 = **1351 s ≈ 23 min**，与统括官给的 ≈25 min 一致；臂 C 秒级。¥0。
+
+### 11.3 明天上机的顺序（先冒烟再全量）
+
+1. `python3 model/scripts/train_joint_upnp_pin.py --run-name smoke_joint --epochs 8 --print-every 4 --seed 42 --require-param-ratio 1 --dry-run` 先核参数量（不占机时）；
+2. 真跑一次冒烟：`--epochs 8`（几分钟）确认 ckpt/evaluations/metrics 三件套落盘且 `rel_l2_*` 是有限值；
+3. `bash model/scripts/sweep_t5.sh --baseline --seg 09 --budget-min 40`；重投同段即续跑（`metrics.json` 在则 `[skip-train-joint]`）；
+4. 臂 C：`python3 model/scripts/baselines_pod.py --self-check`（几秒，断言模态数、观测残差、两口径读数在可解释范围），再跑正式档。
+5. 段末 `seal_segment` 现在会打印 `N runs / M failures / K skipped / G gate-fail / E eval-fail` 五个数，任一不符即 `INVALID` 并 rc=1。
+
+### 11.4 段末对账为什么重做（缺陷与修法）
+
+段 01 现场：`INVALID: 内存=87 账本=89 / 失败 内存=0 账本=1`，而数据其实是 95/95 满种子。三条根因与处置：
+
+| # | 缺陷 | 修法 |
+| --- | --- | --- |
+| 1 | 账本是**追加式**的：同段重投续跑、失败后重试都会留新行，旧口径拿"段内 train 行数"比内存计数 ⇒ 必然假红 | 分两层核：① 本进程核（账本新增 `pid` 字段，`SWEEP_PID` 可注入以便自测）；② 段终态核（按 `(run, phase)` 取**最后一行**）；重试行单独打印 `重试行 N` 不判红 |
+| 2 | `rc!=0` 的行不一定进失败计数（尤其 eval 阶段），"内存=0 账本=1"就是这么来的 | 每个 `rc!=0` 的行都进 `RUNS_FAIL`，并另计 `RUNS_EVAL_FAIL`；终态失败的 run、终态失败的评估都被列为 problem |
+| 3 | `[skip-train]` 归属不明（跳过 = 账上该有别人的成功行） | 新增等式 `段内终态成功 run 数 == 本次成功 + 本次跳过`，对不上即红；`RUNS_GATE_FAIL` 单列（观测预算/点位生成失败不再被当成"跑完"或"预算截断"） |
+
+自测（驱动**真实**的 `seal_segment`，不是复刻逻辑）：`bash model/scripts/selftest_ledger.sh` ⇒ 九例全符合 rc=0，
+其中 **③「账本缺一行」与 ⑥「段内 0 行」是必定 INVALID 的正对照**，证明闸门没被改成永远绿；②是段 01 那个假红的忠实回放（前进程 1 败 1 成 + 本进程 2 成 1 跳），现在判绿并打印"重试行 1"。

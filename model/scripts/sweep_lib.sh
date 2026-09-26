@@ -180,18 +180,22 @@ preflight() {
 RUNS_DONE=0
 RUNS_FAIL=0
 RUNS_SKIP=0
+RUNS_GATE_FAIL=0
+RUNS_EVAL_FAIL=0
+SWEEP_PID="${SWEEP_PID:-$$}"   # 可由环境注入（selftest_ledger.sh 用它来扮演"本进程"），默认取当前 shell pid
 
 _progress_append() {  # $1=run $2=family $3=cell $4=train_seed $5=obs_seed $6=phase $7=wall_ms $8=rc $9=metrics_json
-  python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${SEGMENT_TAG}" "${PROGRESS}" <<'PY'
+  python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${SEGMENT_TAG}" "${PROGRESS}" "${SWEEP_PID}" <<'PY'
 import json, sys, os
-run, family, cell, tseed, oseed, phase, wall_ms, rc, metrics_raw, seg, path = sys.argv[1:12]
+run, family, cell, tseed, oseed, phase, wall_ms, rc, metrics_raw, seg, path, pid = sys.argv[1:13]
 try:
     metrics = json.loads(metrics_raw) if metrics_raw.strip() else {}
 except Exception:
     metrics = {"_metrics_parse_error": metrics_raw[:200]}
 rec = {"run": run, "family": family, "cell": cell, "train_seed": int(tseed),
        "obs_seed": int(oseed), "phase": phase, "wall_ms": int(wall_ms), "rc": int(rc),
-       "segment": seg, "ts": __import__("datetime").datetime.now().isoformat(timespec="seconds")}
+       "segment": seg, "pid": pid,
+       "ts": __import__("datetime").datetime.now().isoformat(timespec="seconds")}
 rec.update(metrics)
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, "a", encoding="utf-8") as fh:
@@ -381,7 +385,7 @@ eval_run() {  # family run_name eval_val eval_test cell train_seed obs_seed eval
   if [[ "${rc}" != 0 ]]; then
     echo "[FAIL] eval-val rc=${rc} ${run_name} 见 ${log}" >&2
     _progress_append "${run_name}" "${family}" "${cell}" "${train_seed}" "${obs_seed}" eval_val "${wall_ms}" "${rc}" "{}"
-    RUNS_FAIL=$((RUNS_FAIL + 1))
+    RUNS_FAIL=$((RUNS_FAIL + 1)); RUNS_EVAL_FAIL=$((RUNS_EVAL_FAIL + 1))
     return 1
   fi
   _progress_append "${run_name}" "${family}" "${cell}" "${train_seed}" "${obs_seed}" eval_val "${wall_ms}" 0 "$(_run_metrics_json "${run_dir}")"
@@ -395,7 +399,7 @@ eval_run() {  # family run_name eval_val eval_test cell train_seed obs_seed eval
     if [[ "${rc}" != 0 ]]; then
       echo "[FAIL] eval-test rc=${rc} ${run_name} 见 ${log}" >&2
       _progress_append "${run_name}" "${family}" "${cell}" "${train_seed}" "${obs_seed}" eval_test "${wall_ms}" "${rc}" "{}"
-      RUNS_FAIL=$((RUNS_FAIL + 1))
+      RUNS_FAIL=$((RUNS_FAIL + 1)); RUNS_EVAL_FAIL=$((RUNS_EVAL_FAIL + 1))
       return 1
     fi
     _progress_append "${run_name}" "${family}" "${cell}" "${train_seed}" "${obs_seed}" eval_test "${wall_ms}" 0 "$(_run_metrics_json "${run_dir}")"
@@ -410,7 +414,9 @@ train_mlp() {
   local run_dir="${PROJECT_ROOT}/results/supervised/${run_name}"
   local log="${LOG_DIR}/${run_name}.log"
   if [[ "${SWEEP_DRY_RUN:-0}" == 1 ]]; then
-    echo "[dry-run][train-mlp] python3 scripts/train_supervised.py --family ${family} --run-name ${run_name} --seed ${train_seed} --train-cases ${train_cases} --val-cases ${val_cases} --feature-mode geometry --drop-features inlet_profile_star --train-observation-source ${src} --val-observation-source ${src} --hidden-layers 128,128,128 --activation silu --lr 6e-4 --max-epochs 2000 --patience 200 --print-every 100 --max-retries 1"
+    local margv="python3 scripts/train_supervised.py --family ${family} --run-name ${run_name} --seed ${train_seed} --train-cases ${train_cases} --val-cases ${val_cases} --feature-mode geometry --drop-features inlet_profile_star --train-observation-source ${src} --val-observation-source ${src} --hidden-layers 128,128,128 --activation silu --lr 6e-4 --max-epochs 2000 --patience 200 --print-every 100 --max-retries 1"
+    echo "[dry-run][train-mlp] ${margv}"
+    [[ -n "${SWEEP_DUMP_ARGV:-}" ]] && printf '%s\n' "${margv}" >>"${SWEEP_DUMP_ARGV}"
     return 0
   fi
   if [[ -f "${run_dir}/metrics.json" ]]; then
@@ -436,7 +442,88 @@ train_mlp() {
   RUNS_DONE=$((RUNS_DONE + 1))
   nice -n 10 python3 "${SWEEP_LIB_DIR}/evaluate_supervised.py" --family "${family}" --run-name "${run_name}" \
     --eval-cases "${val_cases}" --split-name val_dense --max-retries 1 >>"${log}" 2>&1 \
-    || { echo "[FAIL] eval-mlp ${run_name}" >&2; RUNS_FAIL=$((RUNS_FAIL + 1)); return 1; }
+    || { echo "[FAIL] eval-mlp ${run_name}" >&2; RUNS_FAIL=$((RUNS_FAIL + 1)); RUNS_EVAL_FAIL=$((RUNS_EVAL_FAIL + 1)); return 1; }
+  return 0
+}
+
+# ---------------------------------------------------------------- 臂 A（必做1 基线三件套）
+# 单网络联合 (u,v,p)、一次训练不拆阶段；评估由该脚本自己完成并写成与双模型同 schema 的
+# evaluations/metrics_*.json ⇒ 账本只写一行 train（phase=train），**不调用 eval_run**：
+# 双模型评估器加载不了单网络的 ckpt（键名与结构不同），硬调会假绿。
+train_joint() {  # $1=name $2=family $3=train $4=val $5=src $6=fmode $7=drop $8=cell $9=tseed $10=oseed $11=weights_preset
+  local run_name="$1" family="$2" train_cases="$3" val_cases="$4" src="$5" fmode="$6" drop="$7"
+  local cell="$8" train_seed="$9" obs_seed="${10}" preset="${11:-strict-sparse}"
+  assert_run_name "${run_name}" || exit 1
+  local inlet_w outlet_w drop_w cont_w mom_w strict_flag=""
+  case "${preset}" in
+    strict-sparse) inlet_w="0.0"; outlet_w="0.0"; drop_w="0.0"; cont_w="0.1"; mom_w="10.0" ;;
+    mainline-dense) inlet_w="0.5"; outlet_w="1e-4"; drop_w="1.0"; cont_w="0.1"; mom_w="10.0" ;;
+    no-stage-pde)  inlet_w="0.5"; outlet_w="1e-4"; drop_w="1.0"; cont_w="0.1"; mom_w="10.0" ;;
+    *) echo "[FAIL] 未知权重档 ${preset}" >&2; return 2 ;;
+  esac
+  [[ "${preset}" == "strict-sparse" ]] && strict_flag="--strict-sparse-scalers"
+  local run_dir="${PROJECT_ROOT}/results/pinn/${run_name}"
+  local log="${LOG_DIR}/${run_name}.log"
+  local drop_display="${drop}"; [[ -z "${drop}" ]] && drop_display='""'
+  local argv="python3 scripts/train_joint_upnp_pin.py --family ${family} --run-name ${run_name} --seed ${train_seed} --train-cases ${train_cases} --val-cases ${val_cases} --feature-mode ${fmode} --drop-features ${drop_display} --train-velocity-source ${src} --val-velocity-source ${src} --train-pressure-source ${src} --val-pressure-source ${src} --hidden-layers 128,128,128,128,128 --activation silu --epochs 480 --lr 6e-4 --patience 200 --print-every 40 --wall-weight 0.0 --inlet-flux-weight ${inlet_w} --outlet-pressure-weight ${outlet_w} --pressure-drop-weight ${drop_w} --continuity-weight ${cont_w} --momentum-weight ${mom_w} --velocity-wall-mode hard --hard-wall-sharpness 12 --max-physics-points 512 --require-param-ratio 1 --param-ratio-tol 0.05 ${strict_flag} --max-retries 1"
+  argv="$(printf '%s' "${argv}" | tr -s ' ')"
+  if [[ "${SWEEP_DRY_RUN:-0}" == 1 ]]; then
+    echo "[dry-run][train-joint] ${run_name} cell=${cell} ts=${train_seed} os=${obs_seed} preset=${preset}"
+    echo "  ${argv}"
+    [[ -n "${SWEEP_DUMP_ARGV:-}" ]] && printf '%s\n' "${argv}" >>"${SWEEP_DUMP_ARGV}"
+    return 0
+  fi
+  mkdir -p "${run_dir}" "${LOG_DIR}"
+  if [[ -f "${run_dir}/metrics.json" ]]; then
+    echo "[skip-train-joint] ${run_name}"; RUNS_SKIP=$((RUNS_SKIP + 1)); return 0
+  fi
+  echo "[train-joint] ${run_name} (cell=${cell} ts=${train_seed})" | tee "${log}"
+  local t0 rc=0; t0="$(_now_ns)"
+  # shellcheck disable=SC2086
+  if nice -n 10 python3 "${SWEEP_LIB_DIR}/train_joint_upnp_pin.py" \
+      --family "${family}" --run-name "${run_name}" --seed "${train_seed}" \
+      --train-cases "${train_cases}" --val-cases "${val_cases}" \
+      --feature-mode "${fmode}" --drop-features "${drop}" \
+      --train-velocity-source "${src}" --val-velocity-source "${src}" \
+      --train-pressure-source "${src}" --val-pressure-source "${src}" \
+      --hidden-layers 128,128,128,128,128 --activation silu --epochs 480 --lr 6e-4 \
+      --patience 200 --print-every 40 --wall-weight 0.0 --inlet-flux-weight "${inlet_w}" \
+      --outlet-pressure-weight "${outlet_w}" --pressure-drop-weight "${drop_w}" \
+      --continuity-weight "${cont_w}" --momentum-weight "${mom_w}" \
+      --velocity-wall-mode hard --hard-wall-sharpness 12 --max-physics-points 512 \
+      --require-param-ratio 1 --param-ratio-tol 0.05 ${strict_flag} --max-retries 1 >>"${log}" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  local wall_ms book_rc="${rc}"; wall_ms="$(elapsed_ms "${t0}")"
+  [[ "${rc}" == 0 && ! -f "${run_dir}/metrics.json" ]] && book_rc=90
+  _progress_append "${run_name}" "${family}" "${cell}" "${train_seed}" "${obs_seed}" train "${wall_ms}" "${book_rc}" "$(_run_metrics_json "${run_dir}")"
+  if [[ "${book_rc}" != 0 ]]; then
+    echo "[FAIL] train-joint rc=${rc}→记账 ${book_rc} ${run_name}（metrics.json 存在=$([[ -f ${run_dir}/metrics.json ]] && echo yes || echo no)）见 ${log}" >&2
+    RUNS_FAIL=$((RUNS_FAIL + 1)); return 1
+  fi
+  RUNS_DONE=$((RUNS_DONE + 1))
+  echo "[ok-train-joint] ${run_name} wall_ms=${wall_ms}"
+  return 0
+}
+
+# 臂 B（纯数据 MLP）：train_supervised.py 本来就无物理项、无壁面包络；这里只补 test 评估与账本
+train_mlp_with_test() {  # $1..$8 同 train_mlp，$9=eval_test_cases
+  train_mlp "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" || return 1
+  local run_name="$1" family="$2" eval_test="${9:-}" cell="$6" train_seed="$7" obs_seed="$8"
+  [[ -z "${eval_test}" || "${SWEEP_DRY_RUN:-0}" == 1 ]] && return 0
+  local run_dir="${PROJECT_ROOT}/results/supervised/${run_name}"
+  local log="${LOG_DIR}/${run_name}_eval.log" rc=0 t0
+  t0="$(_now_ns)"
+  nice -n 10 python3 "${SWEEP_LIB_DIR}/evaluate_supervised.py" --family "${family}" --run-name "${run_name}" \
+    --eval-cases "${eval_test}" --split-name test_dense --max-retries 1 >>"${log}" 2>&1 || rc=$?
+  local wall_ms; wall_ms="$(elapsed_ms "${t0}")"
+  _progress_append "${run_name}" "${family}" "${cell}" "${train_seed}" "${obs_seed}" eval_test "${wall_ms}" "${rc}" "$(_run_metrics_json "${run_dir}")"
+  if [[ "${rc}" != 0 ]]; then
+    echo "[FAIL] eval-mlp-test rc=${rc} ${run_name} 见 ${log}" >&2
+    RUNS_FAIL=$((RUNS_FAIL + 1)); RUNS_EVAL_FAIL=$((RUNS_EVAL_FAIL + 1)); return 1
+  fi
   return 0
 }
 
@@ -450,15 +537,29 @@ seal_segment() {
     ( cd "${OUT_DIR}" && tar czf "segment_${SEGMENT_TAG}.tar.gz" "${payload[@]}" ) \
       || echo "[WARN] tar 失败，产物仍在 ${OUT_DIR}，请手工回传" >&2
   fi
-  # 对账：内存计数必须与 progress.jsonl 落盘的账吻合。
-  # grep -c 在"没匹配"时返回合法的 0，所以"本段 0 行"不能当通过 —— 那正是这里要判 INVALID 的情形。
+  # 对账口径（9/26 重做）：账本是**追加式**的 —— 同一段重投续跑、失败后重试都会留多行，
+  # 所以"按行数比内存计数"必然假红（段01 实测：内存 87 / 账本 89，而数据其实是 95/95 满种子）。
+  # 现在分两层核：
+  #   ① 本进程核（pid）：本次跑写的行，训练成功数与失败数必须与内存计数逐一对上；
+  #   ② 段终态核（run×phase 取最后一行）：每个 run 的最后一条 train 行必须 rc=0，
+  #      且"成功 + 续跑跳过"的 run 数 = 段内终态成功的 run 数。
+  # grep -c 在"没匹配"时返回合法的 0 ⇒ "本段 0 行"一律 INVALID，不能当通过。
   python3 - "${PROGRESS}" "${SEGMENT_TAG}" "${RUNS_DONE}" "${RUNS_FAIL}" "${RUNS_SKIP}" "${expected}" \
-    "${SWEEP_FORCE_LEDGER_BREAK:-}" <<'LEDGER_PY'
+    "${SWEEP_PID}" "${RUNS_GATE_FAIL}" "${RUNS_EVAL_FAIL}" "${SWEEP_FORCE_LEDGER_BREAK:-}" <<'LEDGER_PY'
 import json, os, sys
-path, seg, done, fail, skip, expected, breakage = sys.argv[1:8]
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+path, seg, done, fail, skip, expected, mypid, gate_fail, eval_fail, breakage = sys.argv[1:13]
 done, fail, skip = int(done), int(fail), int(skip)
+gate_fail, eval_fail = int(gate_fail or 0), int(eval_fail or 0)
 if breakage == "1":          # 自测开关：人为把账本读废，确认这条闸会变红
     print("[self-test] 已按要求模拟账本损坏", file=sys.stderr)
+    raise SystemExit(1)
+if gate_fail:
+    print("INVALID: 本段有 %d 道前置闸门没过（观测预算/点位生成），后面的读数都不能要" % gate_fail, file=sys.stderr)
     raise SystemExit(1)
 if not os.path.exists(path):
     print("INVALID: 记账文件 %s 不存在 ⇒ 本段什么都没记上，不能声称跑过" % path, file=sys.stderr)
@@ -481,17 +582,47 @@ if bad_lines:
 if not rows:
     print("INVALID: 段 %s 在账本里 0 行 ⇒ 这不是'全部通过'，是没记上账或段名写错" % seg, file=sys.stderr)
     raise SystemExit(1)
-train = [r for r in rows if str(r.get("phase", "")).startswith("train")]
-ok_train = sum(1 for r in train if r.get("rc") == 0)
-bad_train = len(train) - ok_train
-bad_any = sum(1 for r in rows if r.get("rc") != 0)
+
+def is_train(rec):
+    return str(rec.get("phase", "")).startswith("train")
+
+mine = [r for r in rows if str(r.get("pid", "")) == str(mypid)]
+mine_train_ok = sum(1 for r in mine if is_train(r) and r.get("rc") == 0)
+mine_bad = sum(1 for r in mine if r.get("rc") != 0)
+latest = {}
+for r in rows:
+    latest[(r.get("run"), str(r.get("phase", "")))] = r          # 追加式账本：同名后行覆盖前行
+term_train = {k[0]: v for k, v in latest.items() if str(k[1]).startswith("train")}   # k[1] 是 phase 字符串
+term_ok = [run for run, v in term_train.items() if v.get("rc") == 0]
+term_bad = sorted(run for run, v in term_train.items() if v.get("rc") != 0)
+eval_bad = sorted({k[0] for k, v in latest.items()
+                   if not str(k[1]).startswith("train") and v.get("rc") != 0})
+dup_ok = sorted(run for run in term_train
+                if sum(1 for r in rows if is_train(r) and r.get("run") == run and r.get("rc") == 0) > 1)
+train_lines = [r for r in rows if is_train(r)]
+repeats = len(train_lines) - len(term_train)
+
 problems = []
-if ok_train != done:
-    problems.append("训练成功数 内存=%d 账本=%d" % (done, ok_train))
-if bad_any != fail:
-    problems.append("失败数 内存=%d 账本=%d" % (fail, bad_any))
-print("%d runs / %d failures / %d skipped  (账本: 段 %s 共 %d 行；训练 %d 行 = %d 成 + %d 败；全阶段 rc!=0 共 %d)"
-      % (done, fail, skip, seg, len(rows), len(train), ok_train, bad_train, bad_any))
+if mine_train_ok != done:
+    problems.append("本进程训练成功数 内存=%d 账本=%d（pid=%s 的行）" % (done, mine_train_ok, mypid))
+if mine_bad != fail:
+    problems.append("本进程失败数 内存=%d 账本=%d（rc!=0 的行都要记进失败，含 eval 阶段）" % (fail, mine_bad))
+if term_bad:
+    problems.append("有 %d 个 run 终态失败（最后一条 train 行 rc!=0）：%s"
+                    % (len(term_bad), ", ".join(term_bad[:5])))
+if eval_bad:
+    problems.append("有 %d 个 run 的评估阶段终态失败：%s" % (len(eval_bad), ", ".join(eval_bad[:5])))
+if len(term_ok) != done + skip:
+    problems.append("段内终态成功 run 数=%d ≠ 本次成功 %d + 续跑跳过 %d ⇒ 有 run 被跳过但账上没有成功行"
+                    % (len(term_ok), done, skip))
+if dup_ok:
+    problems.append("同一 run 有多条成功 train 行（run-name 撞车或重复铺排？）：%s" % ", ".join(dup_ok[:5]))
+print("%d runs / %d failures / %d skipped / %d gate-fail / %d eval-fail  (账本段 %s：%d 行；本进程 pid=%s 成功 %d 失败 %d；"
+      "段内 distinct train run %d = 终态成功 %d + 终态失败 %d；重试行 %d)"
+      % (done, fail, skip, gate_fail, eval_fail, seg, len(rows), mypid, mine_train_ok, mine_bad,
+         len(term_train), len(term_ok), len(term_bad), repeats))
+if repeats:
+    print("[ledger] 段内有 %d 行是重试/续跑的重复入账 ⇒ 单价与机时统计请按 distinct run 取最后一条" % repeats)
 if problems:
     print("INVALID: 内存计数与落盘账对不上：%s ⇒ 判本段不可信" % "; ".join(problems), file=sys.stderr)
     raise SystemExit(1)
