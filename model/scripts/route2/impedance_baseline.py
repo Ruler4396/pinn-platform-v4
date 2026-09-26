@@ -467,9 +467,16 @@ def read_obs_table(path: Path) -> Tuple[List[float], dict, str]:
 def require_provenance(noise_frac: float, provenance: Optional[str]) -> None:
     """Below the 3% pre-registered floor, an instrument citation is mandatory (constraint 2).
 
-    1% is allowed to be *run*, but it may not enter the deliverable as a default tier
-    without a µPIV repeatability reference or our own calibration record: a quieter noise
-    level is what would let the opponent look separable for the wrong reason.
+    D4 (统括官 2026-09-26, `paper-route2/观测噪声出处-20260926.md`): the only sub-1% number
+    reachable in the literature is 0.9%, and it is the in-plane *velocity* uncertainty of
+    aptiv-measured Poiseuille flow in a straight rectangular channel (Cierpka 2010).  Our
+    observables are branch flow rates and node pressure drops, so citing it would swap the
+    measured quantity -- public µPIV/APTV repeatability figures therefore **do not apply
+    to these observables and must not be used as provenance**.  3% stands on our own device
+    calibration record; with no such record the tier is written as 未测, and the 1% row is
+    never deleted, never denoised, and never relabelled "a pure hypothetical perturbation,
+    needs no provenance" to get past this gate.  A quieter noise level is exactly what would
+    let the opponent look separable for the wrong reason.
     """
     if noise_frac < NOISE_PROVENANCE_MIN and not (provenance or "").strip():
         raise ValueError(
