@@ -69,18 +69,23 @@ deliver() {
 
 step() {
   local name="$1" fatal="$2"; shift 2
-  local t0 rc out
+  local t0 rc out grade
   t0=$(date +%s); out="$LOGD/step_${name}.txt"
   bash -c "$*" >"$out" 2>&1; rc=$?
   log "STEP $name rc=$rc wall=$(( $(date +%s) - t0 ))s fatal=$fatal"
   if [ "$rc" != 0 ]; then
     tail -14 "$out" | sed "s/^/    E| /"
-    # rc=4 from a sealing segment means "products usable, bookkeeping only" (a797ce0's own
-    # grade), so treating it like rc=1 threw away the rest of the trip. Only "数据不可信" aborts.
-    if [ "$fatal" = fatal ] || { [ "$fatal" = rc4ok ] && [ "$rc" != 4 ]; }; then
+    # a797ce0 grades segments three ways but the sweep entry point still exits 1 for the
+    # bookkeeping grade (instance 20:58: [seal] 判级=bookkeeping 记账=1 -> rc=1).  The machine
+    # readable grade line is the authority, so rc4ok = "数据可信": rc 4, or rc!=0 while the line
+    # says bookkeeping and never says fatal.  No threshold/verdict here — only how I read it.
+    grade=""
+    grep -aq '\[seal\] 判级=bookkeeping' "$out" && grade=bookkeeping
+    grep -aq '\[seal\] 判级=fatal' "$out" && grade=fatal
+    if [ "$fatal" = fatal ] || { [ "$fatal" = rc4ok ] && [ "$rc" != 4 ] && [ "$grade" != bookkeeping ]; }; then
       log "ABORT at $name (see $out)"; exit 1
     fi
-    [ "$fatal" = rc4ok ] && log "WARN $name rc=4 仅记账不符 ⇒ 产物可用，继续后面的步骤（判级行已在上面 E| 里）"
+    [ "$fatal" = rc4ok ] && log "WARN $name rc=$rc 判级=${grade:-记账不符} ⇒ 产物可用，继续后面的步骤（判级行已在上面 E| 里）"
   else
     tail -5 "$out" | sed "s/^/    > /"
   fi
