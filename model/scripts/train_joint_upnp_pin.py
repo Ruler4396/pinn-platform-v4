@@ -135,28 +135,6 @@ def main() -> int:
     joint_hidden = 解析层(args.hidden_layers)
     dual_hidden = 解析层(args.dual_reference_hidden)
 
-    if args.dry_run and args.in_dim > 0:
-        # 离线逃生口：本机无 numpy/torch 时也能核参数量与计划（实例上不传 --in-dim，走真特征列）
-        scale = 规模对照(args.in_dim, joint_hidden, dual_hidden)
-        print("[params] in_dim=%d(显式) 单网络=%s → %d 参；双模型参照=%s×2 → %d 参；比值=%.4f"
-              % (args.in_dim, joint_hidden, scale["joint_params"], dual_hidden, scale["dual_params"], scale["ratio"]))
-        if args.require_param_ratio > 0:
-            lo, hi = 1.0 - args.param_ratio_tol, 1.0 + args.param_ratio_tol
-            if not (lo <= scale["ratio"] <= hi):
-                raise SystemExit(f"[FAIL] 参数量比值 {scale['ratio']:.4f} 不在 [{lo:.2f},{hi:.2f}] ⇒ 对照不对等")
-        print("[dry-run] run_dir=%s 权重档=%s epochs=%d lr=%g seed=%d 观测源(train)=%s strict=%s 壁面=%s"
-              % (PROJECT_ROOT / "results" / "pinn" / args.run_name, args.weights_preset, args.epochs,
-                 args.lr, args.seed, args.train_velocity_source, args.strict_sparse_scalers, args.velocity_wall_mode))
-        print("[dry-run] 物理项=复用双模型 方程耦合损失（头代理切片）；求导链/尺度因子/512 点取点规则逐字相同")
-        print(json.dumps({"param_scale": scale, "in_dim_forced": args.in_dim}, ensure_ascii=False))
-        return 0
-
-    sup = load_dep("train_supervised.py")
-    dual = load_dep("train_velocity_pressure_independent_strict_sparse.py")
-    spec = sup.get_family_spec(args.family)
-    基础特征列 = sup.resolve_feature_cols(spec, args.feature_mode.strip() or spec.default_feature_mode)
-    特征列 = sup.apply_feature_drop(基础特征列, sup.parse_csv_list(args.drop_features))
-
     if args.weights_preset != "strict-sparse" and args.strict_sparse_scalers:
         raise SystemExit("[FAIL] --strict-sparse-scalers 只配 strict-sparse 档（稠密主线不吃观测点标准化）")
     preset = PRESETS[args.weights_preset]
@@ -170,6 +148,42 @@ def main() -> int:
     weights = {"inlet": args.inlet_flux_weight, "outlet": args.outlet_pressure_weight,
                "drop": args.pressure_drop_weight, "continuity": args.continuity_weight,
                "momentum": args.momentum_weight}
+
+    def 档位标签(w) -> str:
+        """标签必须由**实际权重**反推，不能照抄命令行上的 preset 名。
+        9/26 现场：sweep 只传逐项权重不传 --weights-preset ⇒ dry-run 打成 strict-sparse
+        而实际值是 mainline-dense 的一组 ⇒ 数值没错、标签错，会被当成串档。"""
+        for name, ref in PRESETS.items():
+            if all(abs(w[k] - ref[k]) < 1e-12 for k in ("inlet", "outlet", "drop", "continuity", "momentum")):
+                return name
+        return "逐项指定(inlet=%g,outlet=%g,drop=%g,cont=%g,mom=%g)" % (
+            w["inlet"], w["outlet"], w["drop"], w["continuity"], w["momentum"])
+
+    label = 档位标签(weights)
+    if label != "逐项指定" and not label.startswith(args.weights_preset):
+        print("[warn] --weights-preset=%s 与实际权重不符，按实际值记账并标注为 %s" % (args.weights_preset, label))
+
+    if args.dry_run and args.in_dim > 0:
+        # 离线逃生口：本机无 numpy/torch 时也能核参数量与计划（实例上不传 --in-dim，走真特征列）
+        scale = 规模对照(args.in_dim, joint_hidden, dual_hidden)
+        print("[params] in_dim=%d(显式) 单网络=%s → %d 参；双模型参照=%s×2 → %d 参；比值=%.4f"
+              % (args.in_dim, joint_hidden, scale["joint_params"], dual_hidden, scale["dual_params"], scale["ratio"]))
+        if args.require_param_ratio > 0:
+            lo, hi = 1.0 - args.param_ratio_tol, 1.0 + args.param_ratio_tol
+            if not (lo <= scale["ratio"] <= hi):
+                raise SystemExit(f"[FAIL] 参数量比值 {scale['ratio']:.4f} 不在 [{lo:.2f},{hi:.2f}] ⇒ 对照不对等")
+        print("[dry-run] run_dir=%s 权重档=%s(命令行写的是 %s) epochs=%d lr=%g seed=%d 观测源(train)=%s strict=%s 壁面=%s"
+              % (PROJECT_ROOT / "results" / "pinn" / args.run_name, label, args.weights_preset, args.epochs,
+                 args.lr, args.seed, args.train_velocity_source, args.strict_sparse_scalers, args.velocity_wall_mode))
+        print("[dry-run] 物理项=复用双模型 方程耦合损失（头代理切片）；求导链/尺度因子/512 点取点规则逐字相同")
+        print(json.dumps({"param_scale": scale, "in_dim_forced": args.in_dim}, ensure_ascii=False))
+        return 0
+
+    sup = load_dep("train_supervised.py")
+    dual = load_dep("train_velocity_pressure_independent_strict_sparse.py")
+    spec = sup.get_family_spec(args.family)
+    基础特征列 = sup.resolve_feature_cols(spec, args.feature_mode.strip() or spec.default_feature_mode)
+    特征列 = sup.apply_feature_drop(基础特征列, sup.parse_csv_list(args.drop_features))
 
     scale = 规模对照(len(特征列), joint_hidden, dual_hidden)
     print("[params] in_dim=%d 单网络=%s → %d 参；双模型参照=%s×2 → %d 参；比值=%.4f"

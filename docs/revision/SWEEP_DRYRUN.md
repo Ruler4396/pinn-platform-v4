@@ -327,3 +327,16 @@ bash model/scripts/sweep_t5.sh --baseline --dry-run | grep armC                 
 
 自测（驱动**真实**的 `seal_segment`，不是复刻逻辑）：`bash model/scripts/selftest_ledger.sh` ⇒ 九例全符合 rc=0，
 其中 **③「账本缺一行」与 ⑥「段内 0 行」是必定 INVALID 的正对照**，证明闸门没被改成永远绿；②是段 01 那个假红的忠实回放（前进程 1 败 1 成 + 本进程 2 成 1 跳），现在判绿并打印"重试行 1"。
+
+## 12. 2026-09-26 第二批 · 统括官四条待办的处置与凭据
+
+| # | 缺陷（他给的原值） | 处置 | 本机自测（命令 → 尾行） |
+| --- | --- | --- | --- |
+| 1 | `baselines_pod.py:153` 把 `args.eval_cases/obs_files` 赋成 list，`:163/:164` 又对 list 调 `parse_list()` ⇒ `AttributeError: 'list' object has no attribute 'strip'`。**只坏 `--self-check` 分支；真跑那条从未在任何机器上执行过** ⇒ §11.3 第 4 步的"几秒"当时无凭据 | `parse_list` 改为同时接受 str/list/None（清洗后返回），self-check 分支改回赋字符串；判定逻辑抽成单一函数 `检查不变量()`，`--self-check` 与新增的 `--assert-selftest` 共用一份（不留两份判定） | `python3 model/scripts/baselines_pod.py --assert-selftest` → `总体：全符 ⇒ 断言集能红能绿`（干净夹具绿 + **5 条注入各自判红并点名 A1/A2/A3/A4/A6**：压力读数超范围、观测点数少于模态数、观测残差=nan、pooled 不合理、少一个指标键）。崩溃点本身：`parse_list(["C-val"])==["C-val"]`、`parse_list(None)==[]` 等 6 例全过 rc=0。**真数据那条仍只能在实例上跑**（要 numpy + `cases/`）：`python3 model/scripts/baselines_pod.py --self-check`，几秒，产物写临时目录 |
+| 2 | `analyze_sweep.py` 只 glob `results/pinn/` ⇒ 臂 B（写 `results/supervised/`）对统计管线完全不可见，`--paired t5c23,t5c04` 被静默跳过 | **决定：臂 B 的表走 analyze，给它加第二根**（`--supervised-root`，默认跟随 `--results-root`/`model/results/supervised`；`--only-pinn` 才回到旧行为并显式声明）。理由：臂 B 是与格1/格4 同观测表的**配对**对照，需要同一套 mean±sd、两口径与配对检验；索引只能出点估计。每行带 `metrics_root` 标签，出表首行打印"结果根=pinn,supervised"与各根 run 数，跨根不会互相冒充 | 合成树四例全 OK：`解析 run=20 格数=4`（双根）、`--only-pinn → 解析 run=15`、`缺一臂必须印不可判`（原判词 1 条→现在 2 条）、`--paired … → scipy 缺失 rc=1` |
+| 3 | `sweep_t5.sh --baseline --dry-run` 打 `实际要训练=0`，而它自己铺了 20 个单元（预算闸逐项 cost 判定没坏，是人看的那行数错） | 基线段计划数/ETA 照 `BL_CELLS` 逐项累加进 `n_planned/eta_sec`，并明确"臂 C 不训练 ⇒ 不计入" | `[plan] 基线段 本段要训练=20（4 格 × 5 种子）` + `[plan] segment=seg00 实际要训练=20；串行总墙钟≈27 min`；回归：`--t5 → 95`、默认 → `107+4` 不变 |
+| 4 | 臂 A dry-run 打 `权重档=strict-sparse` 而同一行实际是 `{0.5,1e-4,1.0}`=mainline-dense（sweep 只传逐项权重不传 preset ⇒ 数值对、标签错，会被当串档） | 标签由**实际权重反推**（`档位标签()`），与命令行 preset 不一致时当场 `[warn]` 并两个名字都打；sweep 侧改为显式传 `--weights-preset` | `--inlet-flux-weight 0.5 --outlet-pressure-weight 1e-4 --pressure-drop-weight 1.0` → `[warn] --weights-preset=strict-sparse 与实际权重不符…标注为 mainline-dense`；`--baseline --dry-run` 的 argv 里已含 `--weights-preset mainline-dense` |
+
+**他给的环境事实，对本文件的影响**：`--obs-seeds 0 --verify-committed` 在实例上 `"identical": 72, "not_identical": []` ⇒ §8.3 我留的那条"数值等价只能在实例上做"的开口**已闭**，T6（obs_seed 1..3）解锁。实例有 pandas 2.2.3 / scipy 1.17.1 ⇒ `--paired` 的真实 Wilcoxon/t 能在实例上出，不降级手算。参数量比已在实例实测坐实：单网 68,355 / 双模 70,275 / 比值 0.9727。
+
+**臂 C 的诚实边界不变**：`--self-check` 与真跑那条读的是 `cases/`，本轮我仍**没有**在任何机器上执行过完整的 POD 数值路径（本机无 numpy）；我能自证的是断言集本身能红能绿 + 崩溃点已修。第一次真跑的 rc 与 `[pod] rank=…` 那行请回传，我据此把 §11.3 第 4 步的"几秒"改成有凭据的数。

@@ -99,20 +99,30 @@ def read_case_metrics(run_dir: Path, split: str):
             "cases": [c.get("case_id") for c in cases if isinstance(c, dict)]}
 
 
-def collect(prefix: str, split: str, pinn_dir: Path = PINN_DIR):
+def collect(prefix: str, split: str, pinn_dir: Path = PINN_DIR, extra_dirs=()):
+    """扫多根结果目录：`results/pinn/`（双模型、臂 A 单网络联合 PINN）+ `results/supervised/`（臂 B 纯数据 MLP）。
+
+    9/26 的洞：只 glob `results/pinn/` ⇒ 臂 B 对统计管线**完全不可见**，
+    `--paired t5c23,t5c04` 会被静默跳过（我们自己曾在 §10.4 记过同一类静默）。
+    现在每行带 `metrics_root` 标签（pinn / supervised / 目录名），出表时能看出这一格来自哪根。
+    """
     rows = []
     missing = []
-    for run_dir in sorted(Path(pinn_dir).glob(prefix + "*")):
-        parsed = parse_run_name(run_dir.name)
-        if not parsed:
+    roots = [(Path(pinn_dir), "pinn")] + [(Path(p), tag) for p, tag in extra_dirs]
+    for root, tag in roots:
+        if not root.is_dir():
             continue
-        cell, train_seed, obs_seed = parsed
-        payload = read_case_metrics(run_dir, split)
-        if payload is None:
-            missing.append(run_dir.name)
-            continue
-        rows.append({"run": run_dir.name, "cell": cell, "train_seed": train_seed,
-                     "obs_seed": obs_seed, **payload})
+        for run_dir in sorted(root.glob(prefix + "*")):
+            parsed = parse_run_name(run_dir.name)
+            if not parsed:
+                continue
+            cell, train_seed, obs_seed = parsed
+            payload = read_case_metrics(run_dir, split)
+            if payload is None:
+                missing.append("%s:%s" % (tag, run_dir.name))
+                continue
+            rows.append({"run": run_dir.name, "cell": cell, "train_seed": train_seed,
+                         "obs_seed": obs_seed, "metrics_root": tag, **payload})
     return rows, missing
 
 
@@ -227,6 +237,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="T5/T6 扫描统计")
     ap.add_argument("--prefix", default="rev2609")
     ap.add_argument("--results-root", default=str(RESULTS_ROOT), help="含 pinn/ 的结果根目录（默认为 model/results）")
+    ap.add_argument("--supervised-root", default="", help="臂 B 的结果根；留空=model/results/supervised")
+    ap.add_argument("--only-pinn", action="store_true", help="只扫 results/pinn（旧行为；会让臂 B 对统计不可见，须显式声明）")
     ap.add_argument("--split", default="val", choices=["val", "test"])
     ap.add_argument("--metric", default="rel_l2_speed", choices=METRICS)
     ap.add_argument("--basis", default="both", choices=["both", "mean_of_cases", "pooled"])
@@ -238,7 +250,16 @@ def main() -> None:
     if args.self_test:
         raise SystemExit(self_test())
 
-    rows, missing = collect(args.prefix, args.split, Path(args.results_root) / "pinn")
+    extra = ()
+    if not args.only_pinn:
+        # 默认跟着 --results-root 走（否则指了别的结果根时，臂 B 又会从统计里消失）
+        sup_root = Path(args.supervised_root) if args.supervised_root else (Path(args.results_root) / "supervised")
+        extra = [(sup_root, "supervised")]
+    rows, missing = collect(args.prefix, args.split, Path(args.results_root) / "pinn", extra_dirs=extra)
+    roots = sorted({r.get("metrics_root", "?") for r in rows})
+    print("[load] 结果根=%s；跨根 run 数按 metrics_root 分别计：%s"
+          % (",".join(roots) or "无", ", ".join("%s=%d" % (k, sum(1 for r in rows if r.get("metrics_root") == k))
+                                              for k in roots)))
     if not rows:
         print("INVALID：前缀 %s 在 %s/pinn 下没有可解析的 run（不是'没有差异'，是根本没数据）"
               % (args.prefix, args.results_root))
@@ -309,8 +330,10 @@ def main() -> None:
     grouped = group_stats(rows, args.metric, "mean_of_cases")
     seen = set()
     for cell_a, cell_b, label in pairs_to_judge:
-        if (cell_a, cell_b) in seen or cell_a not in grouped or cell_b not in grouped:
+        if (cell_a, cell_b) in seen:
             continue
+        if cell_a not in grouped and cell_b not in grouped:
+            continue          # 两臂都没读数才跳过；只缺一臂时必须走 judge() 印 MISSING/不可判（9/26 补）
         seen.add((cell_a, cell_b))
         text = judge(cell_a, cell_b, grouped.get(cell_a), grouped.get(cell_b), args.metric)
         report["verdicts"].append({"A": cell_a, "B": cell_b, "label": label,

@@ -55,9 +55,83 @@ def _utf8() -> None:
                 stream.reconfigure(encoding="utf-8", errors="replace")
 
 
-def parse_list(text: str) -> list[str]:
+def parse_list(text) -> list[str]:
+    """逗号/分号/空白任一种分隔；**已经是列表就原样清洗**（9/26 实例上 `--self-check` 崩在这里：
+    那条分支把 args 赋成 list，后面又对它调 parse_list ⇒ 'list' object has no attribute 'strip'）。"""
     import re
-    return [t for t in re.split(r"[,;\s]+", (text or "").strip()) if t]
+    if text is None:
+        return []
+    if isinstance(text, (list, tuple)):
+        items = [str(x).strip() for x in text]
+    else:
+        items = [t for t in re.split(r"[,;\s]+", str(text).strip()) if t]
+    return [x for x in items if x]
+
+
+def 检查不变量(r: int, n_sv: int, results: dict) -> list[str]:
+    """纯 stdlib 的断言集：只吃已经算好的有限数值，因此**在没有 numpy 的机器上也能被验证**。
+    返回问题列表（空=全绿）。"""
+    fails: list[str] = []
+    if not (1 <= r <= max(n_sv, 1)):
+        fails.append("断言A1 模态数 r=%d 不在 [1,%d]" % (r, max(n_sv, 1)))
+    for obs_name, blk in (results or {}).items():
+        mac = blk.get("mean_of_cases", {})
+        for key in ("rel_l2_u", "rel_l2_speed", "rel_l2_p", "rel_l2_speed_interior"):
+            val = mac.get(key)
+            if val is None or not isinstance(val, (int, float)) or not math.isfinite(val) or not (0.0 <= val < 5.0):
+                fails.append("断言A2 %s %s=%r 不在可解释范围 [0,5)" % (obs_name, key, val))
+        pooled = blk.get("pooled", {})
+        if not isinstance(pooled.get("rel_l2_speed"), (int, float)) or pooled.get("rel_l2_speed", 9e9) > 5.0:
+            fails.append("断言A3 %s pooled 速度=%r 明显不合理" % (obs_name, pooled.get("rel_l2_speed")))
+        for c in blk.get("cases", []):
+            if not isinstance(c.get("resid_obs"), (int, float)) or not (0.0 <= c["resid_obs"] < 1.0):
+                fails.append("断言A4 %s 观测最小二乘残差=%r ⇒ 拟合链路有问题" % (c["case_id"], c.get("resid_obs")))
+            if not (0 < c.get("n_obs", 0)):
+                fails.append("断言A5 %s 观测点数=%r 不合法" % (c["case_id"], c.get("n_obs")))
+            elif c["n_obs"] < r:
+                fails.append("断言A6 %s 观测点 %d 少于模态数 %d ⇒ 系数不可定" % (c["case_id"], c["n_obs"], r))
+    return fails
+
+
+def assert_selftest() -> int:
+    """断言集自己的正/负对照：一条干净夹具必须绿，四条注入污染必须各自判红且点名是哪条断言。
+    不读 cases/、不需要 numpy ⇒ 本机可跑（`--self-check` 那条要真数据，只能在实例上跑）。"""
+    clean = {"obs_sparse_5pct.csv": {
+        "mean_of_cases": {"rel_l2_u": 0.05, "rel_l2_speed": 0.04, "rel_l2_p": 0.30,
+                          "rel_l2_speed_interior": 0.05},
+        "pooled": {"rel_l2_speed": 0.04},
+        "cases": [{"case_id": "C-val", "n_obs": 63, "resid_obs": 0.42}]}}
+    bad = 0
+
+    def expect(label, results, r, want_fails, want_sub=""):
+        nonlocal bad
+        got = 检查不变量(r, 20, results)
+        if want_fails == 0:
+            ok = (got == [])
+        else:
+            ok = (len(got) >= want_fails) and (want_sub in " | ".join(got))
+        if not ok:
+            bad += 1
+        print("  [%s] %-30s 期望=%s 实得=%d 条 %s" % ("OK" if ok else "BAD", label,
+              "绿" if want_fails == 0 else "红(含「%s」)" % want_sub, len(got),
+              ("；".join(got))[:110]))
+
+    print("== 臂 C 断言集的正/负对照（纯 stdlib，本机可跑）==")
+    expect("干净夹具应全绿", clean, 3, 0)
+    import copy
+    m = copy.deepcopy(clean); m["obs_sparse_5pct.csv"]["mean_of_cases"]["rel_l2_p"] = 41.0
+    expect("注入·压力读数超范围", m, 3, 1, "断言A2")
+    m = copy.deepcopy(clean); m["obs_sparse_5pct.csv"]["cases"][0]["n_obs"] = 2
+    expect("注入·观测点少于模态数", m, 3, 1, "断言A6")
+    m = copy.deepcopy(clean); m["obs_sparse_5pct.csv"]["cases"][0]["resid_obs"] = float("nan")
+    expect("注入·观测残差非有限", m, 3, 1, "断言A4")
+    m = copy.deepcopy(clean); m["obs_sparse_5pct.csv"]["pooled"]["rel_l2_speed"] = 12.0
+    expect("注入·pooled 不合理", m, 3, 1, "断言A3")
+    m = copy.deepcopy(clean); m["obs_sparse_5pct.csv"]["mean_of_cases"].pop("rel_l2_speed")
+    expect("注入·少一个指标键", m, 3, 1, "断言A2")
+    expect("注入·模态数为 0", clean, 0, 1, "断言A1")
+    print("总体：%s" % ("全符 ⇒ 断言集能红能绿" if bad == 0 else "有 %d 例不符 ⇒ 断言集不可信" % bad))
+    return 0 if bad == 0 else 1
 
 
 def load_case(family: str, case_id: str, fname: str):
@@ -146,12 +220,16 @@ def main() -> int:
     ap.add_argument("--max-modes", type=int, default=40)
     ap.add_argument("--out", default="", help="产物 JSON 路径（不写则只打印）")
     ap.add_argument("--self-check", action="store_true",
-                    help="极小配置跑通全链路并断言不变量（实例上几秒完成，本机无 numpy 时只能到 py_compile 这一层）")
+                    help="极小配置跑通全链路并断言不变量（要读 cases/ 与 numpy ⇒ 在实例上跑，几秒）")
+    ap.add_argument("--assert-selftest", dest="assert_selftest", action="store_true",
+                    help="只核断言集本身：干净夹具必须绿、四条注入污染必须各自判红并点名断言号（纯 stdlib，本机可跑）")
     args = ap.parse_args()
+    if args.assert_selftest:
+        return assert_selftest()
     if args.self_check:
         args.nx, args.ny, args.max_modes = 8, 4, 3
-        args.family, args.eval_cases = "contraction_2d", ["C-val"]
-        args.obs_files = ["obs_sparse_5pct.csv"]
+        args.family, args.eval_cases = "contraction_2d", "C-val"
+        args.obs_files = "obs_sparse_5pct.csv"
         args.out = str(Path(tempfile.gettempdir()) / "armC_selfcheck.json")
         print("[self-check] 极小配置 nx=8 ny=4 max_modes=3 eval=C-val，产物写临时目录")
 
@@ -267,22 +345,7 @@ def main() -> int:
         json.loads(out.read_text(encoding="utf-8"))
         print("[out] %s 已写并读回校验（rank=%d, 档=%s）" % (out, r, ",".join(obs_files)))
     if args.self_check:
-        fails = []
-        if r < 1 or r > len(S):
-            fails.append("模态数 r=%d 不在 [1,%d]" % (r, len(S)))
-        for obs_name, blk in results.items():
-            mac = blk["mean_of_cases"]
-            for key in ("rel_l2_u", "rel_l2_speed", "rel_l2_p", "rel_l2_speed_interior"):
-                val = mac.get(key)
-                if val is None or not math.isfinite(val) or not (0.0 <= val < 5.0):
-                    fails.append("%s %s=%r 不在可解释范围" % (obs_name, key, val))
-            if blk["pooled"]["rel_l2_speed"] > 5.0:
-                fails.append("%s pooled 速度=%.4f 明显不合理" % (obs_name, blk["pooled"]["rel_l2_speed"]))
-            for c in blk["cases"]:
-                if not (0.0 <= c["resid_obs"] < 1.0):
-                    fails.append("%s 观测最小二乘残差=%.4f ⇒ 拟合链路有问题" % (c["case_id"], c["resid_obs"]))
-                if c["n_obs"] < r:
-                    fails.append("%s 观测点 %d 少于模态数 %d ⇒ 系数不可定" % (c["case_id"], c["n_obs"], r))
+        fails = 检查不变量(r, len(S), results)
         print("[self-check] %s" % ("PASS：rank=%d，两口径读数均在可解释范围，观测残差与点数满足前提" % r
                                     if not fails else "FAIL：" + "；".join(fails)))
         if fails:

@@ -296,7 +296,20 @@ if [[ "${RUN_T6}" == 1 ]]; then
 fi
 n_dup_t6=0
 [[ "${RUN_T5}" == 1 && "${RUN_T6}" == 1 ]] && n_dup_t6=$(( 2 * n_t6s ))   # T6 的 obs_seed=0 两臂与 T5 格4/格8 同名
-if [[ "${RUN_BASE}" == 1 ]]; then echo "[plan] 基线三件套：臂A/B 共 4 格 × $(echo ${SEEDS} | wc -w) 种子 = $(( 4 * $(echo ${SEEDS} | wc -w) )) 次训练 + 臂C（POD，不训练、不进账本）"; fi
+# 基线段（必做1 臂A/臂B）：计划数与 ETA 照 BL_CELLS 逐项累加，不留"实际要训练=0 却铺了 20 个单元"
+# 这种自相矛盾的 plan 行（9/26 统括官指出）。臂 C 不训练 ⇒ 不进 n_planned，单独一行说明。
+n_base_plan=0
+if [[ "${RUN_BASE}" == 1 ]]; then
+  for row in "${BL_CELLS[@]}"; do
+    IFS='|' read -r bnn _desc bsrc _barm _bpreset <<<"${row}"
+    cell_wanted "${bnn}" || continue
+    bcost="$(unit_cost contraction_2d "$([[ "${bsrc}" == "dense" ]] && echo dense || echo sparse)")"
+    n_base_plan=$(( n_base_plan + n_seed )); eta_sec=$(( eta_sec + n_seed * bcost ))
+  done
+  n_planned=$(( n_planned + n_base_plan ))
+  echo "[plan] 基线三件套：本段要训练=${n_base_plan}（${#BL_CELLS[@]} 格 × ${n_seed} 种子，臂A/B 各两档）；"
+  echo "[plan] 臂C（POD + 观测点最小二乘）不训练 ⇒ 不计入训练数、不写 progress.jsonl"
+fi
 echo "[plan] segment=${SEGMENT_TAG} 实际要训练=${n_planned}；铺排行=${n_planned}+${n_dup_t6} 条同名重复（运行时走 [skip-train]）（T5=${RUN_T5} T6=${RUN_T6}; n_seed=${n_seed} n_obs=${n_obs}）预算=${BUDGET_MIN}min dry-run=${SWEEP_DRY_RUN:-0}"
 echo "[plan] 串行总墙钟≈$(( eta_sec / 60 )) min；6 路并行按 1/4 折损≈$(( eta_sec / 240 )) min ⇒ 约需 $(( eta_sec / 60 / BUDGET_MIN + 1 )) 个 ${BUDGET_MIN}min 段"
 echo "[plan] 弯曲单价 ${BEND_UNIT_SEC}s（ESTIMATED=${BEND_IS_ESTIMATE}：0=已标定，1=未标定则本 ETA 不可信）"

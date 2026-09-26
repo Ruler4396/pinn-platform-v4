@@ -465,7 +465,7 @@ train_joint() {  # $1=name $2=family $3=train $4=val $5=src $6=fmode $7=drop $8=
   local run_dir="${PROJECT_ROOT}/results/pinn/${run_name}"
   local log="${LOG_DIR}/${run_name}.log"
   local drop_display="${drop}"; [[ -z "${drop}" ]] && drop_display='""'
-  local argv="python3 scripts/train_joint_upnp_pin.py --family ${family} --run-name ${run_name} --seed ${train_seed} --train-cases ${train_cases} --val-cases ${val_cases} --feature-mode ${fmode} --drop-features ${drop_display} --train-velocity-source ${src} --val-velocity-source ${src} --train-pressure-source ${src} --val-pressure-source ${src} --hidden-layers 128,128,128,128,128 --activation silu --epochs 480 --lr 6e-4 --patience 200 --print-every 40 --wall-weight 0.0 --inlet-flux-weight ${inlet_w} --outlet-pressure-weight ${outlet_w} --pressure-drop-weight ${drop_w} --continuity-weight ${cont_w} --momentum-weight ${mom_w} --velocity-wall-mode hard --hard-wall-sharpness 12 --max-physics-points 512 --require-param-ratio 1 --param-ratio-tol 0.05 ${strict_flag} --max-retries 1"
+  local argv="python3 scripts/train_joint_upnp_pin.py --family ${family} --run-name ${run_name} --seed ${train_seed} --train-cases ${train_cases} --val-cases ${val_cases} --feature-mode ${fmode} --drop-features ${drop_display} --train-velocity-source ${src} --val-velocity-source ${src} --train-pressure-source ${src} --val-pressure-source ${src} --hidden-layers 128,128,128,128,128 --activation silu --epochs 480 --lr 6e-4 --patience 200 --print-every 40 --wall-weight 0.0 --inlet-flux-weight ${inlet_w} --outlet-pressure-weight ${outlet_w} --pressure-drop-weight ${drop_w} --continuity-weight ${cont_w} --momentum-weight ${mom_w} --velocity-wall-mode hard --hard-wall-sharpness 12 --max-physics-points 512 --require-param-ratio 1 --param-ratio-tol 0.05 --weights-preset ${preset} ${strict_flag} --max-retries 1"
   argv="$(printf '%s' "${argv}" | tr -s ' ')"
   if [[ "${SWEEP_DRY_RUN:-0}" == 1 ]]; then
     echo "[dry-run][train-joint] ${run_name} cell=${cell} ts=${train_seed} os=${obs_seed} preset=${preset}"
@@ -491,7 +491,7 @@ train_joint() {  # $1=name $2=family $3=train $4=val $5=src $6=fmode $7=drop $8=
       --outlet-pressure-weight "${outlet_w}" --pressure-drop-weight "${drop_w}" \
       --continuity-weight "${cont_w}" --momentum-weight "${mom_w}" \
       --velocity-wall-mode hard --hard-wall-sharpness 12 --max-physics-points 512 \
-      --require-param-ratio 1 --param-ratio-tol 0.05 ${strict_flag} --max-retries 1 >>"${log}" 2>&1; then
+      --require-param-ratio 1 --param-ratio-tol 0.05 --weights-preset "${preset}" ${strict_flag} --max-retries 1 >>"${log}" 2>&1; then
     rc=0
   else
     rc=$?
