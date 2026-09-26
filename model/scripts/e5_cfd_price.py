@@ -30,7 +30,10 @@ REPO = HERE.parents[2]
 CASES_ROOT = REPO / "model" / "cases"
 DEFAULT_CASES = "C-base,C-train-1,C-test-2,B-base,B-train-1"
 # 入库 .edp 把原作者机器的绝对路径写死在 ofstream 里（32 份）；换机器必 rc=8，故跑前先改这一行。
-ABS_PATH_RE = re.compile(r"/root/dev/[A-Za-z0-9._-]+/(?:cases|model/)")
+# **匹整个字面量、不匹前缀**（9/26 23:4x 统括官抓到：只匹前缀会把 `…_2d/cfd/<case>/` 三层留下，
+# 目标父目录不存在 ⇒ 35 次求解全 rc=8，机时白烧）。主机前缀单独剥，其余层级原样保留。
+ABS_PATH_RE = re.compile(r'"/root/dev/[^"\n]*"')
+HOST_PREFIX_RE = re.compile(r"^/root/dev/[A-Za-z0-9._-]+/")
 
 
 def find_edp(case: str) -> Path:
@@ -46,18 +49,78 @@ def family_of(case: str) -> str:
     return "contraction" if case.startswith("C") else ("bend" if case.startswith("B") else "other")
 
 
+def literal_targets(text: str) -> list[str]:
+    """取出一串 `"..."` 字面量里所有被写死的绝对路径（ofstream 与 cout 回显都算，两者必须一起改）。"""
+    return [m.group(0)[1:-1] for m in ABS_PATH_RE.finditer(text)]
+
+
+OFS_RE = re.compile(r'ofstream\s+\w+\s*\(\s*"([^"]+)"')
+
+
+def ofstream_targets(text: str) -> list[str]:
+    """改写后的真正写点。用 ABS_PATH_RE 找它会漏：改写成功后字面量已经不以 /root/dev/ 开头了。"""
+    return OFS_RE.findall(text)
+
+
+def _descends(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def verify_targets(case: str, targets: list[Path]) -> None:
+    """控制打在**目标目录能不能落文件**上，不是打在"文本有没有变"上。
+    只查"改写不是空操作"放过的正是 23:4x 那个形状：改得不完整。"""
+    bad = []
+    for t in targets:
+        par = t.parent
+        probe = par / ".e5_probe"
+        try:
+            if not par.is_dir():
+                raise FileNotFoundError("父目录不存在")
+            probe.write_bytes(b"")
+            probe.unlink()
+        except Exception as exc:
+            bad.append("%s ⇒ %s" % (par.as_posix(), exc))
+    if bad:
+        raise SystemExit("[INVALID] 工况 %s：改写后仍落不下文件（缺层或不可写）：%s "
+                         "⇒ 计时一次都没开始，别上机" % (case, "; ".join(bad)))
+
+
 def prepare(edp: Path, work: Path, case: str, rewrite_root: Path) -> Path:
-    """把绝对写路径改到本次工作区外，并按原样保留 CRLF（比对/解析都不许改语义）。"""
+    """把绝对写路径整体改到本次工作区外（层级原样保留），并按仓库字节的 CRLF 写回**临时**副本。
+    仓内 `.edp` 一个字节都不动 —— 那是"5/5 逐位 diff=0"凭据的所由。"""
+    if _descends(rewrite_root, REPO) or _descends(work, REPO):
+        raise SystemExit("[INVALID] 改写件/产物目录不许落在仓库内（%s / %s）⇒ "
+                         "会污染那批按旧字节取证的 `.edp`/`*_raw.csv`" % (work, rewrite_root))
     raw = edp.read_bytes()
     crlf = b"\r\n" in raw
     text = raw.decode("utf-8", errors="replace")
-    out_dir = rewrite_root / family_of(case) / case
-    out_dir.mkdir(parents=True, exist_ok=True)
-    rewritten = ABS_PATH_RE.sub(str(out_dir).replace("\\", "/"), text)
-    if rewritten == text:
-        raise SystemExit(f"[INVALID] {edp.name} 里没找到被写死的绝对路径 ⇒ 本次改写是空操作，"
-                         f"要么该件本就可移植（应改用原始件），要么正则失配")
-    dst = work / f"{case}_run.edp"
+    originals = literal_targets(text)
+    if not originals:
+        raise SystemExit("[INVALID] %s 里没找到被写死的绝对路径 ⇒ 本次改写是空操作（该件本就可移植，"
+                         "或正则失配）" % edp.name)
+    fam = family_of(case)
+
+    def _sub(m):
+        orig = m.group(0)[1:-1]
+        rel = HOST_PREFIX_RE.sub("", orig)              # 例：cases/contraction_2d/cfd/C-base/C-base_raw.csv
+        target = rewrite_root / fam / case / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return '"%s"' % target.as_posix()
+
+    rewritten = ABS_PATH_RE.sub(_sub, text)
+    residual = literal_targets(rewritten)
+    if residual:
+        raise SystemExit("[INVALID] 工况 %s：改写后仍残留 %d 个绝对写路径：%s ⇒ 会有样本 rc=8、机时白烧"
+                         % (case, len(residual), "; ".join(residual[:3])))
+    targets = [Path(x) for x in ofstream_targets(rewritten)]
+    if not targets:
+        raise SystemExit("[INVALID] 工况 %s：改写后找不到 ofstream 目标 ⇒ 解析没对上，别跑" % case)
+    verify_targets(case, targets)
+    dst = work / ("%s_run.edp" % case)
     dst.write_bytes(rewritten.replace("\n", "\r\n").encode("utf-8") if crlf else rewritten.encode("utf-8"))
     return dst
 
@@ -128,7 +191,37 @@ def self_test() -> int:
         assert bad_res["all_zero_rc"] is False and set(bad_res["rc_all"]) == {8}, bad_res
         print(f"  [OK] 失败正对照：求解器 rc=8 的样本使 all_zero_rc=False（rc_all={bad_res['rc_all']}）"
               f" ⇒ 主循环会走 INVALID 分支，不会把失败读成单价")
-    print("总体：E5 装置的计时/聚合/自证/失败识别四项全符合")
+        # ⑤ 真件演练（零求解）：对仓库里真实 .edp 跑 prepare()，父目录必须可落文件
+        for real_case in ("C-base", "B-base"):
+            rwork = root / ("rw_" + real_case)
+            rwork.mkdir(parents=True, exist_ok=True)
+            dst = prepare(find_edp(real_case), rwork, real_case, rwork / "gen")
+            txt = dst.read_bytes().decode("utf-8", "replace")
+            assert not literal_targets(txt), "%s 改写后仍有残留绝对路径" % real_case
+            tg = [Path(x) for x in ofstream_targets(txt)]
+            assert len(tg) >= 1, real_case
+            for t in tg:
+                assert t.parent.is_dir() and (t.parent / ".x").parent.exists(), t
+                assert _descends(t, rwork / "gen"), "改写后的目标跑到了工作区外：%s" % t
+            print("  [OK] 真件 prepare（%s）：%d 个 ofstream 目标全部父目录存在、且都在本次工作区内" % (real_case, len(tg)))
+        # ⑥ 必定红：故意给一个不存在的目标目录 ⇒ verify_targets 必须点名，而不是继续跑
+        try:
+            verify_targets("C-boom", [root / "nope" / "deep" / "x.csv"])
+        except SystemExit as exc:
+            assert "缺层或不可写" in str(exc), str(exc)
+            print("  [OK] 必定红正对照：目标缺层时 verify_targets 直接 SystemExit（旧版只查\u201c是否空操作\u201d放过这一形状）")
+        else:
+            raise AssertionError("verify_targets 对缺层目标没报错 ⇒ 这道控制是空的")
+        # ⑦ 仓内落点必须被拒（保护 5/5 逐位 diff=0 的凭据）
+        try:
+            prepare(find_edp("C-base"), REPO / "_e5_should_not_exist", "C-base", REPO / "_e5_gen")
+        except SystemExit as exc:
+            assert "不许落在仓库内" in str(exc), str(exc)
+            assert not (REPO / "_e5_gen").exists() and not (REPO / "_e5_should_not_exist").exists()
+            print("  [OK] 仓内落点被拒且未建任何目录")
+        else:
+            raise AssertionError("仓内落点没被拒")
+    print("总体：E5 装置的计时/聚合/自证/失败识别/真件改写/缺层必红/仓内必拒 七项全符合（含\u201c改写后不得残留绝对路径\u201d）")
     return 0
 
 
