@@ -11,7 +11,15 @@
   ④ A13 是待批占位，永远不落字，只在清单里标出；⑤ 术语类算子（A15/A14）与"删段+插段成对"类（E4+E3）单独走。
 """
 from __future__ import annotations
-import argparse, datetime, hashlib, pathlib, re, shutil, sys
+import argparse, datetime, hashlib, os, pathlib, re, shutil, sys
+
+# 顶层就改编码：夹具常被 `python3 -c "import assemble_thesis_docx as A; A.selfcheck_caption()"` 裸调用，
+# 只放在 main() 里等于"从命令行跑没事、从别人手里跑就崩"（统括官 15:0x 在默认 GBK 终端实测崩在 '⇒'）。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 HERE = pathlib.Path(__file__).resolve()
 REPO = HERE.parents[3]                                     # …/pinn-platform-v4
@@ -1087,6 +1095,46 @@ def selfcheck_guards():
     return 1 if bad else 0
 
 
+def selfcheck_fold():
+    """必红子检查：拿"只折叠旧词"的坏尺去判一次合法替换，它必须判红。
+    9/27 15:2x 从仓外 `.scratch/audit_copy.py` 追进这枚**已跟踪**件——统括官指出：只在临时区就随时会消失，
+    而 §12 第 9/10 条引用的正是它的结论 ⇒ 不可复现的控制在盘上等于没有。"""
+    old, new = "耦合阶段做低学习率协同修正。", "耦合阶段做低学习率交替更新。"
+    good = FOLD_RE.sub("@@", norm(old)) == FOLD_RE.sub("@@", norm(new))
+    only_old = re.compile("|".join(re.escape(a) for _, a, _ in TERM_OPS))
+    bad = only_old.sub("@@", norm(old)) == only_old.sub("@@", norm(new))
+    print(f"[必红子检查·折叠] 好尺(新旧一起折叠)判一致:{good}（应 True）；坏尺(只折旧词)判一致:{bad}（必须 False）")
+    if not (good and not bad):
+        print("[INVALID] 折叠控制失效 ⇒ 终检的 rc 不可信，先修尺再谈交付")
+        return 1
+    return 0
+
+
+def selfcheck_all():
+    """四条子检查一次跑完（题注严判 / 豁免粒度 / 折叠必红 / 终端代码页）；只声明一处，三处入口共用。"""
+    return selfcheck_caption() or selfcheck_guards() or selfcheck_fold() or selfcheck_console()
+
+
+def selfcheck_console():
+    """必红子检查（统括官 15:0x 抓到）：夹具在**默认中文终端代码页**下不许崩。
+    他裸跑 `python3 -c "...selfcheck_caption()"` 报 `UnicodeEncodeError: 'gbk' codec can't encode '\u21d2'`
+    ⇒ "必红控制能在真实终端条件跑"当时没成立。这里用 `PYTHONIOENCODING=gbk:strict` 固定复现那台终端，
+    并断言三条夹具都退 0（模块顶层已 reconfigure，所以裸 import 也不会崩）。"""
+    import subprocess
+    env = dict(os.environ, PYTHONIOENCODING="gbk:strict")
+    code = ("import sys; sys.path.insert(0, {0!r}); import assemble_thesis_docx as A; "
+            "sys.exit(A.selfcheck_caption() or A.selfcheck_fold() or A.selfcheck_guards())").format(str(HERE.parent))
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", env=env)
+    crash = "UnicodeEncodeError" in (r.stdout or "") + (r.stderr or "")
+    print(f"[必红子检查·终端代码页] PYTHONIOENCODING=gbk:strict 下三条夹具 rc={r.returncode} 编码崩={crash}"
+          + ("（应 rc=0、崩=False）" if not (r.returncode == 0 and not crash) else " ✓"))
+    if r.returncode or crash:
+        print("   末行输出：", ((r.stdout or "") + (r.stderr or "")).strip().splitlines()[-3:])
+        return 1
+    return 0
+
+
 def main() -> int:
     for s in (sys.stdout, sys.stderr):
         try:
@@ -1115,14 +1163,14 @@ def main() -> int:
     from docx import Document
 
     if args.selfcheck:
-        return selfcheck_caption() or selfcheck_guards()
+        return selfcheck_all()
     if args.verify:
-        if selfcheck_caption() or selfcheck_guards():   # 同上：尺先自证，再谈终检结论
+        if selfcheck_all():   # 同上：尺先自证，再谈终检结论
             return 3
         return verify(args.verify)
     if args.all:
         import subprocess
-        if selfcheck_caption() or selfcheck_guards():   # 夹具不过 ⇒ 整条链不开跑（统括官 13:0x：不能靠每次手看）
+        if selfcheck_all():   # 夹具不过 ⇒ 整条链不开跑（统括官 13:0x：不能靠每次手看）
             return 3
         st = SRC.stat()
         print(f"[原件只读] {st.st_size:,} B mtime={datetime.datetime.fromtimestamp(st.st_mtime).isoformat(timespec='seconds')} "
