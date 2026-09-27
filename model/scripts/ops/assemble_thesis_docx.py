@@ -392,6 +392,71 @@ def candidate() -> pathlib.Path | None:
     return p
 
 
+# **「改一格文字」那类工单行的现读坐标**（统括官 9/27 16:2x 之后的作者包收口：位置可算就不该占"需人工"的措辞，
+# 但**落点 ≠ 编辑决定**——G1 要往表里引两枚跨工况读数、C2 还要挪行，脚本一律不落字，只把格子点名给作者）。
+# 旧格文本必须**逐字声明**（不许猜），命中数 ≠ 1 即判"歧义"，由 `cell_coords()` 报红而不是硬给一个坐标。
+CELL_TEXT_ROWS = {"G1": ("表3-3", "转角泛化测试工况"),
+                  "C2": ("表5-1", "壁面u残余")}
+
+
+def cell_coords(doc=None):
+    """只读：⇒ {行号: (表号, 旧格文本, [(全份表序, 行, 列), …])}。
+    一把尺＝**整格文本归一后相等**（与 `--cells` 落字用的同一判据，不留第二份）。"""
+    from docx import Document
+    if doc is None:
+        p = candidate()
+        if p is None:
+            print("[未验] 候选正本指针缺失/失效 ⇒ 不算坐标（不猜一份副本）")
+            return None
+        doc = Document(str(p))
+    body = list(doc.element.body)
+    idx = {id(tb._tbl): ti for ti, tb in enumerate(doc.tables)}
+    out = {}
+    for rid, (tid, old) in CELL_TEXT_ROWS.items():
+        blocks = tables_by_id(doc, body, tid)
+        hits = [(idx[id(tb._tbl)], ri, ci) for _, tb in blocks
+                for ri, row in enumerate(tb.rows) for ci, c in enumerate(row.cells)
+                if norm(c.text) == norm(old)]
+        out[rid] = (tid, old, hits, len(blocks))
+    return out
+
+
+def cell_coords_report() -> int:
+    """`--cell-coords`：把坐标打成作者可粘的一行，并对**歧义**退 1（0 命中＝表或格变了；≥2 命中＝硬给会粘错）。"""
+    cc = cell_coords()
+    if cc is None:
+        return 1
+    bad = []
+    for rid, (tid, old, hits, nblk) in sorted(cc.items()):
+        if len(hits) != 1:
+            bad.append(rid)
+        print(f"[格坐标] {rid}｜{tid}（全份共 {nblk} 块，含续表）旧格逐字 {old!r} ⇒ 命中 {len(hits)} 处 "
+              f"{hits}（全份表序, 行, 列）⇒ " + ("可粘 ✓" if len(hits) == 1 else "**歧义／已变，交作者点名**"))
+    # **必红夹具**：同一把尺喂一枚"两处都有"的串，必须报 ≥2 命中（否则"唯一命中"这句话是空的）
+    from docx import Document
+    p = candidate()
+    if p is not None:
+        d = Document(str(p))
+        body = list(d.element.body)
+        idx = {id(tb._tbl): ti for ti, tb in enumerate(d.tables)}
+        dupes = {}
+        for tb in d.tables:
+            for ri, row in enumerate(tb.rows):
+                for ci, c in enumerate(row.cells):
+                    k = norm(c.text)
+                    if len(k) >= 6:
+                        dupes.setdefault(k, []).append((idx[id(tb._tbl)], ri, ci))
+        amb = [v for v in dupes.values() if len(v) >= 2]
+        probe = next((k for k, v in dupes.items() if len(v) >= 2), None)
+        print(f"[必红夹具·唯一命中] 副本里整格文本重复（≥6 字且命中 ≥2）的有 {len(amb)} 组；"
+              f"探针取「{(probe or '')[:16]}…」⇒ 命中 {len(dupes.get(probe, []))} 处（必须 ≥2，否则这把尺没有鉴别力）")
+        if probe is None or len(dupes[probe]) < 2:
+            bad.append("夹具")
+    print(f"[格坐标] 唯一命中 {len(cc) - len([b for b in bad if b != '夹具'])}/{len(cc)} 行；"
+          + ("全部可粘 ✓" if not bad else f"**{len(bad)} 项不唯一：{bad}**"))
+    return 1 if bad else 0
+
+
 def is_caption(text: str) -> bool:
     """唯一的题注判据（统括官 12:4x 指出我此前有两把尺：粗判"以号开头"会把"图5-15中，…""表5-8显示，…"
     这类正文句误归为题注 ⇒ 既造出假告警，又会在反向放行真删）。题注 = 以号开头 **且** 无句末标点 **且** 短。"""
@@ -1831,6 +1896,8 @@ def main() -> int:
     g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
+    g.add_argument("--cell-coords", action="store_true",
+                    help="只读：把『改一格文字』那类工单行（CELL_TEXT_ROWS）解析成全份（表序,行,列）坐标，命中≠1 即退 1")
     g.add_argument("--count-needle", metavar="串", help="三数同框：数据行内／条文自身／全文件裸跑")
     g.add_argument("--selfcheck", action="store_true", help="跑十四条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条／未声明行不得变／取件自拒）")
     g.add_argument("--all", action="store_true",
@@ -1843,6 +1910,8 @@ def main() -> int:
     import docx  # noqa: F401  ② 先确认库在，不在就别硬写
     from docx import Document
 
+    if args.cell_coords:
+        return cell_coords_report()
     if getattr(args, "count_needle", None):
         return count_needle(args.count_needle)
     if args.selfcheck:
