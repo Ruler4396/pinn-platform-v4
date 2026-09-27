@@ -84,7 +84,7 @@ fetch() { # path -> $WS/<path>, refused unless sha256 prefix matches WANT
         rm -f "$tmp"; return 1
       fi
       mv "$tmp" "$WS/$p"
-      say "FETCH ok $(basename "$p") sha256=$got bytes=$(stat -c%s "$WS/$p") via ${m%%://*}"
+      say "FETCH ok $(basename "$p") sha256=$got bytes=$(stat -c%s "$WS/$p") via ${m#https://}"
       return 0
     fi
   done
@@ -354,7 +354,9 @@ do_p2() {
   fetch model/scripts/route2/selftest_route2_stdlib.py || return 1
   for ph in check smoke run; do
     rc=0
-    BUDGET_S=$(( SEGMENT_S / 4 )) bash "$OUTD/run_k0b_5236655.sh" "$ph" >"$OUTD/p2_$ph.log" 2>&1 || rc=$?
+    # fetch() lands files under $WS/<path>; $OUTD is only the log directory.  Calling the log
+    # path gave rc=127 on the instance (14:41) -- loud, but a phase that never started.
+    BUDGET_S=$(( SEGMENT_S / 4 )) bash "$WS/model/scripts/ops/run_k0b_5236655.sh" "$ph" >"$OUTD/p2_$ph.log" 2>&1 || rc=$?
     say "P2 k0b-$ph rc=$rc :: $(grep -m1 -E 'PROBE OK|no PROBE OK|companions written|ABORT|scan json|CONTROL|total=' "$OUTD/p2_$ph.log" | cut -c1-140)"
     if [ "$rc" != 0 ]; then
       say "P2 STOP after $ph -- the refusal IS the finding. If it is 'no PROBE OK' then floor is not executable on v4.9, so the staged reference is NOT_EMITTABLE and K0b closes as R3; that is a different conclusion from 'the cell is unmeasurable by nature' and must be reported as the former."
