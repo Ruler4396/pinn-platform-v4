@@ -248,15 +248,22 @@ def s12_directives(text: str | None = None, width: int = 46):
 
 
 def selfcheck_directives():
-    """必红夹具：**只在子行里**埋一条祈使句，扫描器必须找到它（只读首行的旧版会漏 ⇒ 夹具即红）。"""
-    synth = "12. 标题句没有关键词\n    - **必须**：这条只在缩进子行里出现\n13. 另一条\n"
+    """必红夹具（统括官 9/27 判：`s12_directives()` 第一版只读条目首行＝把原缺陷搬到下一层）。**三发**：
+    ① 只有缩进子行含祈使词的条目**必须被打印**；② 整条不含词的条目**必须不被打印**（缺这一发，"什么都打印"的尺也算过＝空对照）；
+    ③ **旧尺（只读条目首行）在这枚合成件上必须命中 0 条**，非 0 就说明夹具空转、抓不到它声称要抓的缺陷。"""
+    synth = ("12. 标题句没有关键词\n    - **必须**：这条只在缩进子行里出现\n"
+             "13. 另一条\n    - 这一条整条都不含祈使词\n")
     got = s12_directives(synth)
-    hit = [g for g in got if g[0] == 12 and g[1] > 1]
+    hit = [g for g in got if g[0] == 12 and g[1] > 1]                      # ① 必打印
+    leaked = [g for g in got if g[0] == 13]                                # ② 必不打印
     first_only = any("必须" in g[2] for g in got if g[1] == 1)
-    ok = bool(hit) and not first_only
-    print(f"[必红夹具·§12 指令扫整条] 合成件命中 {len(got)} 条，其中**子行**命中 {len(hit)} 条"
-          f"（应 ≥1）、首行误报 {first_only}（应 False）⇒ "
-          + ("子行里的祈使句也跑得出来 ✓" if ok else "**只读到首行＝把原缺陷搬下一层**"))
+    old_ruler = sum(1 for l in synth.splitlines()
+                    if re.match(r"^\d+\.\s", l) and any(w in l for w in IMPERATIVE))    # ③ 必为 0
+    ok = bool(hit) and not first_only and not leaked and old_ruler == 0
+    print(f"[必红夹具·§12 指令扫整条] 三发：① 子行祈使句被打印＝{bool(hit)}（应 True，命中 {len(hit)} 条）；"
+          f"② 无词条目误报＝{len(leaked)} 条（应 0）、首行误报＝{first_only}（应 False）；"
+          f"③ 旧尺（只读首行）命中＝{old_ruler}（**必须 0**，非 0＝夹具空转）⇒ "
+          + ("三发全中：子行里的祈使句跑得出来，且这把尺不是什么都报 ✓" if ok else "**有一发不对：只读到首行＝把原缺陷搬下一层**"))
     return 0 if ok else 1
 
 
