@@ -125,6 +125,20 @@ def n_await(await_) -> int:
     return sum(1 for rid, _ in await_ if not is_authorized(rid))
 
 
+def count_needle(needle: str) -> int:
+    r"""**三数同框**（统括官 18:5x 把这条族规矩升级）：一个"某串出现几次"的断言一次报三个数，
+    并写死哪个数拿来判不一致。作用域＝`rows()` 的 A-J 数据行——**用工具自己的解析，不再另写一条 grep**：
+    §10 原文里那条 `'^\| [A-J]'` 在 GNU BRE 下 `\|` 是"或"，实测匹配了**全部 328 行**，
+    所谓"作用域"从来就没生效过（裸跑与"作用域"同样得 7，谁照它读都会以为判二失败了）。"""
+    txt = WORK.read_text(encoding="utf-8")
+    pat = re.compile(r"^\|\s*[A-J]\d+[a-z]?\s*\|")
+    in_rows = sum(len(re.findall(re.escape(needle), ln)) for ln in txt.splitlines() if pat.match(ln))
+    raw = len(re.findall(re.escape(needle), txt))
+    print(f"[三数同框] needle={needle!r}：数据行内 = **{in_rows}** ｜条文自身（非数据行）= {raw - in_rows} ｜全文件裸跑 = {raw}")
+    print(f"    判不一致**只用「数据行内」这个数**；「条文自身」那一档随“谁在断言行里多写一句”漂，裸跑值 = 两者之和，拿它判必假红。")
+    return 0
+
+
 def s12_directives(width: int = 46):
     """§12 是**散文条目** ⇒ `rows()` 的表格行正则看不见它：统括官写在 §12 里的"请/不得/必须"
     不会变成任何一道闸的待办（9/27 15:44:40 那条"对照表状态要写成需作者粘贴"就这么漏过一整轮，
@@ -1587,6 +1601,7 @@ def main() -> int:
     g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
+    g.add_argument("--count-needle", metavar="串", help="三数同框：数据行内／条文自身／全文件裸跑")
     g.add_argument("--selfcheck", action="store_true", help="跑十条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一）")
     g.add_argument("--all", action="store_true",
                    help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（含来源列）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
@@ -1598,6 +1613,8 @@ def main() -> int:
     import docx  # noqa: F401  ② 先确认库在，不在就别硬写
     from docx import Document
 
+    if getattr(args, "count_needle", None):
+        return count_needle(args.count_needle)
     if args.selfcheck:
         return selfcheck_all()
     if args.verify:
