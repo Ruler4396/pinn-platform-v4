@@ -274,10 +274,13 @@ def _is_num(z: float) -> bool:
 def truth_score(case_root: Path, case_id: str, level: str, geom: tg.TGeometry) -> dict:
     """score(truth) per grid at FD step h and 2h -> K0-S1/S2/S3/S4 inputs."""
     per: Dict[str, dict] = {}
+    sources: Dict[str, str] = {}
     for branch in BRANCH_SAMPLE_SETS + ("junction",):
-        fine = lattice_residual(load_lattice(case_root, case_id, level, branch, "h"), geom)
-        coarse = lattice_residual(load_lattice(case_root, case_id, level, branch, "h2"), geom)
-        per[branch] = {"h": fine, "h2": coarse}
+        lat_fine = load_lattice(case_root, case_id, level, branch, "h")
+        lat_coarse = load_lattice(case_root, case_id, level, branch, "h2")
+        per[branch] = {"h": lattice_residual(lat_fine, geom),
+                       "h2": lattice_residual(lat_coarse, geom)}
+        sources[branch] = lat_fine["truth_source"]
     # The FD step gate below compares two scores computed on two *different* lattices
     # (h vs 2h).  On a 6-significant-digit file the coordinates themselves carry up to
     # 4 x half-ulp of jitter, so that comparison would mix "the stencil is right" with
@@ -293,6 +296,7 @@ def truth_score(case_root: Path, case_id: str, level: str, geom: tg.TGeometry) -
     lap_sq = sum(per[b]["h"]["lap_rms"] ** 2 * w[b] for b in per)
     grad_sq = sum(per[b]["h"]["gradp_rms"] ** 2 * w[b] for b in per)
     return {"per_grid": per, "momentum_mse": mom, "continuity_mse": cont,
+            "truth_source": sources,
             "balance_ratio": math.sqrt(lap_sq / grad_sq) if grad_sq > 0 else float("inf"),
             "n_stencils": int(tot),
             "fd_step_same_lattice": {"note": "h vs 2h are different lattices, so a change "
@@ -501,6 +505,43 @@ def second_derivative_roundoff_bound(ulp: float, step: float) -> float:
     """The largest move a second central difference can make when each stored value is
     uncertain by `ulp`: weights (1, -2, 1) sum in absolute value to 4, divided by h^2."""
     return ROUND_OFF_AMPLIFICATION * ulp / (step * step)
+
+
+def k0b_truth_scan(case_root: Path, case_id: str, levels: Sequence[str],
+                   geom: tg.TGeometry) -> dict:
+    """What the 12-digit reference does to the step-halving reading, with no torch and no fit.
+
+    K0b's budget is <=3 min and zero training, so this path reports the two things the
+    pre-registration's bands are stated over -- the regime of the truth-side second-difference
+    series (`reference_resolution_scan`, i.e. `fd_step_scan`) and S4's own step gate -- per
+    level, plus which reference each grid was read from.  It deliberately does NOT emit a
+    RESOLVED_* label: that one takes the model-side chain (`K0_CHAIN_SECOND_REL_MAX`), which is
+    not run here, and inventing a truth-only version of a judgement would be exactly the
+    "changed the criterion after the fact" move the shared plan forbids.
+    """
+    out: Dict[str, dict] = {}
+    for level in levels:
+        score = truth_score(case_root, case_id, level, geom)
+        out[level] = {
+            "truth_source": score["truth_source"],
+            "momentum_mse_fine": score["fd_step_same_lattice"]["fine_momentum_mse"],
+            "momentum_mse_coarse": score["fd_step_same_lattice"]["coarse_momentum_mse"],
+            "fd_step_scan": score["fd_step_scan"],
+            "fd_step_gate": score["fd_step_gate"],
+            "n_stencils": score["n_stencils"],
+            "balance_ratio": score["balance_ratio"],
+        }
+    sources = {s for v in out.values() for s in v["truth_source"].values()}
+    if REQUIRE_STAGED_TRUTH and any("printed 6-digit" in s for s in sources):
+        raise ValueError(f"K0b scan on a 6-digit reference: {sorted(sources)} -- refusing to "
+                         f"report a resolution verdict computed on the old truth")
+    return {"case": case_id, "levels": out, "trained": False,
+            "caveat": "the pair is lattice h vs 2h, and the FD step IS the lattice spacing "
+                      "(lattice_residual has no separate step), so a change here mixes the "
+                      "stencil with the mesh -- the same series the K0 verdict's fd_step_gate "
+                      "was computed from, not a cleaner one",
+            "note": "reference-side scan only; RESOLVED_* needs the model-side chain and is "
+                    "not produced here"}
 
 
 def second_order_status(scan: dict | None, disagreement: float, tol: float) -> str:
@@ -883,6 +924,9 @@ def main() -> int:
                     help="K0b: halt if a sample grid has no staged companion, because a "
                          "6-digit reference under this gate's name is the exact thing the "
                          "pre-registration forbids (old readings must not pass as new ones)")
+    ap.add_argument("--k0b-truth-scan", default="",
+                    help="comma list of levels: reference-side step scan with no torch and no "
+                         "training (K0b's <=3 min trip). Reports regimes, not a RESOLVED_* label")
     args = ap.parse_args()
     global REQUIRE_STAGED_TRUTH
     REQUIRE_STAGED_TRUTH = bool(args.require_12_digit_truth)
@@ -896,6 +940,24 @@ def main() -> int:
         raise SystemExit(f"--plans accepts a and/or b, got {plans}")
     if not (0.02 <= args.sigma <= 0.5):
         raise SystemExit(f"--sigma out of preregistered range: {args.sigma}")
+
+    if args.k0b_truth_scan.strip():
+        levels = [v.strip() for v in args.k0b_truth_scan.split(",") if v.strip()]
+        scan = k0b_truth_scan(case_root, args.case, levels,
+                              tg.TGeometry(tg.case_by_id(args.case)))
+        out = case_root / "data" / args.case / "k0b_truth_scan.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(scan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        for lv, row in scan["levels"].items():
+            sc = row["fd_step_scan"]
+            print(f"[{lv}] fd_step_scan={sc['status']} "
+                  f"factor_per_halving={sc.get('factor_per_halving', sc.get('reason'))} "
+                  f"bands={sc.get('bands', {})} S4_pass={row['fd_step_gate']['pass']} "
+                  f"stencils={row['n_stencils']} "
+                  f"reference={sorted(set(row['truth_source'].values()))}")
+        print("K0B TRUTH SCAN (no training, no RESOLVED_* label -- see the note in the json)")
+        print(f"json={out}")
+        return 0
 
     if args.dry_run:
         rep = dry_run_report(case_root, args.case, args.level, args.sigma)
