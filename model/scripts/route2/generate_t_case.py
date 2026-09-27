@@ -73,6 +73,153 @@ def section_eta_nodes(half_width: float, eta_step: float = SECTION_ETA_STEP) -> 
     return [-half_width + j * d for j in range(n + 1)]
 
 
+# ------------------------------------------- 12-digit truth reference (WP-A / K0b)
+# Pre-registration: paper-route2/K0b-高精度真值参考-预注册-20260927.md.  Two measured facts set
+# the shape: v4.9's `ofstream <<` prints six significant digits, and it rejects `setprecision`
+# at compile time -- so a 12-digit truth has to be built on the writing side, in stages.
+#
+# WHY STAGES, AND THE NUMBER THAT MAKES THIS A FINDING RATHER THAN A TASTE.  One hi/lo split at
+# lattice 1e-N must satisfy two inequalities: hi printable in six digits (N < 6 - log10(scale))
+# and the residual small enough that its own six digits reach the target
+# (N >= -log10(2 * scale * 10**-digits) - 6).  The window between them is
+# `2*PRINT + log10(2) - digits` ~ 12.3 - digits integers, INDEPENDENT of the magnitude:
+#     digits = 10 -> window ~2.3   (what T6-Re used: widths 4/6/2, floors 10.6-11.0 digits)
+#     digits = 12 -> window ~0.3   (lucky magnitudes only; impossible for |p| of order 400)
+# So a single split cannot carry K0b's reference for this geometry.  Each extra stage prints a
+# chunk of the previous residual and adds six digits of resolution.  Nothing is emitted yet --
+# see TRUTH_EMISSION_WIRED, which the self-check asserts rather than assumes.
+TRUTH_DIGITS_REQUIRED = 12
+TRUTH_STAGES_MAX = 4
+TRUTH_EMISSION_WIRED = False        # the staged stream is NOT yet spliced into the .edp
+
+
+def stage_widths(scale: float, stages: int) -> list:
+    """Lattice decimals per stage: every stage's hi must survive a six-digit printer."""
+    out = []
+    room = scale
+    for k in range(stages - 1):
+        n = int(math.floor(tg.FREEFEM_PRINT_DIGITS - math.log10(room) - 1e-12))
+        if n < 1:
+            raise ValueError("scale %g: stage %d has no printable lattice" % (scale, k + 1))
+        out.append(n)
+        room = 10.0 ** -n
+    return out
+
+
+def stage_floor(widths: list) -> float:
+    """Absolute error the staged stream still carries.
+
+    The last column is the leftover residual, printed by the same six-digit printer, so its
+    error is 5e-7 of ITS OWN size -- and that size is set by the last *lattice* stage (a
+    residual is below 1e-N of the stage that produced it).  Using the 0 marker instead would
+    claim 5e-7 for every plan, which is the mistake this function first shipped with.
+    """
+    lattice = [n for n in widths if n]
+    if not lattice:
+        return math.inf
+    return 0.5 * 10.0 ** -(lattice[-1] + tg.FREEFEM_PRINT_DIGITS)
+
+
+def split_plan(scale: float, digits: int = TRUTH_DIGITS_REQUIRED) -> list:
+    """The fewest stages that reach `digits` relative to `scale`, or a refusal."""
+    if not scale > 0:
+        raise ValueError("no measurable scale (got %r)" % (scale,))
+    for stages in range(2, TRUTH_STAGES_MAX + 1):
+        try:
+            widths = stage_widths(scale, stages)
+        except ValueError:
+            continue
+        widths = widths + [0]                        # last column prints the remainder
+        # `* (1 + 1e-9)`: the boundary case is exact equality by construction (a scale of
+        # 0.5 with N=6 lands on 1e-12), and without the tolerance the answer would flip on
+        # the last binary bit of two different machines.
+        if stage_floor(widths) <= 10.0 ** -digits * scale * (1.0 + 1e-9):
+            return widths
+    raise ValueError(
+        "scale %g: %d stages still miss %d digits. Do not lower the requirement and do not "
+        "emit a coarser truth -- report it: the reference is not buildable for this magnitude "
+        "with a six-digit printer." % (scale, TRUTH_STAGES_MAX, digits))
+
+
+def measure_scales(case_dir: Path):
+    """Magnitudes of x*, y*, u, v, p from an existing samples stream, or None.
+
+    Six printed digits suffice to place a lattice (the staging needs log10(scale) to a
+    fraction), so a prior run is a legitimate scale source and a guess is not.
+    """
+    found = sorted(case_dir.glob("*_samples_*.csv"))
+    if not found:
+        return None
+    mx = {k: 0.0 for k in ("x", "y", "u", "v", "p")}
+    for path in found:
+        with path.open(encoding="utf-8", newline="") as fh:
+            head = fh.readline().strip().split(",")
+            want = ("x_star", "y_star", "u_star", "v_star", "p_star")
+            if any(c not in head for c in want):
+                continue
+            idx = [head.index(c) for c in want]
+            for ln in fh:
+                parts = ln.strip().split(",")
+                if len(parts) <= max(idx):
+                    continue
+                for name, k in zip(mx, idx):
+                    try:
+                        mx[name] = max(mx[name], abs(float(parts[k])))
+                    except ValueError:
+                        pass
+    return {k: (v or 1.0) for k, v in mx.items()} or None
+
+
+def assert_truth_digits_plan(digits: int, plans: dict) -> None:
+    """Hard refusal before anything is written, when the truth cannot carry `digits`."""
+    if digits < TRUTH_DIGITS_REQUIRED:
+        raise SystemExit(
+            "--truth-digits %d < %d: the 6-digit truth is what made the old K0 undecidable, so "
+            "asking for it again is refused here rather than warned about (K0b pre-registration, "
+            "2026-09-27)." % (digits, TRUTH_DIGITS_REQUIRED))
+    for name, widths in plans.items():
+        if not widths:
+            raise SystemExit("%s: no staging plan -- refusing to write" % name)
+
+
+def selfcheck_emission() -> int:
+    """Controls for the staging plan.  At least one of them is a refusal."""
+    rc = 0
+    scales = {"x": 5.0, "y": 0.5, "u": 2.5, "v": 2.5, "p": 415.058}
+    plans = {k: split_plan(v, TRUTH_DIGITS_REQUIRED) for k, v in scales.items()}
+    try:
+        assert_truth_digits_plan(6, plans)
+        ok, why = False, "NO REFUSAL -- a 6-digit truth would have been emitted"
+    except SystemExit as exc:
+        ok, why = True, str(exc).splitlines()[0][:64]
+    rc |= 0 if ok else 1
+    print("[%s] control: --truth-digits 6 is refused, not warned (%s)"
+          % ("PASS" if ok else "FAIL", why))
+    worst = max(stage_floor(plans[k]) / scales[k] for k in scales)
+    ok = worst <= 10.0 ** -TRUTH_DIGITS_REQUIRED * (1.0 + 1e-9)
+    rc |= 0 if ok else 1
+    print("[%s] staging reaches 1e-%d of every scale: worst %.2e; plan %s"
+          % ("PASS" if ok else "FAIL", TRUTH_DIGITS_REQUIRED, worst, plans))
+    try:
+        split_plan(1.0e9, 12)
+        ok, why = False, "accepted an unstaggeable magnitude"
+    except ValueError as exc:
+        ok, why = True, str(exc)[:56]
+    rc |= 0 if ok else 1
+    print("[%s] control: |value|=1e9 is refused, not quietly coarsened (%s)"
+          % ("PASS" if ok else "FAIL", why))
+    p10, p12 = split_plan(415.058, 10), split_plan(415.058, 12)
+    ok = len(p10) == 2 and len(p12) == 3
+    rc |= 0 if ok else 1
+    print("[%s] the window claim as a number: |p|=415 needs 2 stages for 10 digits (T6's case)"
+          " and 3 for 12 (K0b's) -> %s vs %s" % ("PASS" if ok else "FAIL", p10, p12))
+    ok = not TRUTH_EMISSION_WIRED
+    print("[%s] honesty control: TRUTH_EMISSION_WIRED=%s -- the staged stream is not spliced "
+          "into the .edp yet, so this script still cannot emit 12-digit truth even though the "
+          "plan is computed" % ("PASS" if ok else "FAIL", TRUTH_EMISSION_WIRED))
+    return rc
+
+
 # ----------------------------------------------------------------- FreeFEM text
 def precision_prefix(var: str, digits: int) -> list[str]:
     """Always empty: kept only so the emitters stay readable.
@@ -820,6 +967,13 @@ def main() -> int:
     ap.add_argument("--levels", default="", help="comma list, e.g. h1,h2 (default all four)")
     ap.add_argument("--base-spacing", type=float, default=0.16)
     ap.add_argument("--blend-sigma", type=float, default=0.15)
+    ap.add_argument("--truth-digits", type=int, default=TRUTH_DIGITS_REQUIRED,
+                    help="digits the truth must carry; below TRUTH_DIGITS_REQUIRED is refused")
+    ap.add_argument("--truth-scales", default="",
+                    help="x,y,u,v,p magnitudes; empty = measure from existing samples CSVs, "
+                         "and refuse if there are none")
+    ap.add_argument("--selfcheck-emission", action="store_true",
+                    help="check the staging plan and the refusals, no FreeFEM")
     ap.add_argument("--coord-precision", type=int, default=0,
                     help="deprecated: v4.9 has no setprecision, so nothing is emitted "
                          "into the .edp; anything > 0 is refused (it broke every solve)")
@@ -827,6 +981,8 @@ def main() -> int:
                     help="run one real FreeFEM *_raw.csv through build_field_dense and "
                          "print the membership accounting; no solve, no writes")
     args = ap.parse_args()
+    if args.selfcheck_emission:
+        return selfcheck_emission()
 
     if args.selfcheck_raw:
         case = tg.case_by_id(args.case)
@@ -870,6 +1026,32 @@ def main() -> int:
                   f"Rerun with --dry-run only renders scripts.")
             return 3
         print(f"[gate] FreeFEM resolved to {exe}")
+    if args.truth_scales.strip():
+        scales = dict(zip(("x", "y", "u", "v", "p"),
+                          (float(v) for v in args.truth_scales.split(","))))
+    else:
+        cfd = out_root / "cfd"
+        scales = (measure_scales(cfd / ("%s_%s" % (case.case_id, levels[0]["name"])))
+                  or measure_scales(cfd))
+        if not scales:
+            raise SystemExit(
+                "no magnitude to stage against: no *_samples_*.csv under %s and "
+                "--truth-scales is empty. Refusing to guess -- the staging, and hence whether "
+                "the truth can carry %d digits, follows from the magnitude."
+                % (cfd, args.truth_digits))
+    truth_plans = {k: split_plan(scales[k], args.truth_digits) for k in scales}
+    assert_truth_digits_plan(args.truth_digits, truth_plans)
+    print("truth staging (K0b, plan only -- emission not wired): "
+          + ", ".join("%s=%s" % (k, truth_plans[k]) for k in sorted(truth_plans))
+          + "; worst floor %.2e of scale (target 1e-%d)"
+          % (max(stage_floor(truth_plans[k]) / scales[k] for k in truth_plans),
+             args.truth_digits))
+    if not TRUTH_EMISSION_WIRED:
+        print("[NOT WIRED] the staged companion stream is not spliced into the .edp yet, so "
+              "these widths are a plan, not an artefact: do not read S1 output as 12-digit "
+              "truth until TRUTH_EMISSION_WIRED is True and a companion column count has been"
+              " checked on a rendered file.")
+
     res = run_case(case, out_root, levels, execute, sigma=args.blend_sigma,
                    coord_digits=args.coord_precision)
     plan = res["plan"]
