@@ -495,16 +495,14 @@ def doc_tokens():
     return out, skipped
 
 
-def pick_probe(layers, base_seed=20260927 ^ 59, cap=64):
-    """挑一枚**不在任何一层里**的合成读数当夹具探针。固定起点 + 撞上就换种 ⇒ 同一条命令永远可重放，
-    又不会因为某次把探针值写进被扫介质（今天发生过两次）就把这道夹具**永久钉红**。
-    返回 (探针, 换种步数, 是否撞满上限)。"""
+def make_probe(seed=20260927 ^ 59, layers=()):
+    """**本轮探针 = 当场由种子导出的一枚数；撞上绝不换种**（统括官 21:3x 定死：自动换种会把
+    「探针值被写进语料」这件事悄悄咽下去，那等于把恒真挪个位置、没有鉴别力）。
+    返回 (探针, 命中的层号列表)。撞上 ⇒ 调用方判 RC=1；清污染、或**刻意**改种子（改代码）才是修法。"""
     import random
-    for k in range(cap + 1):
-        p = f"{random.Random(base_seed + k).uniform(0.0, 1.0):.6f}"
-        if not any(p in lay for lay in layers):
-            return p, k, False
-    return p, cap + 1, True
+    p = f"{random.Random(seed).uniform(0.0, 1.0):.6f}"
+    return p, [n for n, lay in enumerate(layers) if p in lay]
+
 
 
 def value_prov_report() -> int:
@@ -585,24 +583,26 @@ def value_prov_report() -> int:
     # **为什么自动换种**：固定种子 ⇒ 探针值恒定，而"把探针值写进被扫介质"这件事已经发生过两次
     # （一次在 `回执-*`，一次在工单第 24 条那条规则自己的文本里）。那把它焊死就等于：哪天再被引用一次，
     # 这道夹具就**永久红**，而下一个人只会看到"尺恒真"的结论、看不到成因。换种从同一起点跑 ⇒ 仍可重放。
-    base_seed, rotated = 20260927 ^ 59, 0
-    probe, rotated, exhausted = pick_probe([idx, bset, hist], base_seed)
+    # 探针**每轮现造**（种子印在末行 ⇒ 可重放），且**撞上就判红、不换种**：
+    # 换种等于把"探针值被写进语料"这次污染咽下去——那才是这道夹具最不该有的样子。
+    base_seed = 20260927 ^ 59
+    probe, hits = make_probe(base_seed, [idx, bset, hist])
     must_pass = ("0.539923" in idx or "0.539923" in bset) and ("0.026912" in idx or "0.026912" in hist)
-    must_fail = (probe not in idx) and (probe not in bset) and (probe not in hist) and not exhausted
-    # **换种这一支自己要被验一次**（否则它是段没跑过的代码）：造一个"天然那颗探针已被写进介质"的假层，
-    # 看它是否**换一个还能用**——喂的是 `pick_probe()` 本身，不碰真介质。
-    nat = f"{random.Random(base_seed).uniform(0.0, 1.0):.6f}"
-    p2, r2, _ = pick_probe([{nat}], base_seed)
-    mut = (r2 >= 1 and p2 != nat)
-    print(f"[夹具] 刚落字的 `0.539923` 至少在一层在场={must_pass}（应 True）；"
-          f"**运行时导出探针** `{probe}`（起点种子 {base_seed}、换种 {rotated} 次，同一条命令可重放）三层都不在场={must_fail}"
-          f"（必须 True，否则这把尺恒真）｜**换种支自证**：把天然探针 `{nat}` 塞进介质 ⇒ 换成 `{p2}`（移动 {r2} 步，必须 ≠ 原值）={mut}")
+    must_fail = not hits
+    # **鉴别力自证**（不碰真介质）：造一份"只含本轮探针"的假语料喂进同一个判据 ⇒ 必须判出命中；
+    # 这一发证明"在场/不在场"真在数东西，而不是恒 True。
+    _, hits_probe = make_probe(base_seed, [{probe}])
+    mut = (hits_probe == [0])
+    print(f"[夹具] 本轮探针 = `{probe}`（种子 {base_seed} 当场导出、可重放），三层都不在场 = {must_fail}"
+          + (f"（命中层 {hits} ⇒ 语料里已有这枚数）" if hits else "")
+          + f"（必须 True，否则这把尺恒真）｜刚落字的 `0.539923` 至少在一层在场={must_pass}（应 True）"
+          f"｜鉴别力自证：探针塞进假语料 ⇒ 判出命中={mut}（必须 True）")
     if not must_fail:
-        print("   成因排查：" + ("连续 64 个种子全部撞上 ⇒ 介质里探针成灾，先清掉被扫件里的探针值"
-                                if exhausted else
-                                "探针值出现在——"
-                                + ("A 结果件 " if probe in idx else "") + ("A2 训练历史 " if probe in hist else "")
-                                + ("B 登记件（含工单正文！规则文本也被扫）" if probe in bset else "")))
+        print("   成因排查：本轮探针值出现在——"
+              + ("A 结果件 " if probe in idx else "") + ("A2 训练历史 " if probe in hist else "")
+              + ("B 登记件（含工单正文！规则文本也被扫）" if probe in bset else "")
+              + f" ⇒ 清掉 `{probe}` 那处引用，或**刻意**改种子（改代码，不是自动换种）；"
+                "这道夹具宁可长期红，也不靠换种把污染咽下去")
     return 0 if (must_pass and must_fail and mut) else 1
 
 
