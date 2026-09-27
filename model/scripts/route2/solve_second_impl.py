@@ -46,6 +46,11 @@ BETA = 0.7        # :5   real beta
 LIN = 4.0         # :6   real Lin
 LC = 4.0          # :7   real Lc
 LTOT = 16.0       # :9   real Ltot
+# One tolerance for every "is this point on that boundary" test in this file: the BC predicates below
+# use np.isclose (atol 1e-8) and vertex_tag uses this.  A coordinate that arrived as 1.91486939696e-18
+# was tagged interior when the two disagreed, and the export then had no inlet row for the consumer to
+# average -- which is the failure measured on the box at 02:28:10 (7,417 zeros, 4 walls, 0 inlet).
+EDGE_TOL = 1e-9
 TAG_IN, TAG_OUT, TAG_WALL = "1", "2", "3"      # :11-13
 PRESSURE_PIN = 1.0e-10                          # :71  the - 1.0e-10*p*qt term
 N_X, N_Y = 180, 40                              # :53  border segment counts (bottom/top 180, inlet 40)
@@ -120,12 +125,19 @@ def vertex_tag(x: float, y: float) -> str:
 
     Only the inlet and outlet sets feed a judged quantity (the two pressure means); wall and
     interior tags are exported for readers and decide nothing.
+
+    Measured on the box at 02:28:10, in the base-level export: the first two rows arrived with
+    x = -1.91486939696e-18 and +1.91486939696e-18, not 0.0.  Comparing exactly therefore tagged
+    nothing -- 7,417 zeros and 4 walls, no inlet and no outlet -- and the consumer correctly refused
+    to average an empty set.  The BC predicates in solve() use np.isclose and found their facets
+    (inlet=40 outlet=40 wall=356), so the two tests disagreed: one name for the tolerance now, and
+    the export checks its own tag coverage before writing.
     """
-    if x == 0.0:
+    if abs(x) <= EDGE_TOL:
         return TAG_IN
-    if x == LTOT:
+    if abs(x - LTOT) <= EDGE_TOL:
         return TAG_OUT
-    if abs(y) == y_top(x):
+    if abs(abs(y) - y_top(x)) <= EDGE_TOL:
         return TAG_WALL
     return "0"
 
@@ -296,6 +308,17 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     vc.interpolate(u1.sub(1))
     pts = [(float(c[0]), float(c[1])) for c in s1.tabulate_dof_coordinates()]
     rows = nodes_from_vertex_arrays(pts, uc.x.array, vc.x.array, p1f.x.array)
+    # The two pressure means are the judged quantities, so an export without an inlet row or without an
+    # outlet row is a marking failure, not a result.  Caught exactly this way at 02:26:37: the consumer
+    # refused with "empty selection", because vertex_tag had compared x exactly.
+    tags = [vertex_tag(r[0], r[1]) for r in rows]
+    n_in, n_out = tags.count(TAG_IN), tags.count(TAG_OUT)
+    if n_in == 0 or n_out == 0:
+        raise RuntimeError(f"export tagged inlet={n_in} outlet={n_out} of {len(rows)} nodes -- "
+                           f"the boundary marking and the BC facets disagree; refusing to write a "
+                           f"table whose two pressure means are averages over an empty set")
+    print(f"[solve] tag coverage: inlet={n_in} outlet={n_out} wall={tags.count(TAG_WALL)} "
+          f"interior={tags.count('0')}", flush=True)
     n = write_rows(out_csv, rows)
     import dolfinx
     return {"nx": nx, "ny": ny, "nodes": n, "ksp_reason": int(reason), "ksp_its": int(its),
@@ -372,6 +395,14 @@ def selfcheck() -> int:
     corners = [(vertex_tag(0.0, 0.5), vertex_tag(0.0, -0.5)), (vertex_tag(LTOT, 0.35), vertex_tag(LTOT, -0.35))]
     ck("corner tags follow the .edp:84-85 precedence (inlet/outlet override wall)",
        corners == [(TAG_IN, TAG_IN), (TAG_OUT, TAG_OUT)], f"{corners}")
+    # The exact reading that made the base-level export unusable (02:28:10, first two rows of
+    # second_impl_nodes.csv): x is not 0.0 there, it is -1.91486939696e-18.
+    ck("the measured 1.9e-18 round-off at the inlet is still tagged inlet, and a slightly over "
+       "outlet is still tagged outlet (this is what made the two pressure means an empty average)",
+       vertex_tag(-1.91486939696e-18, 0.5) == TAG_IN and vertex_tag(1.91486939696e-18, -0.5) == TAG_IN
+       and vertex_tag(LTOT + 1.5e-15, 0.35) == TAG_OUT
+       and vertex_tag(8.0, y_top(8.0)) == TAG_WALL,
+       f"x=-1.9e-18->{vertex_tag(-1.91486939696e-18, 0.5)} x=16+1.5e-15->{vertex_tag(LTOT + 1.5e-15, 0.35)}")
     root = Path(tempfile.mkdtemp(prefix="second_impl_selfcheck_"))
     good = root / "second_impl_nodes.csv"
     n = _plug_flow_csv(good)
