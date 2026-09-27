@@ -606,6 +606,32 @@ def value_prov_report() -> int:
     return 0 if (must_pass and must_fail and mut) else 1
 
 
+def open_questions_line() -> str:
+    r"""**「这两句已定」由机器说，不靠我在消息里重复第五遍**（统括官 22:2x 要的那一行）。
+    两个现读条件，缺一就不打「无」：
+    ① 工单 §12 第 27 条在场（`^27\. ` 命中 == 1）⇒ T2＝乙、对外句子与禁用形都在正本里；
+    ② 当前对照表首屏「待批 **0**」⇒ 四桶里没有等谁拍的行（`superseded/` 移卷＝否 也记在第 27 条同族里）。
+    条件不满足时**逐条列出为什么不满足**——它要能红才叫机制。"""
+    opens = []
+    try:
+        w = WORK.read_text(encoding="utf-8")
+        n27 = len(re.findall(r"(?m)^27\.\s", w))
+        if n27 != 1:
+            opens.append(f"§12 第 27 条在场条件不满足（现读命中 {n27}，应为 1）⇒ T2 定档句没有正本落点")
+    except Exception as e:
+        opens.append(f"读不到工单 ⇒ 第 27 条条件未验（{e}）")
+    try:
+        ptr = (OUT / "候选正本.txt")
+        led = [x.strip() for x in ptr.read_text(encoding="utf-8").splitlines() if x.strip()]
+        txt = (OUT / led[2]).read_text(encoding="utf-8") if len(led) >= 3 and (OUT / led[2]).is_file() else ""
+        if "待批 **0**" not in txt:
+            opens.append("对照表首屏没有「待批 **0**」⇒ 还有等谁拍的行（或指针未登记）")
+    except Exception as e:
+        opens.append(f"读不到当前对照表 ⇒ 待批条件未验（{e}）")
+    return "[开放问题] " + ("**无**（T2＝乙已定档、`superseded/` 不移卷＝否，两条均由现读条件背书）"
+                            if not opens else "；".join(opens))
+
+
 def status_line() -> int:
     """**交付用的那一段指纹，由工具印、不由我手打**（21:5x 自纠：我在投递消息里凭记忆写了两个号——
     一枚不存在的对照表名与一枚旧装配器 sha——被自己复查抓到 ⇒ 这不是粗心能治的，只能让号只有一个来源）。
@@ -656,6 +682,7 @@ def status_line() -> int:
     src_sha = hashlib.sha256(SRC.read_bytes()).hexdigest()[:12]
     print(f"[原件只读] {SRC.name} {SRC.stat().st_size:,} B / {src_sha} / mtime "
           f"{datetime.datetime.fromtimestamp(SRC.stat().st_mtime).isoformat(timespec='seconds')}")
+    print(open_questions_line())        # 已裁决的两句不再靠人在消息里重复回答：由这一行机器输出说"已定"
     return 0
 
 
