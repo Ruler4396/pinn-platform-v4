@@ -22,7 +22,7 @@
 # No training, no money, no rewrite of pushed history.
 set -uo pipefail
 
-FULL_PIN="${FULL_PIN:-4d7601458e2038962a9e1f60a2433b545222cacb}"   # origin/main = the commit this driver itself landed in
+FULL_PIN="${FULL_PIN:-3bb9736e71dc7ee74d8b3f100f39ae358bbd0b86}"   # the commit the WANT table describes
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="${FFROOT:-$WS/ffroot.tgz}"
@@ -57,7 +57,7 @@ declare -A WANT=(
   [model/scripts/route2/residual_scorers.py]=86c96b1cbf9c6bce
   [model/scripts/route2/t_geometry.py]=94329e67f178b7df
   [model/scripts/route2/selftest_route2_stdlib.py]=73ebf7eb0b7aa688
-  [model/scripts/ops/run_k0b_5236655.sh]=d87e9b37a3e2d540
+  [model/scripts/ops/run_k0b_5236655.sh]=1df2eca5b4aca1b9
   [model/cases/contraction_2d/cfd/C-base/C-base_stokes.edp]=2a62e0d41aa2fe98
   [model/cases/contraction_2d/cfd/C-base/C-base_raw.csv]=46bd0401cf0f92f5
   [model/cases/contraction_2d/cfd/C-base_ns_re1/probe_syntax.edp]=a4ca809f0b05b932
@@ -127,7 +127,7 @@ require_solver() { # re-resolve inside the child process that actually solves
   if ff=$(solver_path); then
     FFBIN="$ff"
     case "$ff" in
-      "$FFHOME"*) libd=$(export_fflib); say "SOLVER unpacked copy $ff LD_LIBRARY_PATH=$libd" ;;
+      "$FFHOME"*) export_fflib >/dev/null; say "SOLVER unpacked copy $ff LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" ;;
       *)          say "SOLVER on PATH: $ff";;
     esac
     local miss; miss=$(ldd "$ff" 2>/dev/null | awk '/not found/{print $1}' | tr '\n' ' ')
@@ -201,13 +201,13 @@ do_preflight() {
       say "PREFLIGHT solver ldd: all shared objects resolved"
     fi
   else
-    say "PREFLIGHT solver NOT found on PATH nor under $FFHOME (probed FreeFem++ / freefem++ / FreeFem / freefem)"
-    if [ -f "$FFROOT" ]; then
-      say "PREFLIGHT next step: '$0 restore' then '$0 preflight' again"
-    else
-      say "PREFLIGHT REFUSE: no solver and no archive -- do not run p1/p2/p3, and never record them as successes"
-      fail=1
-    fi
+    say "PREFLIGHT REFUSE: no solver on PATH nor under $FFHOME (probed FreeFem++ / freefem++ / FreeFem / freefem)"
+    # The marker means "a solver will actually run", not "an archive exists": measured on the
+    # instance 9/27 14:25, the archive-present branch used to print a next step and still PASS,
+    # which handed p1/p2/p3 a green light with nothing to solve with.
+    [ -f "$FFROOT" ] && say "  next: '$0 restore' unpacks it into $FFHOME (instance-local), then preflight again"
+    [ -f "$FFROOT" ] || say "  and $FFROOT is absent too, so FreeFEM would have to be installed"
+    fail=1
   fi
 
   if curl -fsS -m 25 -o /dev/null "https://raw.githubusercontent.com/$REPO" 2>/dev/null; then
@@ -234,9 +234,11 @@ do_restore() {
   say "RESTORE unpacking $FFROOT into $FFHOME (instance-local prefix only: no /usr writes, no ldconfig)"
   tar xzf "$FFROOT" -C "$FFHOME" || say "RESTORE note: tar exited nonzero; checking what did land"
   say "RESTORE landed dirs: $(find "$FFHOME" -maxdepth 3 -type d 2>/dev/null | head -8 | tr '\n' ' ')"
-  local libd ff miss
-  libd=$(export_fflib)
-  say "RESTORE LD_LIBRARY_PATH=${libd:-<empty>} (this shell and its children only)"
+  local ff miss
+  export_fflib >/dev/null   # NOT $(export_fflib): command substitution exports into a subshell only,
+  say "RESTORE LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<empty>} (this shell and its children only)"
+  # and the ldd below then reports the archive's own libraries as missing -- measured on the
+  # instance 9/27 14:26, where libumfpack/libcholmod/libarpack/libhdf5 were all present in ffrun/lib
   if ff=$(solver_path); then
     miss=$(ldd "$ff" 2>/dev/null | awk '/not found/{print $1}' | tr '\n' ' ')
     say "RESTORE candidate: $ff unresolved_libs=[$miss]"
