@@ -1500,6 +1500,51 @@ DECLARED_ROWS = 56        # 工单数据行的**声明值**（统括官 19:1x �
 
 
 
+DECL_FILE = OUT / "本轮声明.txt"          # 每行一个**本轮允许变动**的工单行号（# 开头算注释）
+
+
+def row_fingerprint(text: str):
+    """把工单里的 A-J 数据行做成 {行号: (行内容 sha1, 第几行)}。**只看数据行**：§10/§12 的散文不在闸三的管辖内。"""
+    out = {}
+    for n, line in enumerate(text.splitlines(), 1):
+        m = re.match(r"^\|\s*([A-J]\d+[a-z]?)\s*\|", line)
+        if m:
+            out[m.group(1)] = (hashlib.sha1(line.encode("utf-8")).hexdigest()[:12], n)
+    return out
+
+
+def selfcheck_undeclared(head_text: str | None = None, work_text: str | None = None, decl: set[str] | None = None):
+    """闸三（统括官 19:2x 补）：**未声明的行不得变**。逐行哈希把本轮工作树与 `git show HEAD:` 比，
+    任何一行内容变了、却没被写进 `.scratch/本轮声明.txt` ⇒ 红并指名行号与行号。
+    这一道看的是"**变没变**"，不是"数对不对" ⇒ 同时拓住我 15:5x 的 J3（整行被顶掉、行数不变）
+    与 19:0x 那次（前两格被替）——"行数不丢"那道闸对这两类天然盲。
+    参数可注入（`head_text`/`work_text`/`decl`）是为了**夹具能喂谓词本身**，不靠改 git 历史、不靠真工单。"""
+    import subprocess
+    if head_text is None:
+        head_text = subprocess.run(["git", "-C", str(REPO), "show", f"HEAD:{WORKLIST_REL}"],
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    if not head_text:
+        print("[闸三·未声明行不得变] HEAD 侧读到空 ⇒ **本条未验**（不拿「没变化」糊过去）")
+        return 1
+    cur = row_fingerprint(work_text if work_text is not None else WORK.read_text(encoding="utf-8"))
+    prev = row_fingerprint(head_text)
+    if decl is None:
+        decl = {l.strip() for l in DECL_FILE.read_text(encoding="utf-8").splitlines()
+                if l.strip() and not l.strip().startswith("#")} if DECL_FILE.exists() else set()
+    changed = sorted(k for k in set(cur) | set(prev)
+                     if cur.get(k, ("", 0))[0] != prev.get(k, ("", 0))[0])
+    silent = [k for k in changed if k not in decl]
+    unused = sorted(decl - set(changed))
+    ok = not silent
+    print(f"[闸三·未声明行不得变] 声明 {len(decl)} 个可变动行｜本轮实际变动 {len(changed)} 行 {changed or ''}"
+          f"｜**未声明却变了的 {len(silent)} 行：{silent or '无'}** ⇒ " + ("过 ✓" if ok else "**红：这就是「结构变了但数没变」**"))
+    for k in silent:
+        print(f"    行号：现 {cur.get(k, ('—', 0))[1]}／HEAD {prev.get(k, ('—', 0))[1]}（改它的人请在 {DECL_FILE.name} 里声明，或还原这一行）")
+    if unused and ok:
+        print(f"    注：声明了却没动的 {unused}（不清不楚只会让下一轮误以为还能随便改）")
+    return 0 if ok else 1
+
+
 def selfcheck_rows():
     """必红子检查（9/27 15:5x，我自己把 J3 整行顶掉之后加的）：**工单少一行就红**。
     那次事故里 `--plan` 与表格闸全绿——因为行数没变、只是 J3 被 J4 换了位置，
@@ -1656,12 +1701,12 @@ def selfcheck_rowids():
 
 
 def selfcheck_all(copy_path=None):
-    """十二条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
+    """十三条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
     return (selfcheck_caption() or selfcheck_guards() or selfcheck_fold()
             or selfcheck_console() or selfcheck_rows() or selfcheck_ids(copy_path)
             or selfcheck_stale() or selfcheck_terms_scope() or selfcheck_rowids()
             or selfcheck_normid() or selfcheck_table_shapes(copy_path)
-            or selfcheck_directives())
+            or selfcheck_directives() or selfcheck_undeclared())
 
 
 def selfcheck_normid():
@@ -1716,7 +1761,7 @@ def main() -> int:
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
     g.add_argument("--count-needle", metavar="串", help="三数同框：数据行内／条文自身／全文件裸跑")
-    g.add_argument("--selfcheck", action="store_true", help="跑十二条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条）")
+    g.add_argument("--selfcheck", action="store_true", help="跑十三条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条／未声明行不得变）")
     g.add_argument("--all", action="store_true",
                    help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（**不含来源列**，15:0x 裁定：来源由对照表承载）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
     ap.add_argument("--into", type=pathlib.Path, default=None,
