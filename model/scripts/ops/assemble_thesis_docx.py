@@ -232,6 +232,29 @@ def note_inserts(doc, auto_ids):
 TABLE_WORDS = ("说明列", "新增行", "表注", "表题", "列名", "行名", "增设", "逐行填实", "改为")
 
 
+def candidate() -> pathlib.Path | None:
+    """**候选正本的唯一指针**（统括官 18:0x 定的规矩：一串时间戳交付物，"取最新"必拿错）。
+    读 `.scratch/候选正本.txt`（第 1 行＝文件名，第 2 行＝sha256 前缀，可选）；
+    指针缺失/指向不存在的件/sha 不吻合 ⇒ 返回 None，**由调用方判红**——绝不退回到"按 mtime 猜一份"。"""
+    ptr = OUT / "候选正本.txt"
+    if not ptr.exists():
+        print(f"[INVALID] 候选正本指针缺失：{ptr} ⇒ 不许按 mtime 猜交付件（今天已被一枚 部件级 diff=0 的重打包件坑过）")
+        return None
+    lines = [x.strip() for x in ptr.read_text(encoding="utf-8").splitlines() if x.strip()]
+    if not lines:
+        print("[INVALID] 候选正本指针是空件")
+        return None
+    p = OUT / lines[0]
+    if not p.exists():
+        print(f"[INVALID] 候选正本指针指向不存在的件：{lines[0]}")
+        return None
+    if len(lines) > 1 and not hashlib.sha256(p.read_bytes()).hexdigest().startswith(lines[1]):
+        print(f"[INVALID] 候选正本指针的 sha 与件不符：{lines[0]}（指针 {lines[1]}，现算 "
+              f"{hashlib.sha256(p.read_bytes()).hexdigest()[:12]}）⇒ 件被改过或指针写错，停下")
+        return None
+    return p
+
+
 def is_caption(text: str) -> bool:
     """唯一的题注判据（统括官 12:4x 指出我此前有两把尺：粗判"以号开头"会把"图5-15中，…""表5-8显示，…"
     这类正文句误归为题注 ⇒ 既造出假告警，又会在反向放行真删）。题注 = 以号开头 **且** 无句末标点 **且** 短。"""
@@ -1335,15 +1358,18 @@ def selfcheck_ids(copy_path=None):
     而副本里 表4-4 的题注在段 228、表4-4b 在段 229（紧挨着）⇒ 这正是前缀法必撞的位置，夹具才咬得住。
     找不到副本 ⇒ 判**未验**并返回 1，不假装绿。"""
     from docx import Document
-    cands = [pathlib.Path(str(copy_path))] if copy_path else []
-    # 只认带时间戳的候选正本，并按 mtime 取最新：`sorted(glob)` 会把 `装配副本-试插表.docx` 这类
-    # 早期试手件排在后面（名字里没 20…），夹具就跑在一枚早已作废的件上——跑错对象还能跑绿，最坏的一种红。
-    timed = sorted((f for f in OUT.glob("装配副本-20*.docx")), key=lambda f: f.stat().st_mtime, reverse=True)
-    cands += timed
-    p = next((c for c in cands if c.exists()), None)
-    if p is None:
-        print("[必过夹具·号整段相等] 副本不在场 ⇒ **未验**（新表号只存在于副本，跑原件等于空门）")
-        return 1
+    if copy_path:
+        p = pathlib.Path(str(copy_path))
+        if not p.exists():
+            print(f"[必过夹具·号整段相等] 指定的副本不在场：{p.name} ⇒ **未验**")
+            return 1
+    else:
+        # **不猜"最新一份"**：一串时间戳交付物里 mtime 最大的往往是那枚 部件级 diff=0 的重打包件，
+        # 不是候选正本（统括官 18:0x 的规矩）⇒ 只认 `.scratch/候选正本.txt` 指针，缺失/失效即判未验。
+        p = candidate()
+        if p is None:
+            print("[必过夹具·号整段相等] 既没传副本、候选正本指针也缺失/失效 ⇒ **未验**（新表号只存在于副本，跑原件＝空门）")
+            return 1
     paras = [x.text for x in Document(str(p)).paragraphs]
     bad = []
     for a, b in (("表5-1", "表5-10"), ("表4-4", "表4-4b")):
@@ -1377,14 +1403,14 @@ def selfcheck_stale():
     天然正对照就是**原件**——表5-1 那格 `0.5612` 在原件里就是表格单元、正文没有。"""
     from docx import Document
     op, oc = stale_hits(Document(str(SRC)))
-    cp = sorted(OUT.glob("装配副本-20*.docx"), key=lambda f: f.stat().st_mtime, reverse=True)
+    cp = [p] if (p := candidate()) else []          # 不猜"最新"：读候选正本指针（统括官 18:0x）
     rp, rc = stale_hits(Document(str(cp[0]))) if cp else ([], [])
     # 正对照只要求一件事：**旧值躺在表格单元里时必须被扫到**（原件正文里本来也有那处旧句，那是 D1 未改前的原文，
     # 不是这条夹具要判的东西——我第一版误加了"正文必须 0 命中"，把夹具写成了永远红）
     ok = len(oc) >= 1
     print(f"[正对照·旧值只在表格里必须响] 原件：正文 {len(op)} 处、表格单元 {len(oc)} 处 {oc[:2]} ⇒ "
           + ("闸有效 ✓" if ok else "**失效（要么没扫到表内，要么正文也漏了）**"))
-    print(f"    最新副本 {cp[0].name if cp else '（无）'}：正文 {len(rp)} 处、表格单元 {len(rc)} 处"
+    print(f"    候选正本（按指针）{cp[0].name if cp else '（无）'}：正文 {len(rp)} 处、表格单元 {len(rc)} 处"
           + ("（D1b 落字后应为 0）" if cp else ""))
     return 0 if ok else 1
 
@@ -1398,13 +1424,13 @@ def selfcheck_terms_scope():
     src = Document(str(SRC))
     cells = [c.text for t in src.tables for r in t.rows for c in r.cells if short.search(c.text)]
     paras = [p.text for p in src.paragraphs if short.search(p.text)]
-    cp = sorted(OUT.glob("装配副本-20*.docx"), key=lambda f: f.stat().st_mtime, reverse=True)
+    cp = [p] if (p := candidate()) else []          # 不猜"最新"：读候选正本指针（统括官 18:0x）
     now = ""
     if cp:
         d2 = Document(str(cp[0]))
         n = sum(1 for t in d2.tables for r in t.rows for c in r.cells if short.search(c.text)) \
             + sum(1 for p in d2.paragraphs if short.search(p.text))
-        now = f"；最新副本 {cp[0].name} 两层合计残留 {n} 处（应为 0）"
+        now = f"；候选正本（按指针）{cp[0].name} 两层合计残留 {n} 处（应为 0）"
     ok = len(cells) >= 1
     print(f"[必红夹具·旧词只在表格里必须响] 原件：正文 {len(paras)} 段、表格单元 {len(cells)} 格命中旧词 ⇒ "
           + ("尺覆盖表内 ✓" if ok else "**没覆盖：'旧词已清'这句没有凭据**") + now)
