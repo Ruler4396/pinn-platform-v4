@@ -495,6 +495,18 @@ def doc_tokens():
     return out, skipped
 
 
+def pick_probe(layers, base_seed=20260927 ^ 59, cap=64):
+    """挑一枚**不在任何一层里**的合成读数当夹具探针。固定起点 + 撞上就换种 ⇒ 同一条命令永远可重放，
+    又不会因为某次把探针值写进被扫介质（今天发生过两次）就把这道夹具**永久钉红**。
+    返回 (探针, 换种步数, 是否撞满上限)。"""
+    import random
+    for k in range(cap + 1):
+        p = f"{random.Random(base_seed + k).uniform(0.0, 1.0):.6f}"
+        if not any(p in lay for lay in layers):
+            return p, k, False
+    return p, cap + 1, True
+
+
 def value_prov_report() -> int:
     """`--value-prov`：论文表格里每个读数 token 对一遍 **A 级=结果件 / B 级=登记件** 两层；
     两发夹具当场跑（必过＝刚落字的读数至少在 B 级在场；必红＝合成数两层都不在，否则这把尺恒真）。"""
@@ -569,18 +581,29 @@ def value_prov_report() -> int:
         print(f"   ⚠两层都无：表序{u[0]} (行{u[1]},列{u[2]}) = {u[3]}")
     # **探针值绝不能再写成字面量**（本回合两次踩）：第一次它躺在 `回执-*`（我把排除做了），
     # 第二次它躺在**工单第 24 条那条"禁止把探针值写进介质"的规则里**——规则文本本身在被这把尺扫。
-    # ⇒ 机制：探针**运行时导出**（固定种子 ⇒ 同一条命令可重放），并且**当场自证它不在任何一层**。
-    probe = f"{random.Random(20260927 ^ 59).uniform(0.0, 1.0):.6f}"
+    # ⇒ 机制：探针**运行时导出**（固定起点 + 自动换种，直到三层都不在场），并且**当场自证它不在任何一层**。
+    # **为什么自动换种**：固定种子 ⇒ 探针值恒定，而"把探针值写进被扫介质"这件事已经发生过两次
+    # （一次在 `回执-*`，一次在工单第 24 条那条规则自己的文本里）。那把它焊死就等于：哪天再被引用一次，
+    # 这道夹具就**永久红**，而下一个人只会看到"尺恒真"的结论、看不到成因。换种从同一起点跑 ⇒ 仍可重放。
+    base_seed, rotated = 20260927 ^ 59, 0
+    probe, rotated, exhausted = pick_probe([idx, bset, hist], base_seed)
     must_pass = ("0.539923" in idx or "0.539923" in bset) and ("0.026912" in idx or "0.026912" in hist)
-    must_fail = (probe not in idx) and (probe not in bset) and (probe not in hist)
+    must_fail = (probe not in idx) and (probe not in bset) and (probe not in hist) and not exhausted
+    # **换种这一支自己要被验一次**（否则它是段没跑过的代码）：造一个"天然那颗探针已被写进介质"的假层，
+    # 看它是否**换一个还能用**——喂的是 `pick_probe()` 本身，不碰真介质。
+    nat = f"{random.Random(base_seed).uniform(0.0, 1.0):.6f}"
+    p2, r2, _ = pick_probe([{nat}], base_seed)
+    mut = (r2 >= 1 and p2 != nat)
     print(f"[夹具] 刚落字的 `0.539923` 至少在一层在场={must_pass}（应 True）；"
-          f"**运行时导出探针** `{probe}`（种子 20260927^59，同一条命令可重放）三层都不在场={must_fail}"
-          f"（必须 True，否则这把尺恒真）⇒ " + ("两发都对 ✓" if must_pass and must_fail else "**夹具失效，本模式本轮不给结论**"))
+          f"**运行时导出探针** `{probe}`（起点种子 {base_seed}、换种 {rotated} 次，同一条命令可重放）三层都不在场={must_fail}"
+          f"（必须 True，否则这把尺恒真）｜**换种支自证**：把天然探针 `{nat}` 塞进介质 ⇒ 换成 `{p2}`（移动 {r2} 步，必须 ≠ 原值）={mut}")
     if not must_fail:
-        print("   成因排查：探针值出现在——"
-              + ("A 结果件 " if probe in idx else "") + ("A2 训练历史 " if probe in hist else "")
-              + ("B 登记件（含工单正文！规则文本也被扫）" if probe in bset else ""))
-    return 0 if (must_pass and must_fail) else 1
+        print("   成因排查：" + ("连续 64 个种子全部撞上 ⇒ 介质里探针成灾，先清掉被扫件里的探针值"
+                                if exhausted else
+                                "探针值出现在——"
+                                + ("A 结果件 " if probe in idx else "") + ("A2 训练历史 " if probe in hist else "")
+                                + ("B 登记件（含工单正文！规则文本也被扫）" if probe in bset else "")))
+    return 0 if (must_pass and must_fail and mut) else 1
 
 
 def status_line() -> int:
