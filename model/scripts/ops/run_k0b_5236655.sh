@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# ops/run_k0b_e5dbc66.sh -- route-2 driver for the K0b 12-digit truth reference (WP-A item 3).
-# Scripts belong to the route-2 line, delivered at pin e5dbc667c223736faf3666b060a503ce43c7431c.
+# ops/run_k0b_5236655.sh -- route-2 driver for the K0b 12-digit truth reference (WP-A item 3).
+# Scripts belong to the route-2 line; every hash in EXPECT is measured at one pin: 523665574319a3cb575b6cc25790fd0254c53e7a.
 # No training, no GPU, no torch: the trip decides whether the REFERENCE resolves the quantity.
 # Budget: ${BUDGET_S} (default 180 s). Past that it stops and reports what landed -- it does not
 # extend itself.
 #
-#   bash run_k0b_e5dbc66.sh check   fetch + hash the five scripts, run the gates that can go red
-#   bash run_k0b_e5dbc66.sh smoke   run the 1.5 s syntax probe (does v4.9 EXECUTE `floor`?), then
+#   bash run_k0b_5236655.sh check   fetch + hash the five scripts, run the gates that can go red
+#   bash run_k0b_5236655.sh smoke   run the 1.5 s syntax probe (does v4.9 EXECUTE `floor`?), then
 #                                   solve the coarsest level and prove the 8 companions land and
 #                                   the reader merges them
-#   bash run_k0b_e5dbc66.sh run     the four S1 levels at 12 digits + the truth-side K0b scan
+#   bash run_k0b_5236655.sh run     the four S1 levels at 12 digits + the truth-side K0b scan
 #
 # Nothing is deleted and every file is hash-checked before it lands. A 6-digit artefact cannot
 # pass as the K0b reference: `--require-12-digit-truth` makes the reader halt instead.
 set -uo pipefail
 
-FULL_PIN=e5dbc667c223736faf3666b060a503ce43c7431c
+FULL_PIN=523665574319a3cb575b6cc25790fd0254c53e7a
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="$WS/ffroot.tgz"
-LOGD="$WS/out/k0b_e5dbc66"
+LOGD="$WS/out/k0b_5236655"
 PHASE="${1:-check}"
 BUDGET_S="${BUDGET_S:-180}"
 CASE="${CASE:-TB-base}"
@@ -35,7 +35,7 @@ declare -A EXPECT=(
   [model/scripts/route2/residual_scorers.py]=86c96b1cbf9c6bcefaeca6e984a303a8e8c9a60029e5377a9369a93665bf8745
   [model/scripts/route2/t_geometry.py]=94329e67f178b7dfed18f40b897d8b0d82f0cb0a161a57374155fcf86857742c
   [model/scripts/route2/generate_t_case.py]=b31bf371cddeb444af6cf057aa2f2ef57fee7631e268208735f2136430370029
-  [model/scripts/route2/k0_truth_gate.py]=3cdb82ef6fd3e2d84030c7dfe3725ccb45f4f183adba302295633e06b788161c
+  [model/scripts/route2/k0_truth_gate.py]=bdfdc971e65c2ebe0da89ab6e628301c85b9f978218dc3112739842b2221f00e
   [model/cases/contraction_2d/cfd/C-base_ns_re1/probe_syntax.edp]=a4ca809f0b05b932d76a76d8e7d2d87dcefb1174c3cf0817eb5603c579f6bb25
 )
 R2="$WS/model/scripts/route2"
