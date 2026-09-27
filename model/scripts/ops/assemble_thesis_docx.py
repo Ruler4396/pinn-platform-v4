@@ -1194,7 +1194,7 @@ def table_sources():
             srcs = [pick(r[0]) for r in rows]
         for er in spec.get("extra_rows") or []:
             srcs = list(srcs) + ["统括官 15:2x 一手读回：`out/coldtrip_20260927/e5_runs.tsv.summary.json`"
-                                 "（928 B、sha256 前缀 `52c717434c098541`、instance `dsw-2213920`、pin `70317a59…`）"]
+                                 "（928 B、sha256 前缀 `52c717434c098541`、instance `dsw-2213920`、pin `70317a59…`；判决与读数出处＝工单 §12 第 14 条，归档见 `证据-E0臂C入库与阶数上限检验-实例读数-20260927.md:71`）"]
             rows = list(rows) + [er]
         out[name] = [(rows[i][0], srcs[i] if i < len(srcs) else "需人工（该行来源未登记）") for i in range(len(rows))]
     return out
