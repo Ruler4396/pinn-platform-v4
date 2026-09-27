@@ -332,6 +332,31 @@ def selfcheck(levels=LEVELS) -> int:
     return rc
 
 
+def assert_p_star_unit_fixed(ref_csv: Path, level_csv: Path, tol: float = 0.02) -> float:
+    """Ruling R2-7 (#33) constraint 2: the check that must THROW, written before the rerun.
+
+    Before the fix the two first-hand maxima ratio was 998.07 (the spurious 1/Re); after it the
+    same comparison must land on 1.0 within `tol`.  Written as a raiser, not a printed number,
+    because a ratio that only gets eyeballed is how the 1/Re survived one full round trip.
+    """
+    def pmax(path: Path) -> float:
+        with path.open(encoding="utf-8", newline="") as fh:
+            head = fh.readline().strip().split(",")
+            j = head.index("p_star")
+            return max(abs(float(ln.strip().split(",")[j])) for ln in fh if ln.strip())
+    a, b = pmax(ref_csv), pmax(level_csv)
+    if a <= 0:
+        raise ValueError(f"reference p_star maximum is {a}: nothing to compare against")
+    ratio = b / a
+    if abs(ratio - 1.0) > tol:
+        raise ValueError(
+            f"|p_star|max of {level_csv.name} is {b:.6g} against the Stokes reference {a:.6g} "
+            f"= {ratio:.4g} (expected 1 +/- {tol}). A ratio near 1/Re means the p/Re division is "
+            f"still in the emitted line -- do not read this level's pressures, and do not "
+            f"recompute the Delta-p drift column.")
+    return ratio
+
+
 def read_rows(path: Path):
     with path.open(encoding="utf-8", newline="") as fh:
         header = fh.readline().strip().split(",")

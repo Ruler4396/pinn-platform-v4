@@ -2,8 +2,11 @@
 // T6-Re finite-Reynolds Navier-Stokes probe, derived from C-base_stokes.edp
 // Re = 1. Star units: W_stem = 1, inlet mean velocity = 1, mu = 1, so Re is the
 //   parameter multiplying the convective term and the weak form below is the shipped
-//   Stokes form times Re. Consequence: the pressure the solver solves for is P = Re*p,
-//   hence p_star is written as p/Re and stays comparable with the Stokes CSV.
+//   Stokes form plus Re times the convection term. The diffusion and pressure blocks
+//   keep coefficient 1, so the pressure the solver finds IS this level's physical
+//   pressure: p_star is the shipped `p(xx,yy)`, unchanged. (Ruling R2-7, 2026-09-27:
+//   an earlier version divided it by Re on a `form = Stokes x Re` claim this equation
+//   does not satisfy -- that injected a spurious 1/Re into the p_star column.)
 // Nonlinear scheme: Picard with the advecting velocity frozen at the previous iterate
 //   (u0, v0). u and v are set to zero before the loop, so the first iterate advects
 //   with u0 = v0 = 0 and IS the shipped Stokes solve: convection is the only term
@@ -132,7 +135,7 @@ fout << "x_star,y_star,u_star,v_star,p_star,bc_tag" << endl;
 for (int i = 0; i < Th.nv; ++i) {
   real xx = Th(i).x;
   real yy = Th(i).y;
-  fout << xx << "," << yy << "," << u(xx,yy) << "," << v(xx,yy) << "," << p(xx,yy)/Re << "," << vTag[i] << endl;
+  fout << xx << "," << yy << "," << u(xx,yy) << "," << v(xx,yy) << "," << p(xx,yy) << "," << vTag[i] << endl;
 }
 
 cout << "Saved: C-base_ns_re1_raw.csv" << endl;
@@ -142,7 +145,7 @@ fpair << "x_star,y_star,u_hi,u_lo,v_hi,v_lo,p_hi,p_lo" << endl;
 for (int ii = 0; ii < Th.nv; ++ii) {
   real hu = u(Th(ii).x, Th(ii).y);
   real hv = v(Th(ii).x, Th(ii).y);
-  real hp = p(Th(ii).x, Th(ii).y)/Re;
+  real hp = p(Th(ii).x, Th(ii).y);
   real uHi = floor(hu*1.0e4)/1.0e4;
   real vHi = floor(hv*1.0e6)/1.0e6;
   real pHi = floor(hp*1.0e2)/1.0e2;

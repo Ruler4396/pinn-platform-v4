@@ -95,11 +95,15 @@ REPLACEMENTS = (
     ("solve Stokes([u,v,p],[ut,vt,qt], solver=UMFPACK) =",
      "solve NS([u,v,p],[ut,vt,qt], solver=UMFPACK) =",
      "label only: the statement is now iterated; its arguments are untouched"),
-    ('  fout << xx << "," << yy << "," << u(xx,yy) << "," << v(xx,yy) << "," '
-     '<< p(xx,yy) << "," << vTag[i] << endl;',
-     '  fout << xx << "," << yy << "," << u(xx,yy) << "," << v(xx,yy) << "," '
-     '<< p(xx,yy)/Re << "," << vTag[i] << endl;',
-     "p_star divided by Re, required by the multiply-by-Re convention declared above"),
+    # Ruling R2-7 (#33), 2026-09-27 -- unit-defect fix, NAMED here rather than hidden.
+    # This entry used to turn the shipped `p(xx,yy)` into `p(xx,yy)/Re` on the claim "the weak
+    # form is the shipped Stokes form times Re, so the solver's p is Re*p". The emitted
+    # equation does not do that: Re multiplies only the convection line, the diffusion and
+    # pressure blocks keep coefficient 1, so the solver's p IS the level's physical pressure.
+    # Fingerprint from two first-hand CSVs: 415058 / 415.861 = 998.07 ~ 1/Re(1e-3) = 1000.
+    # Removing the entry restores the shipped line verbatim, so the difference set is now
+    # ONE named replacement (the solve label) plus the two output paths -- and p_star stays
+    # comparable with the Stokes CSV for the right reason.
 )
 # the shipped .edp hard-codes /root/dev/pinn_v3/..., which does not exist on the instance
 # (already flagged in docs/revision/CFD真值同机复算-20260925.md).  The NS probe writes next
@@ -132,8 +136,11 @@ def build_spec(widths: dict[str, int]) -> dict:
         "// T6-Re finite-Reynolds Navier-Stokes probe, derived from C-base_stokes.edp",
         "// Re = REV. Star units: W_stem = 1, inlet mean velocity = 1, mu = 1, so Re is the",
         "//   parameter multiplying the convective term and the weak form below is the shipped",
-        "//   Stokes form times Re. Consequence: the pressure the solver solves for is P = Re*p,",
-        "//   hence p_star is written as p/Re and stays comparable with the Stokes CSV.",
+        "//   Stokes form plus Re times the convection term. The diffusion and pressure blocks",
+        "//   keep coefficient 1, so the pressure the solver finds IS this level's physical",
+        "//   pressure: p_star is the shipped `p(xx,yy)`, unchanged. (Ruling R2-7, 2026-09-27:",
+        "//   an earlier version divided it by Re on a `form = Stokes x Re` claim this equation",
+        "//   does not satisfy -- that injected a spurious 1/Re into the p_star column.)",
         "// Nonlinear scheme: Picard with the advecting velocity frozen at the previous iterate",
         "//   (u0, v0). u and v are set to zero before the loop, so the first iterate advects",
         "//   with u0 = v0 = 0 and IS the shipped Stokes solve: convection is the only term",
@@ -202,7 +209,7 @@ def build_spec(widths: dict[str, int]) -> dict:
         "for (int ii = 0; ii < Th.nv; ++ii) {",
         "  real hu = u(Th(ii).x, Th(ii).y);",
         "  real hv = v(Th(ii).x, Th(ii).y);",
-        "  real hp = p(Th(ii).x, Th(ii).y)/Re;",
+        "  real hp = p(Th(ii).x, Th(ii).y);",
     ]
     pair += hi_lines(widths)
     pair += [
@@ -539,7 +546,7 @@ def main() -> int:
         if len(conv) != 1:
             print(f"    the convective term must be exactly one line, found {len(conv)}")
             bad += 1
-        expected_replaced = len(REPLACEMENTS) + 2      # + the two output-path lines
+        expected_replaced = len(REPLACEMENTS) + 2      # 1 named (solve label) + 2 paths
         if len(replaced) != expected_replaced:
             print(f"    {len(replaced)} replaced lines, {expected_replaced} declared "
                   f"(2 named + 2 output paths)")
@@ -592,8 +599,12 @@ def main() -> int:
               "declared difference set, or it uses a construct v4.9 is known to reject")
         return 1
     print("diff proof OK: each NS file inverts to the shipped Stokes text byte for byte once "
-          "the declared inserts and the two declared replacements are undone; the physics "
-          "difference is one convective line.")
+          "the declared inserts and the one declared replacement (the solve label) are "
+          "undone; the physics difference is one convective line and p_star is the shipped "
+          "line as emitted.")
+    print("  (R2-7: the earlier second replacement `p -> p/Re` was a unit defect and is "
+          "reverted -- see the REPLACEMENTS comment.)")
+
     return 0
 
 
