@@ -449,7 +449,7 @@ NEW_TABLES = {
                     "同上 :78-79；臂A 机时 `SWEEP_DRYRUN.md:339`",
                     "同上 :79；臂B 账本整列 NA ⇒ 只能取 analyze（§11.5）",
                     "E0 一手产物 `dsw-2213486:…/pod_baseline_contraction_a0d1375.json`（2,948 B、`da0dba2fef66318c`）；本表三数取 09-26 同框那次，见工单 D2"],
-        "note": ("① 全表 n=5，Wilcoxon 最小可达双侧 p=0.0625 ⇒ 只报符号与幅度，不写显著性；② 未做多重比较校正；"
+        "note": ("表 5-10 的读法（五条缺一不可）：① 全表 n=5，Wilcoxon 最小可达双侧 p=0.0625 ⇒ 只报符号与幅度，不写显著性；② 未做多重比较校正；"
                  "③ 臂C 为零训练、与三臂不同机时口径，其墙钟不可与本表 PINN 行直比；"
                  "④ 同一行并排的均值与配对差来自同一 obs_seed 子集；⑤ 本表只有 mean_of_cases 一个口径"
                  "（臂B 的评估件顶层无 global_metrics ⇒ pooled 键数为 0）。"),
@@ -675,12 +675,16 @@ def rows_iter():
 
 
 def selfcheck_caption():
-    """两条夹具（统括官 12:4x 要求）：真正文句必须算正文、真题注必须算题注。任一不满足 ⇒ 尺不可信。"""
-    prose = ["图5-15中，弯道转角附近的速度高值区域与参考真值基本一致。",
-             "表5-8显示，阶段内残差惩罚项对速度场最终误差影响较小。",
-             "若将绝对耗时换算为图5-17中的加速倍数可以发现，收缩流道实现了 6.04 倍。"]
+    """两类夹具（统括官 12:4x 要求）：真正文句必须算正文、真题注必须算题注。任一不满足 ⇒ 尺不可信。"""
+    # 夹具逐字取自原件：正文句 = 段340/352/353，题注 = 段139/336/344/351/355
+    prose = ["图5-15中，弯道转角附近的速度高值区域、近壁低速带和整体流动路径与参考真值基本一致。结合表5-7中的各项指标，降低观测成本并不必然导致重建失效。",
+             "表5-8显示，阶段内PDE约束对速度场最终误差影响较小，对压力场影响更明显。不启用阶段内PDE约束时，最终速度场L2误差为0.022100。",
+             "图5-18比较5%稀疏监督下的单网络MLP和双模型PDE耦合。双模型的速度Rel-L2由4.11%降至3.21%，壁面速度残余由23.33%降至0.01%以下。"]
     caps = ["图5-16  PINN与CFD在同一环境下的中位耗时对比图",
-            "表5-8  阶段内残差惩罚项对模型最终性能的影响"]
+            "表5-8  阶段内PDE约束对模型最终性能的影响",
+            "图5-14  收缩流道几何增强编码消融结果",
+            "表3-4  数据预处理流程",
+            "图5-18  单网络基线与双模型耦合效果对照图"]
     bad = [x for x in prose if is_caption(x)] + [x for x in caps if not is_caption(x)]
     print(f"[题注夹具] 正文句 {len(prose)} 条、题注 {len(caps)} 条 ⇒ 判错 {len(bad)} 条"
           + ("（**尺不可信，先修尺再谈装配**）" if bad else "，全对 ✓"))
@@ -703,6 +707,7 @@ def main() -> int:
     g.add_argument("--tables", type=pathlib.Path, help="在给定副本上插三张新表（表4-4b/5-9/5-10）")
     g.add_argument("--t57", type=pathlib.Path, help="在给定副本上改表 5-7：加「模型批次」列 + 追加 B-test-2 行（数字现取）")
     g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
+    g.add_argument("--selfcheck", action="store_true", help="只跑题注夹具（必过 + 必红各一条）")
     g.add_argument("--all", action="store_true",
                    help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（含来源列）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
     ap.add_argument("--into", type=pathlib.Path, default=None,
@@ -713,10 +718,16 @@ def main() -> int:
     import docx  # noqa: F401  ② 先确认库在，不在就别硬写
     from docx import Document
 
+    if args.selfcheck:
+        return selfcheck_caption()
     if args.verify:
+        if selfcheck_caption():                 # 同上：尺先自证，再谈终检结论
+            return 3
         return verify(args.verify)
     if args.all:
         import subprocess
+        if selfcheck_caption():                 # 题注夹具不过 ⇒ 整条链不开跑（统括官 13:0x：不能靠每次手看）
+            return 3
         st = SRC.stat()
         print(f"[原件只读] {st.st_size:,} B mtime={datetime.datetime.fromtimestamp(st.st_mtime).isoformat(timespec='seconds')} "
               f"sha256={hashlib.sha256(SRC.read_bytes()).hexdigest()[:12]}")
