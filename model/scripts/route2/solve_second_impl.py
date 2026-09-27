@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 from pathlib import Path
 
@@ -260,8 +261,17 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     ksp.setType("preonly")
     pc = ksp.getPC()
     pc.setType("lu")
-    print("[solve] assembled, solving with LU (the reference asks UMFPACK: a direct solve either way)",
-          flush=True)
+    # Which package does the factorization is a linear-algebra choice, not part of the registered form,
+    # and it is not free here: measured in this env between 02:10 and 02:17 the default SuperLU path
+    # converges at 2x2 / 4x4 / 10x10 / 20x10 / 45x20 / 90x40 / 120x40 / 150x40 / 180x30 and returns
+    # reason=-11 with its=0 at the registered 180x40.  MUMPS is present (hasExternalPackage('mumps')
+    # -> True, measured 02:21:27) and is a direct sparse solver like the UMFPACK the reference asks
+    # for, so the driver asks for it BY NAME and the name lands in the meta file beside the numbers.
+    pkg = os.environ.get("S1_MAT_SOLVER", "").strip()
+    if pkg:
+        pc.setFactorSolverType(pkg)
+    print(f"[solve] assembled, solving with LU (the reference asks UMFPACK: a direct solve either way); "
+          f"factorization package = {pkg or 'PETSc default (SuperLU)'}", flush=True)
     Usol = Function(W)
     ksp.solve(b, Usol.x.petsc_vec)
     reason, its = ksp.getConvergedReason(), ksp.getIterationNumber()
@@ -289,6 +299,7 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     n = write_rows(out_csv, rows)
     import dolfinx
     return {"nx": nx, "ny": ny, "nodes": n, "ksp_reason": int(reason), "ksp_its": int(its),
+            "mat_solver": pkg or "PETSc default (SuperLU)",
             "dolfinx": dolfinx.__version__, "geometry": {"BETA": BETA, "LIN": LIN, "LC": LC,
                                                          "LTOT": LTOT, "pin": PRESSURE_PIN}}
 

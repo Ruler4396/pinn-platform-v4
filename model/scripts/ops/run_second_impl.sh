@@ -43,6 +43,13 @@ REF_CSV="${REF_CSV:-$WS/model/cases/contraction_2d/cfd/C-base/C-base_raw.csv}"
 MODE="${1:-status}"
 SEGMENT_S="${SEGMENT_S:-1500}"                     # < 30 min per segment
 WINDOW_S="${WINDOW_S:-28800}"                      # ~8 h ceiling, the user's number
+# Which sparse-LU package the legs ask PETSc for.  mumps, measured not assumed: on this env the default
+# SuperLU path converged at 2x2 / 4x4 / 10x10 / 20x10 / 45x20 / 90x40 / 120x40 / 150x40 / 180x30 and
+# returned reason=-11 with its=0 at the registered 180x40 (02:10-02:17 sweep), while
+# PETSc.Sys.hasExternalPackage('mumps') is True here (02:21:27).  MUMPS is a direct sparse solver, the
+# same class as the UMFPACK the reference .edp asks for, so the form and the gates are untouched -- only
+# the factorization package is named, and solve_second_impl.py records it in the meta file beside them.
+export S1_MAT_SOLVER="${S1_MAT_SOLVER:-mumps}"
 T0=$(date +%s)
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 die() { log "[ABORT] $*"; exit 3; }
@@ -222,7 +229,7 @@ read_pointer() {
 # Linux clone with autocrlf off, so its working bytes equal the blob bytes there; on a CRLF working
 # copy the two rulers part ways, which is why the number below is quoted with its ruler.
 declare -A EXPECT=(
-  [model/scripts/route2/solve_second_impl.py]=6f603fa1add30396
+  [model/scripts/route2/solve_second_impl.py]=bec4f1f97c399bb6
 )
 # crosscheck_second_impl.py and install_external_solver.sh are checked for PRESENCE only: they landed
 # before this table existed, and their blobs are already in git (pin 7e67943 and earlier).
