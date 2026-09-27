@@ -51,6 +51,7 @@ PAIR_OPS = ("E2", "E3", "E4")   # ③ 换数+插段+删句三者同进同退，�
 # 表内一格换标签（工单里"换标签"类）：只允许"旧标签是新标签的子串"那种纯扩展，且整格唯一命中才做。
 CELL_OPS = {"A16": ("表5-1", "阶段内残差惩罚项", "阶段内残差惩罚项（启用）")}
 POINTER_ROWS = ("A18", "A19")     # 孤表指向句，凭据＝§12 第 13 条①（作者拍定"补句、不删表"）；句子只从工单载荷取
+LIMIT_ROWS = ("J4",)              # 新增一句局限，凭据＝§12 第 13 条③／作者 14:5x 必做3；句子与锚点都只从工单那一行取
 # 混合格子的正文切片：有些行的「新文本」把正文句和写作指令写在同一格（D1 就是），整格落字会把
 # "两列都进表""（样本口径；格13 sd …）""前置核查（写作闸门）"这类话印进论文。
 # 白名单里**每条都必须逐字是该行新文本的子串**（下面断言），所以这条路不许造新句；被排除的句子留在工单里由作者自己粘。
@@ -1080,6 +1081,41 @@ def figs(copy_path):
     return len(made)
 
 
+def add_limit_rows(doc):
+    """J4 这类"新增一句局限"：**句子与锚点都只从工单那一行逐字取**（锚＝「loc」里第一对「…」内的原文），
+    脚本里不留第二份文本。约束沿用 E4/图5-17 那档：无数字、无强度词、不许"未来将…"式承诺。"""
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+    n = 0
+    for r in rows():
+        if r["id"] not in LIMIT_ROWS:
+            continue
+        sent = payload(r["new"]).strip()
+        m = re.search(r"[「『](.{6,}?)[」』]", r["loc"])
+        if not m or not sent:
+            print(f"   [局限] {r['id']}：载荷或锚句取不到 ⇒ 不做")
+            continue
+        anchor = m.group(1)[:24]
+        for w in FORBID_IN_TRANSITION:
+            assert w not in sent, f"{r['id']} 的局限句混进强度词 {w}"
+        assert not re.search(r"\d", sent), f"{r['id']} 的局限句带数字：{sent}"
+        assert not re.search(r"(未来|后续|下一步).{0,4}(将|会|计划)", sent), f"{r['id']} 写成承诺式：{sent}"
+        hi = next((i for i, p in enumerate(doc.paragraphs) if p.text.strip().startswith(anchor)), None)
+        if hi is None:
+            print(f"   [局限] {r['id']}：副本里找不到以「{anchor}」开头的段 ⇒ 不猜位置")
+            continue
+        if any(sent in p.text for p in doc.paragraphs):
+            print(f"   [局限] {r['id']}：该句已在 ⇒ 幂等跳过")
+            continue
+        para = doc.paragraphs[hi]
+        el = para._p.makeelement(qn("w:p"), {})
+        para._p.addnext(el)
+        Paragraph(el, para._parent).add_run(sent)
+        n += 1
+        print(f"   [局限] {r['id']}：插在段{hi}（「{anchor}…」）之后 ⇒ {sent}")
+    return n
+
+
 def cells_op(copy_path):
     """表内一格换标签（A16 这类）：按**号整段相等**选表、按**整格相等**选格，命中数不是 1 就拒做。
     A11 故意不在这里：它说"列名改为…"，而表 5-8 现在的表头是「配置」——哪一列是"列名"是编辑判断，不猜。"""
@@ -1116,7 +1152,11 @@ def cells_op(copy_path):
         cell.text = new
         done += 1
         print(f"   [格] {rid}：{cap[:12]} 行{ri}列{ci}「{old}」→「{new}」（同行其余格未动）")
+    nl = add_limit_rows(doc)
     doc.save(str(copy_path))
+    if nl != len(LIMIT_ROWS):
+        print(f"[INVALID] 局限句只落了 {nl}/{len(LIMIT_ROWS)} ⇒ 锚点或句子取不到，别当已落")
+        return -1
     return done
 
 
