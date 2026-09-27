@@ -1232,6 +1232,65 @@ def _caption_above(tbl, doc):
     return ""
 
 
+def tables_by_id(doc, body, tid):
+    """按**题注整段相等**选出某号的全部表块（含"（续表）"那张）——一把尺，谁要用谁调。
+    题注必须整段等于号（`is_caption` + `norm_id`），前缀法会把 表5-1 串到 表5-10、表4-4 串到 表4-4b。"""
+    from docx.oxml.ns import qn
+    out = []
+    for t in doc.tables:
+        at = body.index(t._tbl)
+        cap = ""
+        for k in range(at - 1, max(-1, at - 8), -1):
+            if body[k].tag.endswith("}p"):
+                s = "".join(x.text or "" for x in body[k].findall(f".//{qn('w:t')}")).strip()
+                if s:
+                    cap = s
+                    break
+        m = re.match(r"^(表|图)(\d+(?:-\d+)?[a-z]?)", norm_id(cap))
+        if m and m.group(1) + m.group(2) == tid:
+            out.append((cap, t))
+    return out
+
+
+# A11（表 5-8）＝作者 9/27 拍定**丙**：只改三格文字，数值一格不动（§12 第 18 条是正本）。
+# 这里的硬保障不是"新标签含旧标签"（丙恰恰不含），而是**改动面只允许是文字格**：
+# 任何旧值/新值含数字 ⇒ 立刻抛错，防止手滑把 0.174478 那类读数卷进来。
+SPLIT_OF = {"D1c": "I1"}      # 拆分行 → 母行：D1c 的每个句子必须是 I1 载荷里的**逐字子串**
+
+A11_TABLE, A11_CELLS = "表5-8", {"配置": "阶段内残差惩罚项",
+                                 "不启用阶段内残差惩罚项": "不启用",
+                                 "启用阶段内残差惩罚项": "启用"}
+
+
+def a11_op(doc, body):
+    """A11 丙：表5-8 表头第一格 + 两行行名，三格文字；**其余格逐字不动**（含数值列）。"""
+    for o, n in A11_CELLS.items():
+        assert not re.search(r"\d", o + n), f"A11 只许改文字格，这格里有数字：{o}→{n}"
+    tbls = tables_by_id(doc, body, A11_TABLE)
+    if not tbls:
+        print(f"   [格] A11：没找到题注恰为 {A11_TABLE} 的表 ⇒ 不做")
+        return 0
+    cells = {(i, r, c): cell for i, (_cap, tb) in enumerate(tbls)
+             for r, row in enumerate(tb.rows) for c, cell in enumerate(row.cells)}
+    before = {k: c.text for k, c in cells.items()}
+    hits = [k for k, c in cells.items() if c.text.strip() in A11_CELLS]
+    if len(hits) != len(A11_CELLS):
+        print(f"   [格] A11：{A11_TABLE}（{len(tbls)} 张，含续表）里命中 {len(hits)} 格，应为 {len(A11_CELLS)} 格"
+              f" ⇒ 整表不做（哪一列是「列名」要靠命中数判，不靠猜）")
+        return 0
+    for k in hits:
+        cells[k].text = A11_CELLS[before[k].strip()]
+    drift = [k for k in cells if k not in hits and cells[k].text != before[k]]
+    assert not drift, f"A11 只该动 {len(A11_CELLS)} 格文字，却有 {len(drift)} 个非目标格变了：{drift[:3]}"
+    wrong = [k for k in hits if cells[k].text != A11_CELLS[before[k].strip()]]
+    if wrong:
+        print(f"   [格] A11：{len(wrong)} 格回读不符 ⇒ 不算已落 {wrong[:3]}")
+        return 0
+    print(f"   [格] A11（丙）：{A11_TABLE} 改了 {len(hits)} 格文字（表头 1 ＋ 行名 2），"
+          f"**非目标格 {len(cells) - len(hits)} 格逐字未动**（含全部数值列，回读比对）")
+    return len(hits)
+
+
 def cells_op(copy_path):
     """表内一格换标签（A16 这类）：按**号整段相等**选表、按**整格相等**选格，命中数不是 1 就拒做。
     A11 故意不在这里：它说"列名改为…"，而表 5-8 现在的表头是「配置」——哪一列是"列名"是编辑判断，不猜。"""
@@ -1241,19 +1300,7 @@ def cells_op(copy_path):
     body = list(doc.element.body)
     done = 0
     for rid, (tid, old, new) in CELL_OPS.items():
-        tbls = []
-        for t in doc.tables:
-            at = body.index(t._tbl)
-            cap = ""
-            for k in range(at - 1, max(-1, at - 8), -1):
-                if body[k].tag.endswith("}p"):
-                    s = "".join(x.text or "" for x in body[k].findall(f".//{qn('w:t')}")).strip()
-                    if s:
-                        cap = s
-                        break
-            m = re.match(r"^(表|图)(\d+(?:-\d+)?[a-z]?)", norm_id(cap))
-            if m and m.group(1) + m.group(2) == tid:      # 整段相等，表5-1 不会串到 表5-10
-                tbls.append((cap, t))
+        tbls = tables_by_id(doc, body, tid)
         if not tbls:
             print(f"   [格] {rid}：没找到题注恰为 {tid} 的表 ⇒ 不做")
             continue
@@ -1270,9 +1317,13 @@ def cells_op(copy_path):
         print(f"   [格] {rid}：{cap[:12]} 行{ri}列{ci}「{old}」→「{new}」（同行其余格未动）")
     nl = add_limit_rows(doc)
     nv = cell_values_op(doc)
+    na = a11_op(doc, body)
     doc.save(str(copy_path))
     if nv != len(CELL_VALUES):
         print(f"[INVALID] 承重格数值只换了 {nv}/{len(CELL_VALUES)} ⇒ 出处对不上或命中不唯一，D1b 未闭合")
+        return -1
+    if na != len(A11_CELLS):
+        print(f"[INVALID] A11（丙）只做了 {na}/{len(A11_CELLS)} 格 ⇒ 表5-8 的三格文字没改满，别当已落")
         return -1
     if nl != len(LIMIT_ROWS):
         print(f"[INVALID] 局限句只落了 {nl}/{len(LIMIT_ROWS)} ⇒ 锚点或句子取不到，别当已落")
@@ -1291,9 +1342,21 @@ def selfcheck_guards():
     r14 = re.sub(re.escape("图5-14"), "", norm_id(FIG514_POINTER))
     if re.search(r"\d", r14.replace("Rel-L2", "").replace("L2", "")):
         bad.append(f"FIG514_POINTER 剔号与指标名后仍有数字：{r14}")
+    rowmap = {r["id"]: payload(r["new"]) for r in rows()}
+    for kid, mother in SPLIT_OF.items():
+        if kid not in rowmap or mother not in rowmap:
+            bad.append(f"拆分行 {kid}←{mother}：有一行不在工单里（{kid in rowmap}/{mother in rowmap}）")
+            continue
+        sents = [s.strip() for s in re.split(r"[。；]", rowmap[kid]) if len(s.strip()) >= 8]
+        fake = [s[:24] for s in sents if s not in rowmap[mother]]
+        if fake:
+            bad.append(f"拆分行 {kid} 造了新句（不在母行 {mother} 载荷里的逐字子串）：{fake}")
+        if re.findall(r"\d\.\d{3,}", rowmap[kid]):      # **两条检查各自独立跑**：写成 elif 时"带读数"这一支永远测不到
+            bad.append(f"拆分行 {kid} 带着读数（应留在母行那一半）："
+                       f"{re.findall(r'\d\.\d{3,}', rowmap[kid])[:4]}")
     if "（启用）" not in CELL_OPS["A16"][2] or CELL_OPS["A16"][2] not in CELL_OPS["A16"][2]:
         bad.append("CELL_OPS 的'新标签必含旧标签'断言被绕开")
-    print(f"[豁免夹具] 4 条（倍字界／两处号位豁免／格标签必含旧标签）⇒ " + ("全过 ✓" if not bad else f"**{len(bad)} 条失效**"))
+    print(f"[豁免夹具] 5 条（倍字界／两处号位豁免／格标签必含旧标签／**拆分行不许造新句也不许带读数**）⇒ " + ("全过 ✓" if not bad else f"**{len(bad)} 条失效**"))
     for x in bad:
         print("   失效：", x)
     return 1 if bad else 0
@@ -1438,25 +1501,31 @@ def selfcheck_terms_scope():
 
 
 def selfcheck_rowids():
-    """必红夹具（统括官 16:5x 第④条）：**往工单里塞一行 `D1c`，`rows()` 的计数必须 +1**。
-    喂谓词不喂扫描器——真的临时改 `WORK` 再调 `rows()`，不是把正则抄一遍来测。"""
+    """必红夹具（统括官 16:5x 第④条）：**往工单里塞一行带字母后缀的新行，`rows()` 的计数必须 +1**。
+    喂谓词不喂扫描器——真的临时改 `WORK` 再调 `rows()`，不是把正则抄一遍来测。
+    探针号取**没被占用**的后缀号：`D1c` 于 9/27 18:0x 已是真工单行（I1 拆出的 表5-7 半句），
+    再拿它当探针就成"重复行"而不是"新行"，夹具会假过。"""
     global WORK
     base = [r["id"] for r in rows()]
-    real = WORK
-    tmp = WORK.with_name("_rowid_probe.md")
+    probe = next(c for c in ("D1c", "D1d", "J9z", "B9z") if c not in base)
+    real, tmp = WORK, WORK.with_name("_rowid_probe.md")
     try:
         tmp.write_text(real.read_text(encoding="utf-8")
-                       + "| D1c | 探针行（不是真工单行，跑完即删） | 探针 | 探针 | 探针 | 否 |\n", encoding="utf-8")
+                       + f'| {probe} | 探针行（不是真工单行，跑完即删） | 探针 | 探针 | 探针 | 否 |' + chr(10),
+                       encoding="utf-8")
         WORK = tmp
         got = [r["id"] for r in rows()]
     finally:
         WORK = real
         tmp.unlink(missing_ok=True)
-    ok = ("D1c" in got) and len(got) == len(base) + 1
-    print(f"[必红夹具·带后缀行号必须被数到] 基线 {len(base)} 行 ⇒ 塞入 D1c 后 {len(got)} 行、命中 D1c={'D1c' in got}")
+    ok = (probe in got) and len(got) == len(base) + 1
+    suffix = [b for b in base if re.search(r"[a-z]$", b)][:6]
+    print(f"[必红夹具·带后缀行号必须被数到] 探针号 {probe}（基线里已存在的后缀号 {suffix}）"
+          f" ⇒ 基线 {len(base)} 行 → 塞入后 {len(got)} 行、命中={probe in got}")
     if not ok:
         print("[INVALID] 分类器看不见带字母后缀的行 ⇒ 新加的行会静默消失，拒出对照表")
     return 0 if ok else 1
+
 
 
 def selfcheck_all(copy_path=None):
