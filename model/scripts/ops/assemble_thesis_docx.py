@@ -2,7 +2,7 @@
 """毕设 docx 装配器（统括官 9/27 11:2x 改派给方案线，四道闸写进代码而不是写在承诺里）。
 
 用法（本机零机时；产物一律落在仓外 .scratch/）：
-    python3 model/scripts/ops/assemble_thesis_docx.py --plan            # 只判定 51 行能不能自动落、为什么不能
+    python3 model/scripts/ops/assemble_thesis_docx.py --plan            # 只判定工单数据行能不能自动落、为什么不能
     python3 model/scripts/ops/assemble_thesis_docx.py --apply           # 在带时间戳的副本上落字（原件只读）
     python3 model/scripts/ops/assemble_thesis_docx.py --verify <副本>    # 副本正文 ↔ 工单「新文本」逐行 diff
 硬约（违反即 INVALID 退出码非 0）：
@@ -90,12 +90,56 @@ def norm(s: str) -> str:
     return re.sub(r"\s+", "", s.replace("，", ",").replace("。", "."))
 
 
+DASH_MAP = {"\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-",
+            "\u2015": "-", "\u2212": "-", "\uff0d": "-", "\u301c": "-", "\uff5e": "-"}
+
+
+def norm_id(s: str) -> str:
+    """**号判定的唯一归一尺**（统括官 9/27 17:5x 第③条）：凡"某号有没有被引用/是不是同一张表"
+    这类判定，先过这里再比。落字那句写的是「表 3-4」（带空格），题注写的是「表3-4」——
+    不归一就会把"已引用"读成"孤号"，也会让 `startswith('表3-4')` 只数到题注那一次。
+    NFKC 统一全角／半角，短横族统一成 ASCII '-'，再剔掉全部空白。"""
+    import unicodedata
+    s = unicodedata.normalize("NFKC", s)
+    for a, b in DASH_MAP.items():
+        s = s.replace(a, b)
+    return re.sub(r"\s+", "", s)
+
+
 def clean(md: str) -> str:
     """把工单格子里的 markdown 痕迹清成论文正文；`**【…】**` 之后一律算工单内部注。"""
     md = re.split(r"\*\*【", md)[0]
     md = re.sub(r"\*\*(.+?)\*\*", r"\1", md)
     md = re.sub(r"`([^`]*)`", r"\1", md)
     return md.replace("\\|", "|").strip()
+
+
+def is_authorized(rid: str) -> bool:
+    """裁决标了"已授权"（作者放弃否决权）＝**不是待批**，是"需作者粘贴"。判据只声明这一处。"""
+    return AWAITING.get(rid, "").startswith("已授权")
+
+
+def n_await(await_) -> int:
+    """**"待批"这把尺只声明一处**：`AWAITING` 里标了"已授权"的那一类（A13：作者放弃否决权）不算待批，
+    算"需作者粘贴"。三处打印共用它，免得 `--plan` 报 1 而对照表报 0——同一量两把尺今天已自报过两次。"""
+    return sum(1 for rid, _ in await_ if not is_authorized(rid))
+
+
+def s12_directives(width: int = 46):
+    """§12 是**散文条目** ⇒ `rows()` 的表格行正则看不见它：统括官写在 §12 里的"请/不得/必须"
+    不会变成任何一道闸的待办（9/27 15:44:40 那条"对照表状态要写成需作者粘贴"就这么漏过一整轮，
+    17:5x 他重发时才执行）。这里不判定、只**逐条打印**，逼每一轮读一遍——判定归人，但**不能靠记性**。"""
+    txt = WORK.read_text(encoding="utf-8")
+    if "## 12." not in txt:
+        return []
+    body = txt.split("## 12.", 1)[1]
+    body = re.split(r"\n## ", body, 1)[0]
+    out = []
+    for m in re.finditer(r"^(\d+)\.\s+(.{0,300})", body, re.M):
+        line = re.sub(r"\s+", " ", m.group(2))
+        if any(k in line for k in ("请", "不得", "必须", "不许", "禁止", "应当")):
+            out.append((int(m.group(1)), line[:width]))
+    return out
 
 
 def rows():
@@ -144,8 +188,8 @@ def landable(new_raw: str, old_text: str):
         return False, "", "载荷仍含操作指令或工单内部注 ⇒ 不整段替换"
     if not is_body_prose(new):
         return False, "", "载荷是给表格加列/加行/写表注那类指令，不是正文句 ⇒ 走插表/改列算子"
-    lost = sorted({x.replace(" ", "") for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", old_text)} -
-                  {x.replace(" ", "") for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", new)})
+    lost = sorted({norm_id(x) for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", old_text)} -
+                  {norm_id(x) for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", new)})
     if lost:
         return False, "", (f"替换会丢掉 {lost} 的正文引用（原件里它是该图/表唯一的引用点时会变成孤图）"
                            f"⇒ 先在新文本里补回图/表号再落")
@@ -260,8 +304,8 @@ def classify(doc):
         i = hit_list[0]
         if rid in BODY_SLICE:                             # 混合格子：只落逐字校验过的正文切片
             new, err = sliced_payload(rid, r["new"])
-            lost = sorted({x.replace(" ", "") for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", body[i])} -
-                          {x.replace(" ", "") for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", new)})
+            lost = sorted({norm_id(x) for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", body[i])} -
+                          {norm_id(x) for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", new)})
             if err or lost:
                 manual.append((rid, err or f"切片会丢掉 {lost} 的正文引用"))
             else:
@@ -309,7 +353,7 @@ def apply_rewrite(doc, auto):
 
 
 def verify(copy_path):
-    """闸三：副本正文 ↔ 工单 51 行「新文本」逐行核；返回不一致清单。"""
+    """闸三：副本正文 ↔ 工单各行「新文本」逐行核；返回不一致清单。"""
     from docx import Document
     doc = Document(str(copy_path))
     body = [norm(t) for t in paras(doc)]
@@ -341,7 +385,7 @@ def verify(copy_path):
         left = sum(len(re.findall(re.escape(a), t)) for t in paras(doc)) + \
                sum(len(re.findall(re.escape(a), t)) for t in cells(doc))
         term.append((rid, a, b, left))
-    print(f"[verify] 命中工单新文本={len(ok)} 未命中={len(miss)} 待批占位={len(await_)}")
+    print(f"[verify] 命中工单新文本={len(ok)} 未命中={len(miss)} 待批占位={n_await(await_)}")
     for rid, why in miss:
         print(f"   [未命中] {rid}: {why}")
     for rid, why in await_:
@@ -352,7 +396,7 @@ def verify(copy_path):
         got = sum(t.count(b) for t in paras(doc)) + sum(t.count(b) for t in cells(doc))
         print(f"   [术语] {rid}: 旧词「{a}」残留 {left} 处（应 0）、新词「{b}」出现 {got} 处")
     bad = [t for t in term if t[3] != 0]
-    print(f"结论：不一致 {len(miss)} 行（其中已声明待批 {len(await_)} 行不算未完成）"
+    print(f"结论：不一致 {len(miss)} 行（其中已声明待批 {n_await(await_)} 行不算未完成）"
           f"；术语残留 {len(bad)} 项")
     return 0 if not bad else 1
 
@@ -768,7 +812,7 @@ def pair57(copy_path):
     doc.save(str(copy_path))
     aft = Document(str(copy_path))
     ap = paras(aft)
-    ref517 = sum(1 for x in ap if "图5-17" in x.replace(" ", "") and not is_caption(x))
+    ref517 = sum(1 for x in ap if "图5-17" in norm_id(x) and not is_caption(x))
     print(f"[pair57] 三处同进同退完成：E2→段{i2} 换数、E3 插在其后、E4→段{i4} 改为受约束过渡句；"
           f"段落 {len(body)}→{len(ap)}；图5-17 正文引用数（排除题注）= {ref517}（应 ≥1）")
     return 1 if ref517 >= 1 else 0
@@ -948,7 +992,7 @@ def add_fig514_pointer(doc):
     同一个已核对象换个图号指过去，不带数字、不带强度词、不写结论——与 5.7 过渡句同一把授权。"""
     from docx.oxml.ns import qn
     txts = [p.text for p in doc.paragraphs]
-    cited = sum(1 for t in txts if "图5-14" in t.replace(" ", "") and not is_caption(t))
+    cited = sum(1 for t in txts if "图5-14" in norm_id(t) and not is_caption(t))
     if cited:
         return f"图5-14 正文引用已有 {cited} 处 ⇒ 不补（幂等）"
     host = next((i for i, t in enumerate(txts) if "0.539923" in t and "0.148723" in t), None)
@@ -985,7 +1029,7 @@ def id_census(doc):
         if is_caption(t):
             continue
         for m in re.finditer(r"(表|图)\s*(\d+(?:-\d+)?[a-z]?)", t):
-            k = m.group(1) + m.group(2).replace(" ", "")
+            k = norm_id(m.group(0))                       # 号尺只声明一处：`norm_id`（17:5x 第③条）
             out[k] = out.get(k, 0) + 1
     return out
 
@@ -1007,18 +1051,18 @@ def add_row_pointers(doc):
         tid = m.group(1) + m.group(2)
         for w in FORBID_IN_TRANSITION:
             assert w not in sent, f"{r['id']} 的指向句混进强度词 {w}"
-        assert not re.search(r"\d", re.sub(re.escape(tid), "", sent.replace(" ", ""))), \
+        assert not re.search(r"\d", re.sub(re.escape(tid), "", norm_id(sent))), \
             f"{r['id']} 的指向句带进新数字：{sent}"      # 先归一空格再剔号，否则"表 3-4"躲过剔除、被自己的闸拦下
         ci = None
         for i, p in enumerate(doc.paragraphs):
-            mm = re.match(r"^(表|图)(\d+(?:-\d+)?[a-z]?)", p.text.strip().replace(" ", ""))
+            mm = re.match(r"^(表|图)(\d+(?:-\d+)?[a-z]?)", norm_id(p.text))
             if mm and mm.group(0) == tid and is_caption(p.text):
                 ci = i
                 break
         if ci is None:
             print(f"   [指向句] {r['id']}：副本里没有整段等于 {tid} 的题注 ⇒ 不做")
             continue
-        if any(tid in p.text.replace(" ", "") and not is_caption(p.text) for p in doc.paragraphs):
+        if any(tid in norm_id(p.text) and not is_caption(p.text) for p in doc.paragraphs):
             print(f"   [指向句] {r['id']}：{tid} 已有正文引用 ⇒ 不重复插（幂等）")
             continue
         para = doc.paragraphs[ci]
@@ -1047,7 +1091,7 @@ def figs(copy_path):
     print("   [图]", add_fig514_pointer(doc))
     np_ = add_row_pointers(doc)
     post = id_census(doc)
-    want = {"图5-14"} | {re.search(r"(表|图)\s*(\d+(?:-\d+)?[a-z]?)", r["loc"]).group(0).replace(" ", "")
+    want = {"图5-14"} | {norm_id(re.search(r"(表|图)\s*(\d+(?:-\d+)?[a-z]?)", r["loc"]).group(0))
                          for r in rows() if r["id"] in POINTER_ROWS and re.search(r"(表|图)\s*\d", r["loc"])}
     changed = {k for k in set(pre) | set(post) if pre.get(k, 0) != post.get(k, 0)}
     drift = {k: (pre.get(k, 0), post.get(k, 0)) for k in changed if k not in want}
@@ -1184,7 +1228,7 @@ def cells_op(copy_path):
                     if s:
                         cap = s
                         break
-            m = re.match(r"^(表|图)\s*(\d+(?:-\d+)?[a-z]?)", cap.replace(" ", ""))
+            m = re.match(r"^(表|图)(\d+(?:-\d+)?[a-z]?)", norm_id(cap))
             if m and m.group(1) + m.group(2) == tid:      # 整段相等，表5-1 不会串到 表5-10
                 tbls.append((cap, t))
         if not tbls:
@@ -1221,7 +1265,7 @@ def selfcheck_guards():
         bad.append(f"TRANSITION_517 被强度词黑名单拦了（图名本身含'倍' ⇒ 黑名单不许锁单字）：{TRANSITION_517}")
     if re.search(r"\d", re.sub(r"图\s*5-17", "", TRANSITION_517.replace("图 5-17", "图5-17"))):
         bad.append("TRANSITION_517 剔掉图号后仍有数字 ⇒ 号位豁免失效")
-    r14 = re.sub(re.escape("图5-14"), "", FIG514_POINTER.replace(" ", ""))
+    r14 = re.sub(re.escape("图5-14"), "", norm_id(FIG514_POINTER))
     if re.search(r"\d", r14.replace("Rel-L2", "").replace("L2", "")):
         bad.append(f"FIG514_POINTER 剔号与指标名后仍有数字：{r14}")
     if "（启用）" not in CELL_OPS["A16"][2] or CELL_OPS["A16"][2] not in CELL_OPS["A16"][2]:
@@ -1276,7 +1320,7 @@ def selfcheck_rows():
 def caption_ids(text: str):
     """从一行文本里抽**整段相等**的表/图号；抽不出返回 None。所有工具共用这一份抽号规则，
     免得每个工具各写一遍 `startswith` —— 今天同族已经犯两次（表5-1 吞 表5-10、表4-4 吞 表4-4b）。"""
-    m = re.match(r"^(表|图)\s*(\d+(?:-\d+)?[a-z]?)", text.strip().replace(" ", ""))
+    m = re.match(r"^(表|图)(\d+(?:-\d+)?[a-z]?)", norm_id(text))
     return (m.group(1) + m.group(2)) if m else None
 
 
@@ -1308,7 +1352,7 @@ def selfcheck_ids(copy_path=None):
             bad.append(f"{a}/{b} 有一号解析为空（{ra}/{rb}）⇒ 副本不对或抽号规则变了")
         elif set(ra) & set(rb):
             bad.append(f"{a} 与 {b} 解析到同一段 {sorted(set(ra) & set(rb))}")
-        naive = [i for i, t in enumerate(paras) if t.strip().replace(" ", "").startswith(a) and is_caption(t)]
+        naive = [i for i, t in enumerate(paras) if norm_id(t).startswith(norm_id(a)) and is_caption(t)]
         if set(naive) == set(ra):
             bad.append(f"{a}：前缀法与整段法同解 ⇒ 这个副本里夹具没有鉴别力（换一枚含兄弟号的副本）")
     print(f"[必过夹具·号整段相等] 跑在 {p.name} 上，两对必不同 ⇒ " + ("全过 ✓" if not bad else f"**{len(bad)} 条失效**"))
@@ -1390,10 +1434,26 @@ def selfcheck_rowids():
 
 
 def selfcheck_all(copy_path=None):
-    """九条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
+    """十条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
     return (selfcheck_caption() or selfcheck_guards() or selfcheck_fold()
             or selfcheck_console() or selfcheck_rows() or selfcheck_ids(copy_path)
-            or selfcheck_stale() or selfcheck_terms_scope() or selfcheck_rowids())
+            or selfcheck_stale() or selfcheck_terms_scope() or selfcheck_rowids()
+            or selfcheck_normid())
+
+
+def selfcheck_normid():
+    """必红夹具（统括官 9/27 17:5x 第③条）：**同一号的几种写法必须判为同一号**。
+    喂的是 `norm_id` 本身，不把比较重抄一遍：造三种载体（半角紧贴／正文里带空格／全角空格＋全角短横），
+    归一尺必须三发全中，**不归一的旧尺必须少中一发**——否则这条断言在测一个不存在的东西。"""
+    a = "表3-4"
+    texts = [f"{a}  采样设置与选点规则", "数据预处理各步的口径汇总于表 3-4。", "见 表　3–4 的第三行"]
+    got = sum(1 for t in texts if a in norm_id(t))
+    naive = sum(1 for t in texts if a in t)
+    ok = got == len(texts) and naive < len(texts)
+    print(f"[必红夹具·号判定先归一] 归一尺 `norm_id()` 数到 {got}/{len(texts)}（应满）、不归一旧尺只有 {naive}"
+          f"（必须少，否则夹具空转）⇒ " + ("空格／全角空格／全角短横三种写法同号 ✓" if ok
+                                          else "**尺没咬住：'某号有没有被引用'会漏，孤号判定不可信**"))
+    return 0 if ok else 1
 
 
 def selfcheck_console():
@@ -1432,7 +1492,7 @@ def main() -> int:
     g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
-    g.add_argument("--selfcheck", action="store_true", help="只跑题注夹具（必过 + 必红各一条）")
+    g.add_argument("--selfcheck", action="store_true", help="跑十条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一）")
     g.add_argument("--all", action="store_true",
                    help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（含来源列）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
     ap.add_argument("--into", type=pathlib.Path, default=None,
@@ -1531,7 +1591,9 @@ def main() -> int:
             manual.append((r["id"], "表注文本已备好，但要落在**那张表之后**（表题在上、表在下，"
                                     "从表题段插会插到表格上面）⇒ 人工定位置，脚本不猜"))
     print(f"[plan] 可整段重写={len(auto)} 插表注={len(notes)} 术语算子={len(TERM_OPS)} "
-          f"5.7 成对块={'E2+E3+E4 齐' if eblk else '不齐 ⇒ 整块不推'} 待批={len(await_)} 人工={len(manual)}")
+          f"5.7 成对块={'E2+E3+E4 齐' if eblk else '不齐 ⇒ 整块不推'} 待批={n_await(await_)} 人工={len(manual)}")
+    for num, line in s12_directives():            # 散文条目里的指令也要每轮见面（详见该函数docstring）
+        print(f"   [§12 指令·本轮必读] 第 {num} 条：{line}")
     if args.plan:
         for rid, i, _ in auto:
             print(f"   [自动] {rid} → 段 {i}")
