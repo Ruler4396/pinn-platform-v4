@@ -104,30 +104,48 @@ require_dolfinx_09() {
 }
 
 # Same measurement, callable twice: install writes it into install_channel.txt, status re-reads it.
-# It is a function and not an inline heredoc because the first reading came back EMPTY
-# (install_channel.txt at 01:38:50 says `served_by=/root/condapkgs/urls.txt -> `): mamba had created
-# urls.txt but had not written the URLs into it yet, and the loop stopped at "the file exists".
-# "Exists" is not "has the answer" -- so an empty tally now falls through to the next candidate and,
-# if nothing has entries, says so instead of printing a bare arrow.
+# It is a function and not an inline heredoc because two readings in a row were wrong in two
+# different ways: install_channel.txt (01:38:50) printed `served_by=/root/condapkgs/urls.txt -> `
+# because the loop stopped at "the file exists" while the file was empty, and the conda-meta records
+# all say `conda.anaconda.org` (measured 01:59:58, 210/210) because a MIRROR COPIES the upstream
+# `url` field out of the index it mirrors -- a package record names where the artifacts live
+# upstream, not where this box pulled them from.  What the package cache actually contains is the
+# directory tree libmamba staged the downloads into: pkgs/https/<host>/..., which is bytes it wrote
+# for itself.  All three are reported, each labelled with what it can and cannot prove.
 served_by_measured() {
   local py="${1:-python3}"
   "$py" - "$PREFIX" "$MF_HOME" "${CONDA_PKGS_DIRS:-}" <<'PY'
-import collections, os, sys
-cands = [p for p in (sys.argv[3], os.path.join(sys.argv[1], "pkgs"), os.path.join(sys.argv[2], "pkgs")) if p]
-for c in cands:
-    cand = os.path.join(c, "urls.txt")
-    if not os.path.exists(cand):
-        continue
-    ls = [l.strip() for l in open(cand, errors="replace") if l.strip()]
-    cnt = collections.Counter(l.split("//")[1].split("/")[0] for l in ls if "//" in l)
-    if not cnt:
-        print("%s exists but holds 0 urls -- not read yet, trying the next candidate" % cand)
-        continue
-    print("%s -> %d urls, hosts: %s" % (cand, len(ls),
-                                        ", ".join("%s:%d" % kv for kv in cnt.most_common(4))))
-    break
-else:
-    print("no pkgs/urls.txt with entries -- serving host UNKNOWN, not assumed")
+import json, os, sys
+from collections import Counter
+roots = [p for p in (sys.argv[3], os.path.join(sys.argv[1], "pkgs"), os.path.join(sys.argv[2], "pkgs")) if p]
+out = []
+for c in roots:
+    st = os.path.join(c, "https")
+    if os.path.isdir(st):
+        hosts = sorted(os.listdir(st))
+        n = sum(len(f) for _, _, f in os.walk(st))
+        out.append("%s -> staged dirs %s (%d files); this is where libmamba put the bytes" % (c, hosts, n))
+    u = os.path.join(c, "urls.txt")
+    if os.path.exists(u):
+        ls = [l.strip() for l in open(u, errors="replace") if l.strip()]
+        cnt = Counter(l.split("//")[1].split("/")[0] for l in ls if "//" in l)
+        out.append("%s -> %d urls, hosts: %s" % (u, len(ls), dict(cnt.most_common(4)) or "EMPTY FILE"))
+meta = os.path.join(sys.argv[1], "conda-meta")
+if os.path.isdir(meta):
+    ch = Counter()
+    for f in os.listdir(meta):
+        if not f.endswith(".json"):
+            continue
+        try:
+            url = (json.load(open(os.path.join(meta, f), encoding="utf-8", errors="replace")) or {}).get("url", "")
+        except Exception:
+            continue
+        if "//" in url:
+            ch[url.split("//")[1].split("/")[0]] += 1
+    if ch:
+        out.append("conda-meta url fields: %s (mirror copies the upstream url; names the index, NOT the host served)"
+                   % dict(ch.most_common(4)))
+print(" || ".join(out) if out else "no package-cache evidence -- serving host UNKNOWN, not assumed")
 PY
 }
 
@@ -204,7 +222,7 @@ read_pointer() {
 # Linux clone with autocrlf off, so its working bytes equal the blob bytes there; on a CRLF working
 # copy the two rulers part ways, which is why the number below is quoted with its ruler.
 declare -A EXPECT=(
-  [model/scripts/route2/solve_second_impl.py]=bacc01428fb6abda
+  [model/scripts/route2/solve_second_impl.py]=bb020a4f637fce9e
 )
 # crosscheck_second_impl.py and install_external_solver.sh are checked for PRESENCE only: they landed
 # before this table existed, and their blobs are already in git (pin 7e67943 and earlier).

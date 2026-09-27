@@ -149,37 +149,31 @@ def write_nodes(path: Path, pts: list[tuple[float, float]], u: list[float], v: l
                              for (x, y), uu, vv, pp in zip(pts, u, v, p)])
 
 
-def nodes_from_dofs(dof_pts, u_dofs, p_pts, p_dofs, gdim=2):
-    """Rebuild per-vertex (x, y, u, v, p) rows from a vector space's FLAT dof array.
+def nodes_from_vertex_arrays(pts, u, v, p):
+    """(x, y, u, v, p) rows from arrays that all index the SAME vertex list, sorted by (x, y).
 
-    0.9's `Function.x.array` is one scalar per dof, and the two velocity dofs of a vertex sit next to
-    each other only under an interleaved layout -- under a blocked layout they are N apart.  Reading
-    `row[0]`/`row[1]` assumed the first and died with `IndexError: invalid index to scalar variable`
-    on the real box (smoke leg, 01:38:54).  So the layout is not assumed at all: group the scalar dofs
-    by their coordinate, sort each group by dof index, and take the components in that order -- which
-    is component 0 then component 1 under either layout.  Both orderings are exercised in --selfcheck.
-    Anything that does not line up raises, because a half-matched CSV would feed the three integrals
-    numbers belonging to different vertices, which is worse than no run at all.
+    Measured on the box at 01:59:58, in the env this file is meant to run in: for a vector P1 space
+    `tabulate_dof_coordinates()` returns one row PER VERTEX (9 rows on a 2x2 mesh) while `x.array`
+    holds gdim values per vertex (18) -- so the coordinate list of the vector space cannot be paired
+    with its own flat array by position, and grouping by coordinate (the first fix attempt) died with
+    `vertex (8.0, -0.35) carries 1 velocity dofs`.  The component-wise interpolate that replaced it
+    (`Function(scalar).interpolate(vector.sub(0))`, measured OK) puts every quantity in the scalar
+    space, so there is exactly one vertex list and one index per row.  The two checks below are what
+    would have caught the wrong pairing at the source: a length mismatch, or the same vertex twice.
     """
-    if gdim != 2:
-        raise ValueError(f"this export writes (x,y,u,v,p): gdim must be 2, got {gdim}")
-    groups: dict[tuple[float, float], list[int]] = {}
-    for idx, pt in enumerate(dof_pts):
-        groups.setdefault((round(float(pt[0]), 9), round(float(pt[1]), 9)), []).append(idx)
-    pmap: dict[tuple[float, float], int] = {}
-    for idx, pt in enumerate(p_pts):
-        key = (round(float(pt[0]), 9), round(float(pt[1]), 9))
-        if key in pmap:
-            raise ValueError(f"pressure space carries two dofs at {key} -- not one dof per vertex")
-        pmap[key] = idx
-    rows = []
-    for key, idxs in groups.items():
-        if len(idxs) != gdim:
-            raise ValueError(f"vertex {key} carries {len(idxs)} velocity dofs, expected {gdim}")
-        if key not in pmap:
-            raise ValueError(f"vertex {key} has velocity but no pressure dof -- spaces disagree")
-        iu, iv = sorted(idxs)
-        rows.append((key[0], key[1], float(u_dofs[iu]), float(u_dofs[iv]), float(p_dofs[pmap[key]])))
+    n = len(pts)
+    if not (len(u) == len(v) == len(p) == n):
+        raise ValueError(f"length mismatch: {n} vertices but arrays are "
+                         f"{len(u)}/{len(v)}/{len(p)} -- one of them is indexed by dof, not by vertex")
+    seen = set()
+    for k, (x, y) in enumerate(pts):
+        key = (round(float(x), 9), round(float(y), 9))
+        if key in seen:
+            raise ValueError(f"vertex {key} appears twice in the export list -- "
+                             f"the coordinate source does not match the arrays")
+        seen.add(key)
+    rows = [(float(pts[k][0]), float(pts[k][1]), float(u[k]), float(v[k]), float(p[k]))
+            for k in range(n)]
     rows.sort(key=lambda r: (r[0], r[1]))
     return rows
 
@@ -283,10 +277,11 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     u1, p1f = Function(q1), Function(s1)
     u1.interpolate(Usol.sub(0).collapse())
     p1f.interpolate(Usol.sub(1).collapse())
-    coords = q1.tabulate_dof_coordinates()
-    dof_pts = [(float(c[0]), float(c[1])) for c in coords]
-    p_pts = [(float(c[0]), float(c[1])) for c in s1.tabulate_dof_coordinates()]
-    rows = nodes_from_dofs(dof_pts, u1.x.array, p_pts, p1f.x.array, gdim)
+    uc, vc = Function(s1), Function(s1)
+    uc.interpolate(u1.sub(0))
+    vc.interpolate(u1.sub(1))
+    pts = [(float(c[0]), float(c[1])) for c in s1.tabulate_dof_coordinates()]
+    rows = nodes_from_vertex_arrays(pts, uc.x.array, vc.x.array, p1f.x.array)
     n = write_rows(out_csv, rows)
     import dolfinx
     return {"nx": nx, "ny": ny, "nodes": n, "ksp_reason": int(reason), "ksp_its": int(its),
@@ -393,29 +388,28 @@ def selfcheck() -> int:
         ck("MUST-RED: one node on the outlet plane cannot pass for a flux integral", True,
            f"refused: {str(exc)[:60]}")
 
-    # The layout question the smoke leg answered with an IndexError, settled by construction: both the
-    # interleaved and the blocked dof ordering have to give back the same vertex table, because this
-    # file does not get to know which one 0.9 used on this build.
+    # The export trap the smoke leg found on the real box, now asserted instead of assumed: the arrays
+    # must be indexed by vertex, and the two checks that catch a dof-indexed array are length and
+    # duplication.  A 2x2 mesh is 9 vertices and 18 velocity values -- pairing those by position is
+    # exactly what wrote rows belonging to different vertices.
     verts = [(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)]
-    want_rows = [(x, y, 100.0 + k, 200.0 + k, 300.0 + k) for k, (x, y) in enumerate(verts)]
-    inter_pts = [pt for pt in verts for _ in range(2)]
-    inter_u = [v for k in range(len(verts)) for v in (100.0 + k, 200.0 + k)]
-    block_pts = verts + verts
-    block_u = [100.0 + k for k in range(len(verts))] + [200.0 + k for k in range(len(verts))]
-    p_pts = list(verts)
-    p_dofs = [300.0 + k for k in range(len(verts))]
-    got_i = nodes_from_dofs(inter_pts, inter_u, p_pts, p_dofs)
-    got_b = nodes_from_dofs(block_pts, block_u, p_pts, p_dofs)
-    ck("nodes_from_dofs gives the same vertex table from an interleaved AND a blocked dof layout "
-       "(the 0.9 array is flat; 01:38:54's smoke died assuming one of them)",
-       got_i == sorted(want_rows) and got_b == sorted(want_rows),
-       f"interleaved={len(got_i)} rows blocked={len(got_b)} rows, want {len(want_rows)}")
+    want_rows = sorted((x, y, 100.0 + k, 200.0 + k, 300.0 + k) for k, (x, y) in enumerate(verts))
+    got = nodes_from_vertex_arrays(verts, [100.0 + k for k in range(4)],
+                                   [200.0 + k for k in range(4)], [300.0 + k for k in range(4)])
+    ck("nodes_from_vertex_arrays pairs one vertex with one value per quantity and sorts the table",
+       got == want_rows, f"{len(got)} rows, want {len(want_rows)}")
     try:
-        nodes_from_dofs(inter_pts, inter_u, verts[:3], p_dofs[:3])
-        ck("MUST-RED: a velocity vertex with no pressure dof is refused, not written", False, "it wrote")
+        nodes_from_vertex_arrays(verts, [1.0] * 8, [1.0] * 4, [1.0] * 4)
+        ck("MUST-RED: a dof-indexed velocity array (2 per vertex) is refused, not written", False, "it wrote")
     except ValueError as exc:
-        ck("MUST-RED: a velocity vertex with no pressure dof is refused, not written", True,
-           f"refused: {str(exc)[:60]}")
+        ck("MUST-RED: a dof-indexed velocity array (2 per vertex) is refused, not written", True,
+           f"refused: {str(exc)[:66]}")
+    try:
+        nodes_from_vertex_arrays(verts + [(0.0, 0.0)], [1.0] * 5, [1.0] * 5, [1.0] * 5)
+        ck("MUST-RED: the same vertex listed twice is refused, not written", False, "it wrote")
+    except ValueError as exc:
+        ck("MUST-RED: the same vertex listed twice is refused, not written", True,
+           f"refused: {str(exc)[:66]}")
 
     # the reference itself, read through the same code path: proves this file's tag convention
     # reproduces what the shipped .edp exported (inlet/outlet columns present and non-empty)
