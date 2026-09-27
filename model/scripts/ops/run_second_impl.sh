@@ -78,6 +78,16 @@ require_venue() {
 
 PYBIN() { [ -x "$PREFIX/bin/python" ] && printf '%s' "$PREFIX/bin/python" || printf '%s' "$(command -v python3 || true)"; }
 
+# Legs that need dolfinx must NOT fall back to the interpreter baked into the image: the first time
+# smoke ran while the transaction was still open, PYBIN silently used /usr/local/bin/python3 and died
+# on `import ufl` -- which reads like a solver failure and is actually "the env is not built yet".
+# Set a global rather than echo from $(...): a die() inside a command substitution exits only the
+# subshell, so the caller would sail on with an empty path and report rc=127 for the wrong reason.
+use_env_python() {
+  ENVPY="$PREFIX/bin/python"
+  [ -x "$ENVPY" ] || die "no env python at $ENVPY -- the install leg has not produced it yet (do not read the next error as a dolfinx or API failure)"
+}
+
 # --- channel bootstrap: Miniforge, pinned by URL + published sha256 + byte size -------------------
 # Why this exists: install_external_solver.sh stops (correctly) when no conda/mamba is on PATH, and
 # §四M measured from this instance that micromamba off micro.mamba.pm crawls (~120 KB/min) while GitHub
@@ -201,8 +211,9 @@ install_body() {
   log "the ${SEGMENT_S}s-then-report cap and the tar+sha256+restore line; this script does not re-declare them)"
   RUN="${RUN:-1}" CAP_MIN="${CAP_MIN:-60}" PREFIX="$PREFIX" PATH="$MF_HOME/bin:$PATH" \
     bash "$R2/install_external_solver.sh" 2>&1 | tail -25 || die "installer rc=$? -- report it; do not fall back to the laptop"
+  use_env_python
   local pv
-  pv=$("$(PYBIN)" -c "import dolfinx, sys; print(dolfinx.__version__ + ' py' + sys.version.split()[0])") \
+  pv=$("$ENVPY" -c "import dolfinx, sys; print(dolfinx.__version__ + ' py' + sys.version.split()[0])") \
     || die "dolfinx not importable from $PREFIX after the installer said it ran"
   # §四M asked for the version AND the channel in the result, so both go on disk, not into chat.
   # §四M asked for the version AND the channel in the result.  The channel is READ, not asserted:
@@ -222,7 +233,7 @@ install_body() {
 smoke_body() {
   require_venue
   read_pointer
-  local py; py=$(PYBIN); [ -x "$py" ] || die "no env python at $py -- install first"
+  use_env_python; local py="$ENVPY"
   OUT="$OUT/smoke"; mkdir -p "$OUT" || die "cannot create $OUT"
   log "smoke = the REAL entry point on a 2x2 mesh (not a copy of its API calls)"
   timeout "$SEGMENT_S" "$py" "$R2/solve_second_impl.py" --nx 2 --ny 2 --out "$OUT" 2>&1 | tail -12 \
@@ -236,7 +247,7 @@ smoke_body() {
 run_body() {
   require_venue
   read_pointer
-  local py; py=$(PYBIN); [ -x "$py" ] || die "install first"
+  use_env_python; local py="$ENVPY"
   OUT="$OUT/base"; mkdir -p "$OUT"
   [ -f "$R2/solve_second_impl.py" ] || die "solve_second_impl.py is not in this checkout -- no solve attempted"
   log "base level = the .edp's own border counts (nx=180 ny=40, .edp:53)"
@@ -253,7 +264,7 @@ run_body() {
 refine_body() {
   require_venue
   read_pointer
-  local py; py=$(PYBIN); [ -x "$py" ] || die "install first"
+  use_env_python; local py="$ENVPY"
   [ -f "$OUT/base/second_impl_nodes.csv" ] || die "no base level at $OUT/base -- run the base leg first"
   OUT="$OUT/refine"; mkdir -p "$OUT"
   log "doubled level = every buildmesh side doubled (.edp:53 180->360, 40->80)"
