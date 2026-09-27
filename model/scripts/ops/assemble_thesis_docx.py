@@ -396,6 +396,153 @@ def e_block(doc, auto):
             "delete_text": body[hits4[0]]}
 
 
+NEW_TABLES = {
+    "表4-4b": {
+        "anchor": ("after-table", "表4-4"),
+        "caption": "表4-4b  严格稀疏观测批相对表 4-4 另置零的损失权重项",
+        "header": ["权重项", "该批取值", "说明"],
+        "rows": [["入口流量损失权重 inlet_flux_weight", "0.0", "在表 4-4 基础上另置零"],
+                 ["出口压力损失权重 outlet_pressure_weight", "0.0", "同上"],
+                 ["压降损失权重 pressure_drop_weight", "0.0", "同上"],
+                 ["壁面损失权重 wall_weight", "0.0", "同上"]],
+        "note": ("适用范围声明：表 4-4 与表 4-4b 分属两批训练，其权重不可互相代入；"
+                 "表 4-4b 的四项为整批共同配置，不是双模型与单网络之间的差异项。"),
+    },
+    "表5-9": {
+        "anchor": ("before-para", "5.8 PDE约束与双模型耦合作用分析"),
+        "caption": "表5-9  PINN 与 CFD 的单次成本、训练入账与盈亏平衡工况数（混合口径）",
+        "from_markdown": "**表 5-9（",   # 必须钉到标题行：只写"表 5-9"会先命中 §0 里提到这四个字的那一行
+        "note": ("本表 A、C 两列取自 2026-04-20 旧主机（`iZ7xv19l7qsogyq3hzyhydZ`）的一次计时，"
+                 "B 列取自本轮 8 核实例的五种子实测中位 ⇒ A、C 与 B 不同机、不同次，为混合口径；"
+                 "同机补测（E5）本轮未做，故本限定不可删。K*=B/(A−C) 逐格向上取整，单价一换必整列重算。"),
+    },
+    "表5-10": {
+        "anchor": ("before-para", "5.9 本章小结"),   # 不能用"但当前模型仍有部分不足"：那段正是 B2 的落字目标，落字后原文已不在
+        "caption": "表5-10  三臂与零训练基线的对照（test / mean-of-cases / rel_l2_speed）",
+        "header": ["方法与口径", "稠密", "分层 5%", "n", "备注"],
+        "rows": [["双模型（本文）", "0.028617 ± 0.002162", "0.031202 ± 0.004515", "5", "均值与配对差同为 obs_seed=0 五粒"],
+                 ["臂A 单网络联合 PINN", "0.039161 ± 0.009313", "0.023144 ± 0.004258", "5", "稠密档实测更慢：139.6 s 对 81.4 s"],
+                 ["臂B 纯数据 MLP（无物理）", "0.019436 ± 0.006923", "0.051029 ± 0.008870", "5", "训练墙钟区间 120.9–212.9 s；pooled 口径无配对"],
+                 ["臂C POD+观测点最小二乘", "—（本次只跑收缩族）",
+                  "C-val 0.828487；C-test-1 0.531695；C-test-2 0.611451", "单次读数",
+                  "零训练；阶数由 99.97% 能量判据算出（r=1），非人工挑选；敏感性检验未做"]],
+        "note": ("① 全表 n=5，Wilcoxon 最小可达双侧 p=0.0625 ⇒ 只报符号与幅度，不写显著性；② 未做多重比较校正；"
+                 "③ 臂C 为零训练、与三臂不同机时口径，其墙钟不可与本表 PINN 行直比；"
+                 "④ 同一行并排的均值与配对差来自同一 obs_seed 子集；⑤ 本表只有 mean_of_cases 一个口径"
+                 "（臂B 的评估件顶层无 global_metrics ⇒ pooled 键数为 0）。"),
+    },
+}
+
+
+def md_block(md_text: str, title_marker: str):
+    """从工单里把某张表的 markdown 块抠成 (header, rows)。"""
+    lines = md_text.splitlines()
+    start = next((i for i, l in enumerate(lines) if title_marker in l), None)
+    if start is None:
+        return None, None
+    tbl = []
+    for l in lines[start:]:                        # 只吃这一块：碰到第一行非表格就停（否则会吞掉后文所有表）
+        if l.strip().startswith("|"):
+            tbl.append(l.strip())
+        elif tbl:
+            break
+    rows, header = [], None
+    for l in tbl:
+        cells = [c.strip() for c in l.replace("\\|", "@@PIPE@@").strip("|").split("|")]   # 转义竖线不当分隔（与 check_md_tables 同法）
+        cells = [c.replace("@@PIPE@@", "|") for c in cells]
+        if all(re.fullmatch(r":?-{2,}:?", c) for c in cells):
+            continue
+        if header is None:
+            header = cells
+        else:
+            if len(cells) != len(header):
+                print(f"   [截块 {title_marker}] 第 {len(rows) + 1} 行格数 {len(cells)} ≠ 表头 {len(header)} ⇒ 到此为止，后面的行不归这张表")
+                break
+            rows.append(cells)
+    return header, rows
+
+
+def insert_tables(copy_path):
+    """③ 新建表框：表 4-4b / 5-9 / 5-10。逐张插到锚点后，并回读结构差。"""
+    from docx import Document
+    import copy as _copy
+    from docx.oxml.ns import qn
+    doc = Document(str(copy_path))
+    n_tbl0, n_par0 = len(doc.tables), len(doc.paragraphs)
+    md = WORK.read_text(encoding="utf-8")
+    made = []
+    for name, spec in NEW_TABLES.items():
+        header, rows = spec.get("header"), spec.get("rows")
+        if spec.get("from_markdown"):
+            header, rows = md_block(md, spec["from_markdown"])
+            if not header:
+                print(f"   [跳过 {name}] 工单里找不到该 markdown 块")
+                continue
+        width = len(header)
+        rows = [r + [""] * (width - len(r)) for r in rows]
+        kind, key = spec["anchor"]
+        if kind == "before-para":
+            tgt = next((p for p in doc.paragraphs if p.text.strip().startswith(key)), None)
+        else:
+            tag = ("表" + key.replace("表", "")).strip()
+            cap_idx = next((i for i, p in enumerate(doc.paragraphs)
+                            if p.text.strip().startswith(tag) and not p.text.strip().startswith(tag + "b")), None)
+            tgt = None
+            if cap_idx is not None:
+                el = doc.paragraphs[cap_idx]._p
+                while el is not None:
+                    el = el.getnext()
+                    if el is not None and el.tag == qn("w:tbl"):
+                        tgt = el
+                        break
+        if tgt is None:
+            print(f"   [跳过 {name}] 锚点段落找不到：{key}"
+                  f"（若该段本身是某行的落字目标，落字后原文就不在了 ⇒ 换用节标题当锚点）")
+            continue
+        cap = doc.add_paragraph(spec["caption"])
+        tab = doc.add_table(rows=len(rows) + 1, cols=width)
+        try:
+            tab.style = "Table Grid"
+        except KeyError:
+            pass
+        for j, h in enumerate(header):
+            tab.cell(0, j).text = str(h)
+        for i, r in enumerate(rows, start=1):
+            for j in range(width):
+                tab.cell(i, j).text = clean(str(r[j]))
+        note = doc.add_paragraph(spec["note"])
+        # 把刚建的三段搬到锚点前/后（add_* 只会追加到文末）
+        els = [cap._p, tab._tbl, note._p]
+        ref = tgt._p if hasattr(tgt, "_p") else tgt        # before-para 给的是 Paragraph，after-table 给的是 w:tbl 元素
+        if kind == "before-para":                          # 插在锚点段之前 ⇒ 正序 addprevious
+            for e in els:
+                e.getparent().remove(e)
+                ref.addprevious(e)
+        else:                                              # 插在锚点表之后 ⇒ 反序 addnext 才不互相顶位
+            for e in reversed(els):
+                e.getparent().remove(e)
+                ref.addnext(e)
+        made.append((name, len(rows), width))
+    doc.save(str(copy_path))
+    after = Document(str(copy_path))
+    print("[tables] 新建表框 " + str(len(made)) + " 张：" +
+          "；".join(f"{n}({r}行×{c}列)" for n, r, c in made))
+    print(f"[tables] 表数 {n_tbl0}→{len(after.tables)}  段落 {n_par0}→{len(after.paragraphs)}")
+    if len(after.tables) != n_tbl0 + len(made):
+        print("[INVALID] 表数增量对不上 ⇒ 别交")
+        return 0
+    same = all(a == b for a, b in zip(tgt_texts(Document(str(copy_path))), tgt_texts(Document(str(copy_path)))))
+    return len(made)
+
+
+def tgt_texts(doc):
+    return [c.text for t in doc.tables for r in t.rows for c in r.cells]
+
+
+def _unused_main() -> int:
+    return made
+
+
 def main() -> int:
     for s in (sys.stdout, sys.stderr):
         try:
@@ -407,6 +554,7 @@ def main() -> int:
     g.add_argument("--plan", action="store_true")
     g.add_argument("--apply", action="store_true")
     g.add_argument("--verify", type=pathlib.Path)
+    g.add_argument("--tables", type=pathlib.Path, help="在给定副本上插三张新表（表4-4b/5-9/5-10）")
     ap.add_argument("--expect-changed", type=int, default=None,
                     help="--apply 用：期望被改段落数，不接等即 INVALID（闸三）")
     args = ap.parse_args()
@@ -415,6 +563,12 @@ def main() -> int:
 
     if args.verify:
         return verify(args.verify)
+    if args.tables:
+        if not args.tables.exists():
+            print(f"[INVALID] 副本不存在：{args.tables}", file=sys.stderr)
+            return 2
+        n = insert_tables(args.tables)
+        return 0 if n == len(NEW_TABLES) else 1
 
     if not SRC.exists():
         print(f"[INVALID] 目标件不存在：{SRC}", file=sys.stderr)
