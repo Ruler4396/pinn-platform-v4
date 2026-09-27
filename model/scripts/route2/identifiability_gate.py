@@ -584,8 +584,10 @@ def main() -> int:
             raise SystemExit(f"refusing to overwrite non-empty {out} (pass --force)")
         out.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(rep, ensure_ascii=False, indent=2) + "\n"
-        out.write_text(text, encoding="utf-8")
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        # write_bytes, not write_text: text mode turns every \n into \r\n on Windows, so a
+        # digest taken from the string would not be the digest of the file anyone re-hashes.
+        out.write_bytes(text.encode("utf-8"))
+        digest = hashlib.sha256(out.read_bytes()).hexdigest()
         print(f"[gateA] artifact_selfcert: path={out} bytes={out.stat().st_size} sha256={digest}")
     print(f"[gateA] elapsed_s={time_now() - t0:.3f} rc={rc}")
     return rc

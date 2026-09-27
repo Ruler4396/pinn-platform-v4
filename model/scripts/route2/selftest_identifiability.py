@@ -29,6 +29,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -176,6 +177,60 @@ def map_checks(ck: Check, geo: Dict[str, object]) -> None:
     ck.add("gateA_svd_agrees_with_normal_matrix_eigen_on_full_rank_cell", worst < 1.0e-6,
            {"worst_rel": worst, "sigma_min_gate": mine_sigma[-1],
             "sigma_min_normal_matrix": eig_sigma[-1]}, "worst rel < 1e-6")
+
+
+def jacobian_scaling_checks(ck: Check, geo: Dict[str, object]) -> None:
+    """A6 control for the shared-module fix: one leg that must go red if the extra
+    `1/theta_i` comes back, one leg that pins the direction of the historical error, and
+    one cross-module equality so no compensating edit can satisfy either leg alone.
+
+    Analytic derivative used: with x = p_J / p_in and R_series = 12L(1+kappa)/w_stem^3,
+        p_J = p_in / (1 + R_series*(1/r_up + 1/r_dn))
+        d ln p_J / d ln w_stem = 3(1 - x)
+        d ln p_J / d ln kappa  = -(kappa/(1+kappa)) (1 - x)
+    Those come from differentiating the closed form in the module's own docstring, not from
+    the code under test -- which is what makes the comparison a control rather than a mirror.
+    """
+    lengths, p_in = geo["lengths"], geo["p_in"]
+    tn = geo["theta_node"]
+    w_stem, kappa = tn[0], tn[3]
+    jac = ib.jacobian_wrt_params(tn, lengths, p_in, ())
+    p_j = ib.solve_network(tn, lengths, p_in)["p_junction"]
+    x = p_j / p_in
+    analytic = {"w_stem": 3.0 * (1.0 - x), "kappa": -(kappa / (1.0 + kappa)) * (1.0 - x)}
+    fixed = {"w_stem": jac[0][4], "kappa": jac[3][4]}
+    for name in analytic:
+        rel = abs(fixed[name] - analytic[name]) / abs(analytic[name])
+        ck.add(f"gateA_jacobian_scaling_matches_analytic_derivative[{name}]", rel < 1.0e-6,
+               {"fd": fixed[name], "analytic": analytic[name], "rel": rel}, "rel < 1e-6")
+
+    # leg B: an over-correction detector.  If someone "fixes" the missing theta by multiplying
+    # instead of simply not dividing, leg A passes for theta_i = 1 and fails elsewhere; this
+    # leg demands the shipped value NOT equal analytic * theta_i wherever theta_i != 1.
+    # (The historical error is invisible on columns with theta_i = 1 -- that is exactly why it
+    # survived: the headline rank case has w_stem = 1.0 and only kappa, off by 1/kappa = 8.33,
+    # betrayed it.  Recorded as a measurement, not as a pass/fail claim.)
+    for idx, name in ((0, "w_stem"), (1, "w_up"), (2, "w_dn"), (3, "kappa")):
+        ratio = 1.0 / tn[idx]
+        ck.measure(f"jacobian_scaling_legB[{name}]", {"theta": tn[idx],
+                                                      "old_over_new": ratio,
+                                                      "analytic_available": name in analytic})
+        if tn[idx] != 1.0 and name in analytic:
+            ck.add(f"gateA_jacobian_scaling_not_over_corrected[{name}]",
+                   abs(jac[idx][4] - analytic[name] * tn[idx]) / abs(analytic[name]) > 1.0e-3,
+                   {"shipped": jac[idx][4], "analytic_x_theta": analytic[name] * tn[idx]},
+                   "shipped != analytic*theta (a multiply-instead-of-not-divide would go red)")
+
+    # cross-module equality: this gate and the reference module must now compute the SAME
+    # operator.  Elementwise agreement; it would have been off by 1/theta_i before the fix.
+    mine = G.jacobian_distributed(tn, lengths, p_in, ())
+    worst = 0.0
+    for i in range(4):
+        for j in range(5):
+            if abs(mine[i][j]) > 1.0e-9:
+                worst = max(worst, abs(jac[i][j] - mine[i][j]) / abs(mine[i][j]))
+    ck.add("gateA_jacobian_agrees_elementwise_with_reference_module", worst < 1.0e-9,
+           _r(worst), "< 1e-9 elementwise")
 
 
 def _raises(fn, exc) -> bool:
@@ -475,6 +530,21 @@ def hygiene_checks(ck: Check) -> None:
     ck.add("gateA_artifact_default_path_is_outside_the_repo",
            repo_root not in Path(DEFAULT_OUT).resolve().parents, str(DEFAULT_OUT),
            "outside the repository")
+    # The self-certified digest has to be the digest of the bytes on disk, or every number in
+    # a receipt that quotes it is unfalsifiable.  Driving the real CLI is the only way to see
+    # this: text mode rewrites \n as \r\n on Windows, so a digest of the string is not a
+    # digest of the file.
+    cert = Path(tempfile.mkdtemp(prefix="gateA_cert_")) / "cert.json"
+    done = subprocess.run([sys.executable, str(HERE / "identifiability_gate.py"),
+                           "--json", str(cert)], capture_output=True, text=True, timeout=300)
+    printed = re.search(r"sha256=([0-9a-f]{64})", done.stdout)
+    actual = hashlib.sha256(cert.read_bytes()).hexdigest() if cert.is_file() else None
+    ck.add("gateA_artifact_selfcert_digest_is_the_digest_of_the_file",
+           done.returncode == 0 and printed is not None and printed.group(1) == actual
+           and cert.stat().st_size > 0,
+           {"printed": printed.group(1)[:16] if printed else None, "file": actual[:16],
+            "bytes": cert.stat().st_size if cert.is_file() else None},
+           "printed sha256 == sha256(file bytes)")
 
 
 def _try_overwrite(path: Path) -> None:
@@ -492,6 +562,7 @@ def main() -> int:
     geo = geometry()
     kernel_checks(ck)
     map_checks(ck, geo)
+    jacobian_scaling_checks(ck, geo)
     negative_control_checks(ck, geo)
     positive_control_checks(ck, geo)
     threshold_checks(ck)
@@ -505,8 +576,8 @@ def main() -> int:
     mismatch = _scaling_mismatch(geo)
     print(f"[gateA-measure] node_only_rank={node_rank}/4  with_16_stations_rank="
           f"{rich_rank}/{G.N_PARAMS}")
-    print(f"[gateA-measure] reference_module_column_scaling_mismatch={mismatch:.6g} "
-          f"(1/kappa expected on the kappa column; rank unaffected either way)")
+    print(f"[gateA-measure] reference_vs_gate_jacobian_max_rel_dev={mismatch:.3e} "
+          f"(non-zero means the 1/theta_i factor came back; rank unaffected either way)")
 
     out = Path(args.json) if args.json else DEFAULT_OUT
     repo_root = HERE.parents[2]
@@ -518,8 +589,8 @@ def main() -> int:
                          ensure_ascii=False, indent=2) + "\n"
         if out.is_file() and out.stat().st_size > 0 and not args.force:
             raise SystemExit(f"refusing to overwrite non-empty {out} (pass --force)")
-        out.write_text(text, encoding="utf-8")
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        out.write_bytes(text.encode("utf-8"))
+        digest = hashlib.sha256(out.read_bytes()).hexdigest()
         print(f"json={out}")
         print(f"[gateA] artifact_selfcert: path={out} bytes={out.stat().st_size} sha256={digest}")
     print(f"total={len(ck.rows)} failed={len(ck.failed)}")
@@ -531,19 +602,18 @@ def main() -> int:
 
 
 def _scaling_mismatch(geo: Dict[str, object]) -> float:
-    """How far the read-only reference's Jacobian sits from the dimensionally correct one.
-
-    `jacobian_wrt_params` divides by theta twice, so column i is off by 1/theta_i.  Rank is
-    untouched (a column rescaling), which is why the repo's rank-3/rank-4 claims stand; the
-    kappa column is off by 1/kappa = 8.33, which is why this gate does not inherit that
-    convention for a resolution limit.
+    """Max elementwise relative deviation between this gate's Jacobian and the reference
+    module's `jacobian_wrt_params`.  It was 8.33333 = 1/kappa before the A6 fix (that module
+    divided each column by theta once too many); this line reads ~0 now, and 1.0e0 in this
+    printout would mean the extra factor came back.  Rank is unaffected either way, which is
+    why the repo's rank-3 / rank-4 claims were never in question.
     """
     tn = geo["theta_node"]
     a = G.jacobian_distributed(tn, geo["lengths"], geo["p_in"], ())
     b = ib.jacobian_wrt_params(tn, geo["lengths"], geo["p_in"], ())
-    ratios = [abs(b[i][j]) / abs(a[i][j]) for i in range(4) for j in range(5)
-              if abs(a[i][j]) > 1.0e-12 and abs(b[i][j]) > 0.0]
-    return max(ratios) if ratios else float("nan")
+    dev = [abs(b[i][j] - a[i][j]) / abs(a[i][j]) for i in range(4) for j in range(5)
+           if abs(a[i][j]) > 1.0e-12]
+    return max(dev) if dev else float("nan")
 
 
 if __name__ == "__main__":

@@ -286,7 +286,19 @@ def flat_direction_probe(lengths: Dict[str, float], theta: Sequence[float],
 
 def jacobian_wrt_params(theta: Sequence[float], lengths: Dict[str, float], p_in: float,
                         probes: Sequence[Tuple[str, float]]) -> List[List[float]]:
-    """d(observable)/d(log param), rows = params, cols = observables."""
+    """d ln(observable)/d ln(param), rows = params, cols = observables.
+
+    The multiplicative step theta *= (1 +- h) already carries the theta_i factor:
+    (o(theta_i(1+h)) - o(theta_i(1-h))) / (2h) = partial o / partial ln theta_i.  An earlier
+    version divided by theta[idx] a second time, so column i came out as
+    (partial o / partial ln theta_i) / theta_i -- i.e. every column scaled by 1/theta_i.
+    Rank and null space are untouched by a column rescaling, so "node data rank 3 < 4" and
+    "rank 4 with stations" stand as measured; but any number read off this spectrum (the
+    printed eigenvalues, a condition ratio) was distorted by up to 1/kappa = 8.33x.  Found
+    by WP-B's gateA self-test, whose negative control compares the null direction this
+    Jacobian yields against the analytic (1+kappa)/w_stem^3 trade-off (0.968 before, 1.0
+    after).  Pinned there by gateA_jacobian_scaling_matches_analytic_derivative.
+    """
     h = 1.0e-5
     base_scale = [max(abs(o), 1.0e-12) for o in observables(theta, lengths, p_in, probes)]
     rows = []
@@ -295,8 +307,7 @@ def jacobian_wrt_params(theta: Sequence[float], lengths: Dict[str, float], p_in:
         tm = list(theta); tm[idx] *= (1.0 - h)
         rp = observables(tp, lengths, p_in, probes)
         rm = observables(tm, lengths, p_in, probes)
-        rows.append([(a - b) / (2.0 * h * theta[idx]) / sc
-                     for a, b, sc in zip(rp, rm, base_scale)])
+        rows.append([(a - b) / (2.0 * h) / sc for a, b, sc in zip(rp, rm, base_scale)])
     return rows
 
 
