@@ -15,7 +15,7 @@
 # pass as the K0b reference: `--require-12-digit-truth` makes the reader halt instead.
 set -uo pipefail
 
-FULL_PIN=523665574319a3cb575b6cc25790fd0254c53e7a
+FULL_PIN=70317a5965fb342ed5212fac71b5f6b20334eb5f
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="$WS/ffroot.tgz"
@@ -35,7 +35,7 @@ declare -A EXPECT=(
   [model/scripts/route2/artifacts.py]=1febd1e1dc89ae66c8242483e8dab6f33509fea09d979617c6e96c165f83c35d
   [model/scripts/route2/residual_scorers.py]=86c96b1cbf9c6bcefaeca6e984a303a8e8c9a60029e5377a9369a93665bf8745
   [model/scripts/route2/t_geometry.py]=94329e67f178b7dfed18f40b897d8b0d82f0cb0a161a57374155fcf86857742c
-  [model/scripts/route2/generate_t_case.py]=b31bf371cddeb444af6cf057aa2f2ef57fee7631e268208735f2136430370029
+  [model/scripts/route2/generate_t_case.py]=4a15997314ae6c71a4813e93181bb454f7f7ec7f776cf329a4c286fdb7f821ae
   [model/scripts/route2/k0_truth_gate.py]=bdfdc971e65c2ebe0da89ab6e628301c85b9f978218dc3112739842b2221f00e
   [model/cases/contraction_2d/cfd/C-base_ns_re1/probe_syntax.edp]=a4ca809f0b05b932d76a76d8e7d2d87dcefb1174c3cf0817eb5603c579f6bb25
 )

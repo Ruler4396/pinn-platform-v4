@@ -22,7 +22,7 @@
 # No training, no money, no rewrite of pushed history.
 set -uo pipefail
 
-FULL_PIN="${FULL_PIN:-549fa3a7720c54fed92e1324e43537670b3e5508}"   # the commit the WANT table describes
+FULL_PIN="${FULL_PIN:-70317a5965fb342ed5212fac71b5f6b20334eb5f}"   # the commit the WANT table describes
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="${FFROOT:-$WS/ffroot.tgz}"
@@ -51,13 +51,13 @@ declare -A WANT=(
   [model/scripts/gen_ns_re_edp.py]=530a74544dc046d7
   [model/scripts/finalize_ns_truth.py]=adc427cf87bc8995
   [model/scripts/check_ns_re_to_stokes.py]=912f17e0a8088ff0
-  [model/scripts/route2/generate_t_case.py]=b31bf371cddeb444
+  [model/scripts/route2/generate_t_case.py]=4a15997314ae6c71
   [model/scripts/route2/k0_truth_gate.py]=bdfdc971e65c2ebe
   [model/scripts/route2/artifacts.py]=1febd1e1dc89ae66
   [model/scripts/route2/residual_scorers.py]=86c96b1cbf9c6bce
   [model/scripts/route2/t_geometry.py]=94329e67f178b7df
   [model/scripts/route2/selftest_route2_stdlib.py]=73ebf7eb0b7aa688
-  [model/scripts/ops/run_k0b_5236655.sh]=3d5a0662940e1753
+  [model/scripts/ops/run_k0b_5236655.sh]=d341e5df95078ac1
   [model/cases/contraction_2d/cfd/C-base/C-base_stokes.edp]=2a62e0d41aa2fe98
   [model/cases/contraction_2d/cfd/C-base/C-base_raw.csv]=46bd0401cf0f92f5
   [model/cases/contraction_2d/cfd/C-base_ns_re1/probe_syntax.edp]=a4ca809f0b05b932
