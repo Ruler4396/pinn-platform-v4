@@ -125,6 +125,64 @@ def n_await(await_) -> int:
     return sum(1 for rid, _ in await_ if not is_authorized(rid))
 
 
+# **三张新表的形状声明**（统括官 19:0x 第③条）：丢**一整列**对 `check_md_tables` 的 ragged 闸天然不可见
+# （每行列数一致 ⇒ 永远不 ragged），所以列数与表头名必须单独钉成声明值。
+# 这里的值是 **15:0x 裁定之后**的形状：「来源件 + 行号」列**不进论文表**（仓内路径不可出版），
+# 由对照表的「三张新表的来源」一节承载（`table_sources()` 是唯一声明处）。
+# ⇒ 以后谁把它加回论文表、或再丢任何一列，第 11 条子检查当场红。
+TABLE_SHAPES = {
+    "表4-4b": {"cols": 3, "min_rows": 5, "header": ("权重项", "该批取值", "说明")},
+    "表5-9": {"cols": 4, "min_rows": 13,
+              "header": ("方法与口径", "收缩 C-base (s)", "弯曲 B-base (s)", "备注")},
+    "表5-10": {"cols": 5, "min_rows": 5,
+               "header": ("方法与口径", "稠密", "分层 5%", "n", "备注")},
+}
+
+
+def shape_violations(header, ncols, nrows, spec):
+    """纯函数：把一张表的实际形状与声明比对，返回不符清单。**夹具直接喂它**，不靠改文档。"""
+    v = []
+    if ncols != spec["cols"]:
+        v.append(f"列数 {ncols} ≠ 声明 {spec['cols']}")
+    if tuple(header) != spec["header"]:
+        v.append(f"表头与声明不符：现 {list(header)} ｜声明 {list(spec['header'])}")
+    if nrows < spec["min_rows"]:
+        v.append(f"行数 {nrows} < 声明下限 {spec['min_rows']}（行数只许增不许减）")
+    return v
+
+
+def selfcheck_table_shapes(copy_path=None):
+    """第 11 条子检查：三张新表的**列数与表头名必须等于声明值**，含一条自带必红。"""
+    from docx import Document
+    p = pathlib.Path(str(copy_path)) if copy_path else candidate()
+    if p is None or not p.exists():
+        print("[子检查·新表形状] 候选正本不在场 ⇒ **未验**（不许拿原件或猜一份副本充数）")
+        return 1
+    doc = Document(str(p))
+    body = list(doc.element.body)
+    bad = []
+    for tid, spec in TABLE_SHAPES.items():
+        tbls = tables_by_id(doc, body, tid)
+        if not tbls:
+            bad.append(f"{tid}：题注整段相等找不到表 ⇒ 声明的表没进副本")
+            continue
+        for cap, tb in tbls:
+            hdr = [c.text.strip() for c in tb.rows[0].cells]
+            v = shape_violations(hdr, len(hdr), len(tb.rows), spec)
+            bad += [f"{tid}（{len(tb.rows)}×{len(hdr)}）：{x}" for x in v]
+    # **必红夹具**：拿"少一列 + 末列不是备注"的形状喂 shape_violations，它必须报
+    spec = TABLE_SHAPES["表5-10"]
+    dropped = shape_violations(list(spec["header"][:-1]), spec["cols"] - 1, spec["min_rows"], spec)
+    if not dropped:
+        bad.append("必红夹具失效：删掉一整列，shape_violations 仍然不报 ⇒ 这道闸是空的")
+    print(f"[第 11 条·新表形状] 三张表列数/表头名等于声明 = {'是' if not [b for b in bad if '必红' not in b] else '否'}"
+          f"；**必红夹具（删一列必须报）命中 {len(dropped)} 条**（应 ≥1）⇒ "
+          + ("全过 ✓" if not bad else f"**{len(bad)} 处不符**"))
+    for x in bad:
+        print("   ", x)
+    return 1 if bad else 0
+
+
 def count_needle(needle: str) -> int:
     r"""**三数同框**（统括官 18:5x 把这条族规矩升级）：一个"某串出现几次"的断言一次报三个数，
     并写死哪个数拿来判不一致。作用域＝`rows()` 的 A-J 数据行——**用工具自己的解析，不再另写一条 grep**：
@@ -1543,11 +1601,11 @@ def selfcheck_rowids():
 
 
 def selfcheck_all(copy_path=None):
-    """十条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
+    """十一条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
     return (selfcheck_caption() or selfcheck_guards() or selfcheck_fold()
             or selfcheck_console() or selfcheck_rows() or selfcheck_ids(copy_path)
             or selfcheck_stale() or selfcheck_terms_scope() or selfcheck_rowids()
-            or selfcheck_normid())
+            or selfcheck_normid() or selfcheck_table_shapes(copy_path))
 
 
 def selfcheck_normid():
@@ -1602,9 +1660,9 @@ def main() -> int:
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
     g.add_argument("--count-needle", metavar="串", help="三数同框：数据行内／条文自身／全文件裸跑")
-    g.add_argument("--selfcheck", action="store_true", help="跑十条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一）")
+    g.add_argument("--selfcheck", action="store_true", help="跑十一条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状）")
     g.add_argument("--all", action="store_true",
-                   help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（含来源列）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
+                   help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（**不含来源列**，15:0x 裁定：来源由对照表承载）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
     ap.add_argument("--into", type=pathlib.Path, default=None,
                     help="--apply 用：写进指定副本（--all 串链用），不给就新建一个时间戳文件")
     ap.add_argument("--expect-changed", type=int, default=None,
