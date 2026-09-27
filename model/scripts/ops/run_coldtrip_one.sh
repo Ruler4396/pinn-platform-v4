@@ -22,7 +22,7 @@
 # No training, no money, no rewrite of pushed history.
 set -uo pipefail
 
-FULL_PIN="${FULL_PIN:-e5ee4761a0442455de04c3e8adca07b88bb21920}"   # the commit the WANT table describes
+FULL_PIN="${FULL_PIN:-e3299e0a1290d550a34a98c5a0254d6a1046f754}"   # the commit the WANT table describes
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="${FFROOT:-$WS/ffroot.tgz}"
@@ -57,7 +57,7 @@ declare -A WANT=(
   [model/scripts/route2/residual_scorers.py]=86c96b1cbf9c6bce
   [model/scripts/route2/t_geometry.py]=94329e67f178b7df
   [model/scripts/route2/selftest_route2_stdlib.py]=73ebf7eb0b7aa688
-  [model/scripts/ops/run_k0b_5236655.sh]=f3cd8504765b35d1
+  [model/scripts/ops/run_k0b_5236655.sh]=3245ba59b896efb3
   [model/cases/contraction_2d/cfd/C-base/C-base_stokes.edp]=2a62e0d41aa2fe98
   [model/cases/contraction_2d/cfd/C-base/C-base_raw.csv]=46bd0401cf0f92f5
   [model/cases/contraction_2d/cfd/C-base_ns_re1/probe_syntax.edp]=a4ca809f0b05b932
