@@ -32,6 +32,9 @@ if not (ROOT / "毕业论文汇编格式.docx").exists():            # 挪目录
 SRC = ROOT / "毕业论文汇编格式.docx"
 THESIS = ROOT / ".scratch" / "thesis.txt"
 WORK = REPO / "docs" / "revision" / "正文改写工单-20260925.md"
+WORKLIST_REL = WORK.relative_to(REPO).as_posix()   # 给 git 用的路径必须正斜杠：str(WindowsPath) 给反斜杠，
+                                                   # git 会把 `\` 当转义 ⇒ `git show HEAD:…` 静默返回空，
+                                                   # 于是"基线 0 行"让丢行断言永远为空——一条恒真闸（15:5x 自抓）
 OUT = ROOT / ".scratch"
 
 # 待作者批的占位（④）：永远不写进论文
@@ -1194,9 +1197,36 @@ def selfcheck_fold():
     return 0
 
 
+def selfcheck_rows():
+    """必红子检查（9/27 15:5x，我自己把 J3 整行顶掉之后加的）：**工单少一行就红**。
+    那次事故里 `--plan` 与表格闸全绿——因为行数没变、只是 J3 被 J4 换了位置，
+    所以"有没有丢行"必须由一条独立计数断言来管，不能指望渲染层发现。"""
+    import subprocess
+    cur = [r["id"] for r in rows()]
+    dup = sorted({i for i in cur if cur.count(i) > 1})
+    try:
+        head = subprocess.run(["git", "-C", str(REPO), "show", f"HEAD:{WORKLIST_REL}"],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+        prev = re.findall(r"^\| ([A-J]\d+[a-z]?) \|", head.stdout, flags=re.M)
+    except Exception as e:                                    # 拿不到 HEAD 就明说"没测到"，不假装绿
+        print(f"[必红子检查·行数] 读不到 HEAD 工单（{e}）⇒ **本条未验**，不算通过")
+        return 1
+    if not prev:                       # 恒真闸的形态：基线读到 0 行 ⇒ "丢行"永远为空，必须自己红
+        print("[必红子检查·行数] HEAD 侧读到 **0 行** ⇒ 基线取不到，本条判未验（不是通过）")
+        return 1
+    lost = sorted(set(prev) - set(cur))
+    ok = not lost and not dup and len(cur) >= len(prev)
+    print(f"[必红子检查·行数] 工单数据行 HEAD {len(prev)} → 工作树 {len(cur)}；丢行 {lost or '无'}；重号 {dup or '无'}")
+    if not ok:
+        print("[INVALID] 有工单行消失或重号 ⇒ 渲染层看不出来，必须在这里红")
+        return 1
+    return 0
+
+
 def selfcheck_all():
     """四条子检查一次跑完（题注严判 / 豁免粒度 / 折叠必红 / 终端代码页）；只声明一处，三处入口共用。"""
-    return selfcheck_caption() or selfcheck_guards() or selfcheck_fold() or selfcheck_console()
+    return (selfcheck_caption() or selfcheck_guards() or selfcheck_fold()
+            or selfcheck_console() or selfcheck_rows())
 
 
 def selfcheck_console():
