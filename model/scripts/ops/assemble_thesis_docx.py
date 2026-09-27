@@ -145,11 +145,16 @@ TABLE_SHAPES = {
 }
 
 
+BANNED_HEADER_TOKENS = ("来源",)   # 15:0x 裁定：**论文表里不得出现「来源件+行号」列**（仓内路径不可出版，来源由对照表承载）。
+# 把它写成禁令而不只是"表头不等"的附带后果：这样下一轮谁（包括我）把列加回来，报错信息说的是**为什么**不许加。
+
+
 def shape_violations(header, ncols, nrows, spec):
     """纯函数：**闸二＝逐表形状签名**（期望行数, 期望列数, 末列表头名, 全表头），任一不符即报并指名。
     这道专管"丢一整列而终检照报 0"与"结构被等量替换"——它们对 ragged 判据天然不可见。
     行数是**等值**而非下限：给表加一行也得同批改声明，这是刻意的摩擦。"""
-    v = []
+    v = [f"表头出现被禁的列名 {b!r} ⇒ 违反 15:0x 裁定（来源列不进论文表，改由对照表承载；要加请先否决 §12 第 19 条）"
+         for b in BANNED_HEADER_TOKENS if any(b in h for h in header)]
     if ncols != spec["cols"]:
         v.append(f"列数 {ncols} ≠ 声明 {spec['cols']}")
     if header and header[-1] != spec["last_col"]:
@@ -185,11 +190,14 @@ def selfcheck_table_shapes(copy_path=None):
     dropped = shape_violations(list(spec["header"][:-1]), spec["cols"] - 1, spec["rows"], spec)
     renamed = shape_violations(list(spec["header"][:-1]) + ["来源件 + 行号"], spec["cols"], spec["rows"], spec)
     shrunk = shape_violations(list(spec["header"]), spec["cols"], spec["rows"] - 1, spec)
-    if not (dropped and renamed and shrunk):
+    added = shape_violations(list(spec["header"]) + ["来源件 + 行号"], spec["cols"] + 1, spec["rows"], spec)
+    if not any("被禁" in x for x in added):
+        bad.append("禁令夹具失效：把「来源件 + 行号」列加回来，shape_violations 不报被禁 ⇒ 裁定没进闸")
+    if not (dropped and renamed and shrunk and added):
         bad.append("必红夹具失效：删一整列／改末列名／少一行三种形状 shape_violations 仍不报 ⇒ 这道闸是空的")
     print(f"[闸二·逐表形状签名] {len(TABLE_SHAPES)} 张表的（行数,列数,末列名,全表头）等于声明 = "
           f"{'是' if not [b for b in bad if '必红' not in b] else '否'}"
-          f"；**必红三发**（删一列报 {len(dropped)} 条／改末列名报 {len(renamed)} 条／少一行报 {len(shrunk)} 条，均应 ≥1）⇒ "
+          f"；**必红四发**（删一列报 {len(dropped)} 条／改末列名报 {len(renamed)} 条／少一行报 {len(shrunk)} 条／**把来源列加回来报 {len(added)} 条**，均应 ≥1）⇒ "
           + ("全过 ✓" if not bad else f"**{len(bad)} 处不符**"))
     for x in bad:
         print("   ", x)
