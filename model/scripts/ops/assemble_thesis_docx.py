@@ -37,6 +37,28 @@ FOLD_RE = re.compile("|".join(re.escape(w) for _, a, b in TERM_OPS for w in (a, 
 INSTR = ("删除", "统一替换为", "同步替换", "替换为", "行名", "更正", "撤回", "定档", "凭据",
          "不许", "禁写", "见 §", "若将来", "留作投稿", "前置核查", "⇒", "本工单", "区间都要带上")
 PAIR_OPS = ("E2", "E3", "E4")   # ③ 换数+插段+删句三者同进同退，见 e_block()
+# 混合格子的正文切片：有些行的「新文本」把正文句和写作指令写在同一格（D1 就是），整格落字会把
+# "两列都进表""（样本口径；格13 sd …）""前置核查（写作闸门）"这类话印进论文。
+# 白名单里**每条都必须逐字是该行新文本的子串**（下面断言），所以这条路不许造新句；被排除的句子留在工单里由作者自己粘。
+BODY_SLICE = {
+    "D1": ("为检查几何增强编码的作用，本文固定壁面构造模式与训练预算，只更换输入特征集：basic 集（4 列，只能用软壁面惩罚）"
+           "与 geometry 集（14 列，同一软壁面惩罚），各训练五个种子。",
+           "速度 Rel-L2（test / mean-of-cases）由 0.539923±0.014799 降至 0.148723±0.011416，即 3.6 倍；"
+           "同一对照的 val 口径为 0.51955±0.01322 降至 0.13622±0.01143（3.8 倍）",
+           "这是全矩阵中效应明显超出种子噪声的两条结果之一",
+           "仅坐标输入无法直接表达点位与壁面、收缩段或入口剖面之间的关系，壁距、区域标签和轴向比例等特征补上了这部分信息。"),
+}
+
+
+def sliced_payload(rid: str, new_raw: str):
+    """逐字校验切片后拼成正文载荷；任一切片不是该行新文本的子串 ⇒ 拒绝落字。"""
+    base = payload(new_raw)
+    parts = BODY_SLICE[rid]
+    bad = [s for s in parts if s not in base]
+    if bad:
+        return "", f"切片不是 {rid} 行「新文本」的逐字子串 ⇒ 拒绝（这条路不许造新句）：{bad[0][:40]}…"
+    return "".join(parts), ""
+
 
 
 def norm(s: str) -> str:
@@ -212,6 +234,15 @@ def classify(doc):
                                      f"行号可判别={pick or '无'} ⇒ 需点名"))
                 continue
         i = hit_list[0]
+        if rid in BODY_SLICE:                             # 混合格子：只落逐字校验过的正文切片
+            new, err = sliced_payload(rid, r["new"])
+            lost = sorted({x.replace(" ", "") for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", body[i])} -
+                          {x.replace(" ", "") for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", new)})
+            if err or lost:
+                manual.append((rid, err or f"切片会丢掉 {lost} 的正文引用"))
+            else:
+                auto.append((rid, i, new))
+            continue
         ok, new, why = landable(r["new"], body[i])
         (auto if ok else manual).append((rid, i, new) if ok else (rid, why))
     return auto, manual, await_
