@@ -951,6 +951,19 @@ def add_fig514_pointer(doc):
     return f"图5-14 指向句已插在段{host}之后：{sent}"
 
 
+def id_census(doc):
+    """每个号的**正文引用数**（题注严判排除在外）。与 `.scratch/census_refs.py` 同一把尺。"""
+    out = {}
+    for p in doc.paragraphs:
+        t = p.text
+        if is_caption(t):
+            continue
+        for m in re.finditer(r"(表|图)\s*(\d+(?:-\d+)?[a-z]?)", t):
+            k = m.group(1) + m.group(2).replace(" ", "")
+            out[k] = out.get(k, 0) + 1
+    return out
+
+
 def add_row_pointers(doc):
     """A18/A19：孤表的指向句。**句子逐字取自工单载荷**（这里不重复声明一份文本），落点＝该号题注**之前**、
     正文段之后（作者拍定的三件见 §12 第 13 条①，删表分支已关闭）。号按整段相等选，防 表5-1 串到 表5-10。"""
@@ -1004,8 +1017,23 @@ def figs(copy_path):
     doc = Document(str(copy_path))
     for fid, key in FIG_IDS.items():
         print("   [图]", replace_figure(doc, fid, made[key]))
+    pre = id_census(doc)                      # 插句**之前**的逐号 census：只隔离指针句这一步的影响
     print("   [图]", add_fig514_pointer(doc))
     np_ = add_row_pointers(doc)
+    post = id_census(doc)
+    want = {"图5-14"} | {re.search(r"(表|图)\s*(\d+(?:-\d+)?[a-z]?)", r["loc"]).group(0).replace(" ", "")
+                         for r in rows() if r["id"] in POINTER_ROWS and re.search(r"(表|图)\s*\d", r["loc"])}
+    changed = {k for k in set(pre) | set(post) if pre.get(k, 0) != post.get(k, 0)}
+    drift = {k: (pre.get(k, 0), post.get(k, 0)) for k in changed if k not in want}
+    notplus = {k: (pre.get(k, 0), post.get(k, 0)) for k in changed & want if post.get(k, 0) != pre.get(k, 0) + 1}
+    print(f"   [census 前后并排] 变化号 = {sorted(changed)}（期望 {sorted(want)}）；"
+          f"每个恰好 +1 = {not notplus}{'（异常 ' + str(notplus) + '）' if notplus else ''}；"
+          f"其余号被带动 = {drift or '无'}")
+    print("   [census 口径] 本表用**题注严判**（题注不算引用）⇒ 三号读作 0→1；"
+          "若把题注算上（作者口径）同三号为 1→2，是同一事实两把尺，不是不吻合")
+    if drift or notplus or changed != want:
+        print("[INVALID] 插句带动了别的号或没恰好 +1 ⇒ 交人工核对，别当已闭合")
+        return 0
     if np_ != len(POINTER_ROWS):
         print(f"[注] 孤表指向句本轮插了 {np_}/{len(POINTER_ROWS)}（其余为「该号已有正文引用」⇒ 幂等跳过，不是失败）")
     stale = [i for i, p in enumerate(doc.paragraphs)
