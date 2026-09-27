@@ -265,7 +265,8 @@ def rows():
     for line in WORK.read_text(encoding="utf-8").splitlines():
         if re.match(r"^\| [A-J]\d+[a-z]? \|", line):
             c = [x.strip() for x in line.split("|")[1:-1]]
-            out.append({"id": c[0], "loc": c[1], "act": c[2], "new": c[3] if len(c) > 3 else ""})
+            out.append({"id": c[0], "loc": c[1], "act": c[2], "new": c[3] if len(c) > 3 else "",
+                        "why": c[4] if len(c) > 4 else ""})
     return out
 
 
@@ -2140,12 +2141,63 @@ def selfcheck_pointer():
 
 
 def selfcheck_all(copy_path=None):
-    """十四条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
+    """十五条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
     return (selfcheck_caption() or selfcheck_guards() or selfcheck_fold()
             or selfcheck_console() or selfcheck_rows() or selfcheck_ids(copy_path)
             or selfcheck_stale() or selfcheck_terms_scope() or selfcheck_rowids()
             or selfcheck_normid() or selfcheck_table_shapes(copy_path)
-            or selfcheck_directives() or selfcheck_undeclared() or selfcheck_pointer())
+            or selfcheck_directives() or selfcheck_undeclared() or selfcheck_pointer()
+            or selfcheck_caliber())
+
+
+CALIBER_ROWS = {"D1b": ("mean-of-cases", "T5矩阵test口径读数", ("0.5684348", "0.0471148"))}
+
+
+def caliber_violations(new: str, proof: str, spec) -> list:
+    """**谓词只这一处**。分两栏判是因为这三样的读者不同：
+    ①**口径名**与②**所引正本（件名＋页码）**必须在**载荷**里——那半句会被粘进正文，读者要看见口径；
+    ③**pooled 对照值**在本行的**凭据列**在场即可——它不进正文，是给下一个核数的人防「拿 pooled 当矛盾报」。
+    三条任一缺席即报一条违规。断言原文在 §10 的断言行与 §12 第 25 条，这道闸只是让它会抛错。"""
+    name, src, pooled = spec
+    v = []
+    if name not in new:
+        v.append(f"载荷缺口径名「{name}」（换口径不写进要粘进正文的那半句＝读者只能猜）")
+    if src not in new:
+        v.append(f"载荷缺所引正本（「{src}」＋页码不在要粘的那半句里）")
+    if not all(p in new or p in proof for p in pooled):
+        v.append("本行凭据列缺 pooled 对照值 ⇒ 下一人会拿 pooled 当矛盾报")
+    return v
+
+
+def selfcheck_caliber() -> int:
+    """第十五条·必红子检查（统括官 9/27 17:5x 第②条）：**「表内读数换了口径 ⇒ 新值必须自带口径声明」这条不能只是散文。**
+    对**真工单行**跑谓词（必过），再把三条判据各拆掉一次跑（**三发都必须红**）——少红一发就说明这道闸是空的。"""
+    seen = {r["id"]: (payload(r["new"]), r.get("why", "")) for r in rows()}
+    bad = []
+    for rid, spec in sorted(CALIBER_ROWS.items()):
+        p, proof = seen.get(rid, ("", ""))
+        if not p:
+            print(f"[闸·口径声明] {rid}：工单里找不到这一行 ⇒ **未验**")
+            bad.append(rid)
+            continue
+        v = caliber_violations(p, proof, spec)
+        print(f"[闸·口径声明] {rid} 真行：{len(v)} 条违规（应为 0）" + ("✓ 三条齐（口径名＋正本页码＋pooled 对照值）" if not v else " " + "；".join(v)))
+        bad += [f"{rid}:{x}" for x in v]
+        # 三发必红：各拆一条判据，谓词必须报出来
+        cuts = {"拆掉口径名": lambda s, q: (s.replace(spec[0], "平均值"), q),
+                "拆掉正本页码": lambda s, q: (s.replace(spec[1], "某个读数件"), q),
+                "拆掉 pooled 值": lambda s, q: (s, q.replace(spec[2][0], "?").replace(spec[2][1], "?"))}
+        for label, f in cuts.items():
+            s2, q2 = f(p, proof)
+            got = caliber_violations(s2, q2, spec)
+            if not got:
+                bad.append(f"夹具 {rid}/{label}")
+                print(f"    **夹具失效**：{label} 之后谓词仍不报 ⇒ 这条判据是摆设")
+            else:
+                print(f"    必红 {label:12s} ⇒ 报 {len(got)} 条 ✓（{got[0][:34]}）")
+    print(f"[闸·口径声明] 真行 {'全过' if not [x for x in bad if not x.startswith('夹具')] else '有缺'}、"
+          f"必红 {len(CALIBER_ROWS) * 3} 发{'全中' if not bad else f'**{len(bad)} 处失效：{bad[:3]}**'}")
+    return 1 if bad else 0
 
 
 def selfcheck_normid():
@@ -2209,7 +2261,7 @@ def main() -> int:
     g.add_argument("--cell-coords", action="store_true",
                     help="只读：把『改一格文字』那类工单行（CELL_TEXT_ROWS）解析成全份（表序,行,列）坐标，命中≠1 即退 1")
     g.add_argument("--count-needle", metavar="串", help="三数同框：数据行内／条文自身／全文件裸跑")
-    g.add_argument("--selfcheck", action="store_true", help="跑十四条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条／未声明行不得变／取件自拒）")
+    g.add_argument("--selfcheck", action="store_true", help="跑十五条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条／未声明行不得变／取件自拒／换口径必带声明）")
     g.add_argument("--all", action="store_true",
                    help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（**不含来源列**，15:0x 裁定：来源由对照表承载）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
     ap.add_argument("--into", type=pathlib.Path, default=None,
