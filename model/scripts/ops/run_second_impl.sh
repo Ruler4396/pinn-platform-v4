@@ -205,8 +205,14 @@ install_body() {
   pv=$("$(PYBIN)" -c "import dolfinx, sys; print(dolfinx.__version__ + ' py' + sys.version.split()[0])") \
     || die "dolfinx not importable from $PREFIX after the installer said it ran"
   # §四M asked for the version AND the channel in the result, so both go on disk, not into chat.
-  printf 'dolfinx=%s\nprefix=%s\nconda=%s\nchannel=conda-forge (explicit -c in install_external_solver.sh)\nbootstrap=%s\nrecorded=%s\n' \
-    "$pv" "$PREFIX" "$("$MF_HOME/bin/conda" --version 2>&1 | head -1)" \
+  # §四M asked for the version AND the channel in the result.  The channel is READ, not asserted:
+  # the substitution lives in cf.condarc, so claiming "conda-forge" here would be a hard-coded print of
+  # something the machine may have resolved elsewhere.
+  local chan condarc
+  condarc="${CONDARC:-}"
+  chan=$([ -n "$condarc" ] && [ -f "$condarc" ] && grep -m1 -E "^  conda-forge:" "$condarc" | sed 's/^ *//' || echo "default channel hosts (no CONDARC given)")
+  printf 'dolfinx=%s\nprefix=%s\nconda=%s\neffective_channel=%s\ncondarc=%s\nbootstrap=%s\nrecorded=%s\n' \
+    "$pv" "$PREFIX" "$("$MF_HOME/bin/conda" --version 2>&1 | head -1)" "$chan" "${condarc:-none}" \
     "$(tr '\n' ';' < "$MF_HOME/BOOTSTRAP-PROVENANCE.txt" 2>/dev/null || echo none)" "$(date -Is)" \
     > "$OUT/install_channel.txt"
   log "version+channel recorded at $OUT/install_channel.txt: dolfinx $pv"
