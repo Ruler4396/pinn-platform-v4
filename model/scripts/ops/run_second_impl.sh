@@ -229,7 +229,7 @@ read_pointer() {
 # Linux clone with autocrlf off, so its working bytes equal the blob bytes there; on a CRLF working
 # copy the two rulers part ways, which is why the number below is quoted with its ruler.
 declare -A EXPECT=(
-  [model/scripts/route2/solve_second_impl.py]=b0b03188904a891e
+  [model/scripts/route2/solve_second_impl.py]=2ebb0474b9c86f85
 )
 # crosscheck_second_impl.py and install_external_solver.sh are checked for PRESENCE only: they landed
 # before this table existed, and their blobs are already in git (pin 7e67943 and earlier).

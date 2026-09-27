@@ -233,6 +233,23 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     f_in = locate_entities_boundary(msh, 1, at_in)
     f_out = locate_entities_boundary(msh, 1, at_out)
     f_wall = locate_entities_boundary(msh, 1, at_wall)
+    # Why this line exists: the base level measured an outlet flux of 0.531 against an inlet flux of
+    # 0.999 (probe at 02:37:51), and the pressure rows make the NET boundary flux exactly zero, so
+    # ~0.47 of the flow left through boundary facets no BC touched.  Constant q in P1 turns
+    # "div u = 0 weakly" into global conservation, so a deficit is a marking hole, not a discretisation
+    # difference.  Count it instead of reasoning about it: every exterior facet must be in exactly one
+    # of the three sets.
+    all_ext = np.asarray(msh.exterior_facets.indices)
+    covered = np.concatenate([f_in, f_out, f_wall])
+    uncovered = np.setdiff1d(all_ext, covered)
+    doubled = len(covered) - len(np.unique(covered))
+    print(f"[solve] exterior facets: total={len(all_ext)} claimed={len(covered)} "
+          f"uncovered={len(uncovered)} in-two-sets={doubled}", flush=True)
+    if len(uncovered) or doubled:
+        raise RuntimeError(f"boundary marking is not a partition: {len(uncovered)} exterior facets "
+                           f"carry no condition and {doubled} are claimed twice -- through those the "
+                           f"solve leaks, and its three integrals would be reported as a second "
+                           f"implementation's answer")
     print(f"[solve] exterior facets: inlet={len(f_in)} outlet={len(f_out)} wall={len(f_wall)} "
           f"(inlet+outlet+wall must cover the boundary)", flush=True)
 
