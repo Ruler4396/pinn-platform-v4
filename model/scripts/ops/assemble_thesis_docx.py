@@ -11,7 +11,7 @@
   ④ A13 是待批占位，永远不落字，只在清单里标出；⑤ 术语类算子（A15/A14）与"删段+插段成对"类（E4+E3）单独走。
 """
 from __future__ import annotations
-import argparse, datetime, hashlib, os, pathlib, re, shutil, sys
+import argparse, datetime, hashlib, os, pathlib, re, shutil, sys, tempfile
 
 # 顶层就改编码：夹具常被 `python3 -c "import assemble_thesis_docx as A; A.selfcheck_caption()"` 裸调用，
 # 只放在 main() 里等于"从命令行跑没事、从别人手里跑就崩"（统括官 15:0x 在默认 GBK 终端实测崩在 '⇒'）。
@@ -362,13 +362,32 @@ def candidate() -> pathlib.Path | None:
     if not lines:
         print("[INVALID] 候选正本指针是空件")
         return None
-    p = OUT / lines[0]
+    name = lines[0]
+    if "/" in name or "\\" in name or name != (OUT / name).name:
+        print(f"[INVALID] 候选正本指针里出现路径分隔：{name!r} ⇒ 指针只许写 `.scratch` 下的**文件名**，拒取"
+              f"（否则一枚写歪的指针就能把原件或仓外件当交付物喂给夹具）")
+        return None
+    if name == SRC.name:
+        print("[INVALID] 候选正本指针写的是**原件**名 ⇒ 停下（本条线全程不碰原件；夹具跑在原件上必假过）")
+        return None
+    p = OUT / name
     if not p.exists():
-        print(f"[INVALID] 候选正本指针指向不存在的件：{lines[0]}")
+        print(f"[INVALID] 候选正本指针指向不存在的件：{name}")
         return None
     if len(lines) > 1 and not hashlib.sha256(p.read_bytes()).hexdigest().startswith(lines[1]):
-        print(f"[INVALID] 候选正本指针的 sha 与件不符：{lines[0]}（指针 {lines[1]}，现算 "
+        print(f"[INVALID] 候选正本指针的 sha 与件不符：{name}（指针 {lines[1]}，现算 "
               f"{hashlib.sha256(p.read_bytes()).hexdigest()[:12]}）⇒ 件被改过或指针写错，停下")
+        return None
+    # **自拒（统括官 16:2x 第②③条）**：取件只认指针（`glob` 在这儿**只当扫描器、不当选择器**——
+    # 一件都不会靠名字或 mtime 取），但顶层只要还躺着未登记的副本就说明"声明"与"盘上"不一致：
+    # 更新的没登记成候选正本 ⇒ 人和任何残留 glob 的工具都会拿错件；更旧的没挪走 ⇒ 与"顶层只剩交付件"的口径不符。
+    # 两类一律判未验（他点名的必红夹具正是"扔一枚**旧**副本"，只挡更新的那类＝挡不住）。
+    stray = sorted(f for f in OUT.glob("装配副本-*.docx") if f.name != name)
+    if stray:
+        n_new = sum(1 for f in stray if f.stat().st_mtime > p.stat().st_mtime + 1)
+        print(f"[INVALID] `.scratch` 顶层另有 **未登记**的副本 {len(stray)} 枚（其中比候选正本更新 {n_new} 枚）："
+              f"{[f.name for f in stray][:3]} ⇒ 判未验。新交付件＝改指针并 supersede 旧的；试验件＝挪进 superseded/"
+              f"并留同名 `.作废` 旁标记（只追加、不删）。")
         return None
     return p
 
@@ -1700,13 +1719,65 @@ def selfcheck_rowids():
 
 
 
+def selfcheck_pointer():
+    """必红子检查（统括官 16:2x 第②③条）：**取件自拒**。喂的是 `candidate()` 谓词本身，
+    不是把它的判据重抄一遍——在一枚临时 `.scratch` 假目录里造六种局面，只许"指针＝声明的候选正本、
+    且顶层没有未登记副本"那一发过，其余五发必须全退 None。跑完删临时目录（那是我本轮造的探针件）。"""
+    global OUT
+    real = OUT
+    out = []
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="ptr_probe_"))
+    try:
+        OUT = tmp
+        good = tmp / "装配副本-探针.docx"
+        good.write_bytes(b"probe-copy-bytes-not-a-docx")
+        sha = hashlib.sha256(good.read_bytes()).hexdigest()[:12]
+
+        def ptr(text):
+            (tmp / "候选正本.txt").write_text(text, encoding="utf-8")
+
+        def shot(label, should_pass):
+            out.append((label, should_pass, candidate() is not None))
+
+        ptr(good.name + chr(10) + sha + chr(10))                           # 1 必过
+        shot("基线：顶层只有声明件", True)
+        s_old = tmp / "装配副本-探针-旧.docx"
+        s_old.write_bytes(b"x")
+        os.utime(s_old, (good.stat().st_atime, good.stat().st_mtime - 7200))   # 2 他点名的那一发
+        shot("顶层扔一枚**比候选正本更旧**的副本", False)
+        s_old.unlink()
+        s_new = tmp / "装配副本-探针-新.docx"
+        s_new.write_bytes(b"x")
+        os.utime(s_new, (good.stat().st_atime, good.stat().st_mtime + 7200))   # 3 更新了却没登记
+        shot("顶层扔一枚更新的副本（新交付件没改指针）", False)
+        s_new.unlink()
+        ptr("装配副本-不存在.docx" + chr(10) + sha + chr(10))               # 4 件不在
+        shot("指针指向不存在的件", False)
+        ptr(good.name + chr(10) + "0" * 12 + chr(10))                      # 5 sha 不符
+        shot("指针 sha 与件不符", False)
+        ptr("../" + SRC.name + chr(10) + sha + chr(10))                    # 6 相对路径／够到原件
+        shot("指针写歪成相对路径（会够到原件）", False)
+    finally:
+        OUT = real
+        import shutil as _sh
+        _sh.rmtree(tmp, ignore_errors=True)
+    n_pass = sum(1 for _, sp, _ in out if sp)
+    bad = [f"{lb}：期望 {'取' if sp else '拒'}，实际 {'取' if gp else '拒'}"
+           for lb, sp, gp in out if sp != gp]
+    print(f"[必红子检查·取件自拒] 六发逐字喂 `candidate()`（{n_pass} 发应过／{len(out) - n_pass} 发应拒）⇒ "
+          + ("全中 ✓，『扔一枚旧副本必须报未验』这一发真的响了" if not bad else f"**{len(bad)} 发判错**"))
+    for x in bad:
+        print("   失效：", x)
+    return 0 if not bad else 1
+
+
 def selfcheck_all(copy_path=None):
-    """十三条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
+    """十四条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
     return (selfcheck_caption() or selfcheck_guards() or selfcheck_fold()
             or selfcheck_console() or selfcheck_rows() or selfcheck_ids(copy_path)
             or selfcheck_stale() or selfcheck_terms_scope() or selfcheck_rowids()
             or selfcheck_normid() or selfcheck_table_shapes(copy_path)
-            or selfcheck_directives() or selfcheck_undeclared())
+            or selfcheck_directives() or selfcheck_undeclared() or selfcheck_pointer())
 
 
 def selfcheck_normid():
@@ -1761,7 +1832,7 @@ def main() -> int:
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
     g.add_argument("--count-needle", metavar="串", help="三数同框：数据行内／条文自身／全文件裸跑")
-    g.add_argument("--selfcheck", action="store_true", help="跑十三条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条／未声明行不得变）")
+    g.add_argument("--selfcheck", action="store_true", help="跑十四条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条／未声明行不得变／取件自拒）")
     g.add_argument("--all", action="store_true",
                    help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（**不含来源列**，15:0x 裁定：来源由对照表承载）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
     ap.add_argument("--into", type=pathlib.Path, default=None,
