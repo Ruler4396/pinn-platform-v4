@@ -366,12 +366,14 @@ def classify(rank: int, n_params: int, sigma_bar: float, sigma_rel: Optional[flo
     """Three states only (the set §十.3(a) named), with `cause` keeping the two flavours
     of NOT_IDENTIFIABLE from being conflated in prose.
 
-    Per 统括官 10:2x ②: `state` and `quotable` are TWO SEPARATE AXES.  `quotable` is
-    produced by the plateau check alone and never by this function's caller; `state` is the
-    three-state judgement.  A cell can therefore read "红 but 可引用" (a stable measurement
-    whose answer is negative) or "过判据 but 不可引用" (drift >= 10%).  `meets_noise_floor`
-    is carried alongside so the noise verdict is never masked by the plateau branch -- that
-    is what closes the ordering ambiguity logged as A2.
+    Per 统括官 10:2x ② and A9, a cell carries TWO separate axes besides the state:
+    `row_citable` -- plateau check alone ("this row's reading may be quoted"), and
+    `claim_supported` -- "the device resolves the target detail", true only when
+    state == RESOLVED **and** the plateau is green.  A4's single `quotable` was dropped
+    because it appeared as True on the 1% rows, whose real content is "'1% is UNMEASURED' is
+    citable", not "the 1% cell is citable"; a downstream reading only the JSON field would
+    take the second meaning.  `meets_noise_floor` is carried so the noise verdict is never
+    masked by the plateau branch, which closes the ordering ambiguity logged as A2.
     """
     if rank < n_params:
         return {"state": "NOT_IDENTIFIABLE", "cause": "rank_deficient",
@@ -397,16 +399,23 @@ def classify(rank: int, n_params: int, sigma_bar: float, sigma_rel: Optional[flo
             "note": "target detail is resolved at this tier"}
 
 
-def resolution_claim(cell: dict) -> str:
-    """The gate's teeth: a "the device resolves delta" sentence needs BOTH axes.
+def claim_supported(state: str, row_citable: bool) -> bool:
+    """The one definition of "a resolution sentence is supported".  Both callers recompute
+    it; nothing is allowed to carry it in from the outside."""
+    return bool(state == "RESOLVED" and row_citable)
 
-    state == RESOLVED says the device can do it; quotable (plateau alone) says the number
-    was measured somewhere the station density no longer matters.  Either one missing -> raise.
-    """
-    if cell.get("state") != "RESOLVED" or not cell.get("quotable"):
+
+def resolution_claim(cell: dict) -> str:
+    """The gate's teeth.  It does NOT trust the stored `claim_supported`: the field is
+    recomputed here from `state` and `row_citable`, and a cell whose stored field disagrees
+    with the recomputation is refused -- so a downstream session that flips that boolean
+    cannot buy a claim with it."""
+    truth = claim_supported(cell.get("state", ""), bool(cell.get("row_citable")))
+    if cell.get("claim_supported") != truth or not truth:
         raise GateError(f"refused: state={cell.get('state')} cause={cell.get('cause')} "
-                        f"quotable={cell.get('quotable')} -- this cell does not support a "
-                        f"resolution claim")
+                        f"row_citable={cell.get('row_citable')} "
+                        f"claim_supported(stored)={cell.get('claim_supported')} "
+                        f"claim_supported(recomputed)={truth} -- no resolution claim here")
     return (f"device resolves relative width perturbation >= {cell['delta_resolve']:.3e} "
             f"of {DELTA_TARGET:.2f} target at sigma_rel={cell['sigma_rel']:.3e} "
             f"(drift {cell['drift_vs_coarse']:.3%} < {PLATEAU_REL_TOL:.0%})")
@@ -430,9 +439,11 @@ def build_cells(lengths: Dict[str, float], theta_true: Sequence[float], p_in: fl
     d = drift_vs_coarse(by_np)
     for c in out:
         c["drift_vs_coarse"] = d
-        # the plateau axis, on its own: it says "this number may be quoted", nothing about
-        # whether the device resolves anything (统括官 10:2x ②).
-        c["quotable"] = bool(d < PLATEAU_REL_TOL)
+        # the plateau axis, on its own: `row_citable` says "this row's reading may be
+        # quoted", nothing about whether the device resolves anything (统括官 10:2x ②, A9).
+        # A4's single `quotable` was dropped: it read as True on the 1% rows, whose real
+        # content is "'1% is UNMEASURED' is citable".
+        c["row_citable"] = bool(d < PLATEAU_REL_TOL)
     return out
 
 
@@ -453,14 +464,15 @@ def run_tier(cells: List[dict], sigma_rel: Optional[float], tier_label: str,
              provenance: Optional[str] = None) -> List[dict]:
     rows = []
     for c in cells:
-        v = dict(c)                      # v["quotable"] is the plateau axis, set in build_cells
+        v = dict(c)                      # v["row_citable"] is the plateau axis, set in build_cells
         v["tier"] = tier_label
         v["tau"] = tau(sigma_rel) if sigma_rel else None
         v["sigma_rel"] = sigma_rel
         v["delta_resolve"] = (delta_resolve(sigma_rel, c["sigma_bar_min"])
                               if sigma_rel else None)
         v.update(classify(c["rank"], c["n_params"], c["sigma_bar_min"], sigma_rel,
-                          c["quotable"]))
+                          c["row_citable"]))
+        v["claim_supported"] = claim_supported(v["state"], v["row_citable"])
         if provenance is not None:
             v["noise_provenance"] = provenance
         rows.append(v)
@@ -468,16 +480,18 @@ def run_tier(cells: List[dict], sigma_rel: Optional[float], tier_label: str,
 
 
 def format_row(r: dict) -> str:
-    """One line per cell, with BOTH axes visible so the three shapes read apart:
-    green+quotable / passes-criteria-but-drift-too-large / red."""
+    """One line per cell, with BOTH axes visible so the shapes read apart (A9):
+    citable row that supports a claim / citable row that supports none (the negative and
+    unmeasured answers) / a row the plateau does not even license quoting."""
     dr = "n/a" if r["delta_resolve"] is None else f"{r['delta_resolve']:.3e}"
     tv = "n/a" if r["tau"] is None else f"{r['tau']:.4g}"
     mn = "n/a" if r["meets_noise_floor"] is None else r["meets_noise_floor"]
     return (f"[gateA] cell K={K_STEM_ELEMENTS} n_p={r['n_p']} tier={r['tier']} "
             f"m_inf={r['m_inf']} rank={r['rank']}/{r['n_params']} "
             f"sigma_min={r['sigma_min']:.4e} sigma_bar_min={r['sigma_bar_min']:.4e} "
-            f"drift={r['drift_vs_coarse']:.3%} quotable_by_plateau={r['quotable']} "
-            f"tau={tv} delta_resolve={dr} meets_noise_floor={mn} "
+            f"drift={r['drift_vs_coarse']:.3%} row_citable={r['row_citable']} "
+            f"claim_supported={r['claim_supported']} tau={tv} delta_resolve={dr} "
+            f"meets_noise_floor={mn} "
             f"state={r['state']} cause={r['cause']}")
 
 
@@ -499,6 +513,7 @@ def report(lengths: Dict[str, float], theta_true: Sequence[float], p_in: float,
         rows += [{**c, "tier": f"{NOISE_TIER_QUIET:.0%}relative", "sigma_rel": None,
                   "tau": None, "delta_resolve": None, "meets_noise_floor": None,
                   "state": "INDETERMINATE", "cause": "unmeasured_no_provenance",
+                  "claim_supported": False,
                   "note": f"require_provenance refused the tier: {exc}"} for c in cells]
     out: dict = {"pre_registration": "paper-route2/格A可辨识性-预注册-20260927.md",
                  "warning": "1-D synthetic world, identifiability only. This unlocks no "

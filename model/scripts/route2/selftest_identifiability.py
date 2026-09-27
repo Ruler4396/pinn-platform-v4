@@ -356,9 +356,10 @@ def positive_control_checks(ck: Check, geo: Dict[str, object]) -> None:
     cell = dict(G.sigma_bar_min(G.jacobian_distributed(tn, lengths, p_in, ())))
     cell.update({"n_p": 0, "tier": "node-only", "sigma_rel": G.NOISE_TIER_MAIN,
                  "tau": G.tau(G.NOISE_TIER_MAIN), "delta_resolve": None,
-                 "drift_vs_coarse": 0.0, "quotable": True})
+                 "drift_vs_coarse": 0.0, "row_citable": True})
     cell.update(G.classify(cell["rank"], cell["n_params"], cell["sigma_bar_min"],
-                           cell["sigma_rel"], cell["quotable"]))
+                           cell["sigma_rel"], cell["row_citable"]))
+    cell["claim_supported"] = G.claim_supported(cell["state"], cell["row_citable"])
     ck.add("gateA_positive_control_rank_deficient_cell_refuses_resolution_claim",
            cell["state"] == "NOT_IDENTIFIABLE" and cell["cause"] == "rank_deficient"
            and _raises(lambda: G.resolution_claim(cell), G.GateError),
@@ -423,13 +424,29 @@ def report_checks(ck: Check, geo: Dict[str, object]) -> List[dict]:
                for r in rows if "kPa" in r["tier"])
            and all(r["state"] == "INDETERMINATE" for r in rows if "kPa" in r["tier"]),
            {"kpa_states": sorted({r["state"] for r in rows if "kPa" in r["tier"]}),
-            "kpa_quotable": sorted({bool(r["quotable"]) for r in rows
-                                    if "kPa" in r["tier"]})},
+            "kpa_row_citable": sorted({bool(r["row_citable"]) for r in rows
+                                       if "kPa" in r["tier"]}),
+            "kpa_claim_supported": sorted({bool(r["claim_supported"]) for r in rows
+                                           if "kPa" in r["tier"]})},
            "claim refused and state INDETERMINATE even where the plateau axis is quotable")
+    ck.add("gateA_claim_supported_is_the_conjunction_on_every_row",
+           all(r["claim_supported"] == (r["state"] == "RESOLVED" and r["row_citable"])
+               for r in rows) and not any(r["claim_supported"] for r in rows),
+           {"rows": len(rows), "claim_supported_true": sum(1 for r in rows if r["claim_supported"]),
+            "row_citable_true": sum(1 for r in rows if r["row_citable"])},
+           "claim_supported == (state RESOLVED and plateau green); this round supports none")
+    quiet = [r for r in rows if r["cause"] == "unmeasured_no_provenance"]
+    ck.add("gateA_unmeasured_rows_are_citable_but_claim_nothing",
+           len(quiet) == 2 and all(r["row_citable"] and not r["claim_supported"]
+                                   and r["state"] == "INDETERMINATE" for r in quiet),
+           [{"tier": r["tier"], "row_citable": r["row_citable"],
+             "claim_supported": r["claim_supported"]} for r in quiet],
+           "row_citable here means the UNMEASURED statement is quotable, nothing more")
     for r in rows:
         ck.measure(f"{r['tier']}/n_p={r['n_p']}",
                    {"rank": f"{r['rank']}/{r['n_params']}", "sigma_bar_min": r["sigma_bar_min"],
-                    "drift": r["drift_vs_coarse"], "quotable_by_plateau": r["quotable"],
+                    "drift": r["drift_vs_coarse"], "row_citable": r["row_citable"],
+                    "claim_supported": r["claim_supported"],
                     "tau": r["tau"], "delta_resolve": r["delta_resolve"],
                     "meets_noise_floor": r["meets_noise_floor"],
                     "state": r["state"], "cause": r["cause"]})
@@ -441,11 +458,12 @@ def _cell(sigma_bar: float, sigma_rel: float, drift: float, full_rank: bool = Tr
     cell = {"n_p": n_p, "tier": f"{sigma_rel:.0%}relative", "m_inf": 20,
             "n_params": G.N_PARAMS, "rank": G.N_PARAMS if full_rank else G.N_PARAMS - 1,
             "sigma_min": sigma_bar, "sigma_bar_min": sigma_bar,
-            "drift_vs_coarse": drift, "quotable": bool(drift < G.PLATEAU_REL_TOL),
+            "drift_vs_coarse": drift, "row_citable": bool(drift < G.PLATEAU_REL_TOL),
             "rank_source": G.RANK_SOURCE, "spectral_zero_agrees_with_elimination": True,
             "spectrum": [], "independent_of_sigma_p": True}
     cell.update(G.classify(cell["rank"], cell["n_params"], sigma_bar, sigma_rel,
-                           cell["quotable"]))
+                           cell["row_citable"]))
+    cell["claim_supported"] = G.claim_supported(cell["state"], cell["row_citable"])
     cell["tau"] = G.tau(sigma_rel)
     cell["sigma_rel"] = sigma_rel
     cell["delta_resolve"] = G.delta_resolve(sigma_rel, sigma_bar)
@@ -453,57 +471,82 @@ def _cell(sigma_bar: float, sigma_rel: float, drift: float, full_rank: bool = Tr
 
 
 def axis_checks(ck: Check) -> None:
-    """统括官 10:2x ②: `state` and `quotable` are two axes, and the console line must let
-    all three shapes be read apart -- green+quotable, passes-the-criteria-but-drift-too-large,
-    red.  The third one is the shape the real data is in: quotable=True while state=红."""
+    """A4 (②) split the plateau verdict from the three-state judgement; A9 split it again so
+    a JSON-only reader cannot mistake "this row's reading may be quoted" for "this cell
+    resolves the target".  Shapes on the console line: a citable row that supports a claim /
+    a citable row that supports none (the negative and the unmeasured answers -- both are
+    quotable statements, neither is a resolution claim) / a row the plateau does not license.
+    """
     green = _cell(0.35, 0.03, 0.02)                    # sigma_bar 0.35 >= tau 0.30, drift 2%
     drift_only = _cell(0.35, 0.03, 0.12)               # same, but densification still moves it
     red = _cell(0.018, 0.03, 0.02)                     # under the noise floor, plateau holds
     rank_red = _cell(0.35, 0.03, 0.02, full_rank=False)
     lines = {"green": G.format_row(green), "drift_only": G.format_row(drift_only),
              "red": G.format_row(red)}
-    ck.add("gateA_two_axes_green_and_quotable",
-           green["state"] == "RESOLVED" and green["quotable"]
+    ck.add("gateA_two_axes_citable_and_claim_supported",
+           green["state"] == "RESOLVED" and green["row_citable"] and green["claim_supported"]
            and G.resolution_claim(green).startswith("device resolves"),
-           {"state": green["state"], "quotable": green["quotable"]},
-           "RESOLVED + quotable -> claim allowed")
+           {"state": green["state"], "row_citable": green["row_citable"],
+            "claim_supported": green["claim_supported"]},
+           "RESOLVED + plateau green -> claim_supported True and the claim is allowed")
     ck.add("gateA_two_axes_passes_criteria_but_drift_blocks_quoting",
            drift_only["state"] == "INDETERMINATE"
            and drift_only["cause"] == "station_density_not_saturated"
-           and drift_only["meets_noise_floor"] is True and drift_only["quotable"] is False
+           and drift_only["meets_noise_floor"] is True and drift_only["row_citable"] is False
+           and drift_only["claim_supported"] is False
            and _raises(lambda: G.resolution_claim(drift_only), G.GateError),
            {"state": drift_only["state"], "meets_noise_floor": True,
-            "quotable": drift_only["quotable"]},
+            "row_citable": drift_only["row_citable"]},
            "noise criterion met, plateau axis False, claim refused")
-    ck.add("gateA_two_axes_red_but_the_measurement_is_stable",
+    ck.add("gateA_two_axes_red_but_the_measurement_is_citable",
            red["state"] == "NOT_IDENTIFIABLE" and red["cause"] == "below_noise_floor"
-           and red["quotable"] is True
+           and red["row_citable"] is True and red["claim_supported"] is False
            and _raises(lambda: G.resolution_claim(red), G.GateError),
-           {"state": red["state"], "quotable": red["quotable"]},
-           "a quotable negative answer is still a negative answer")
+           {"state": red["state"], "row_citable": red["row_citable"],
+            "claim_supported": red["claim_supported"]},
+           "a citable negative answer is still a negative answer, and never a claim")
     ck.add("gateA_two_axes_structural_red",
            rank_red["state"] == "NOT_IDENTIFIABLE" and rank_red["cause"] == "rank_deficient"
-           and rank_red["meets_noise_floor"] is None
+           and rank_red["meets_noise_floor"] is None and rank_red["claim_supported"] is False
            and _raises(lambda: G.resolution_claim(rank_red), G.GateError),
            {"state": rank_red["state"], "meets_noise_floor": None},
-           "rank deficiency never buys a claim, quotable or not")
+           "rank deficiency never buys a claim, citable or not")
+    # A9's two positive controls: the stored boolean is not trusted.
+    lying = dict(red, state="INDETERMINATE", cause="unmeasured_no_provenance",
+                 claim_supported=True)
+    ck.add("gateA_A9_control_claim_supported_true_on_an_unmeasured_row_raises",
+           lying["row_citable"] is True and _raises(
+               lambda: G.resolution_claim(lying), G.GateError),
+           {"state": lying["state"], "row_citable": lying["row_citable"],
+            "claim_supported(stored)": True},
+           "raise: the field cannot be flipped to buy a claim")
+    over_corrected = dict(green, row_citable=False,
+                          claim_supported=G.claim_supported(green["state"], False))
+    ck.add("gateA_A9_control_plateau_false_never_supports_a_claim",
+           over_corrected["state"] == "RESOLVED" and not over_corrected["claim_supported"]
+           and _raises(lambda: G.resolution_claim(over_corrected), G.GateError),
+           {"state": over_corrected["state"],
+            "claim_supported(recomputed)": over_corrected["claim_supported"]},
+           "raise: RESOLVED without a green plateau is not a claim either")
     ck.add("gateA_console_line_separates_the_three_shapes",
            len({lines["green"], lines["drift_only"], lines["red"]}) == 3
-           and all("state=" in v and "quotable_by_plateau=" in v and "cause=" in v
+           and all("state=" in v and "row_citable=" in v and "claim_supported=" in v
+                   and "cause=" in v
                    for v in lines.values()),
            {k: [v[v.index("state="):]] for k, v in lines.items()},
-           "3 distinct lines, each carrying state / cause / quotable")
+           "3 distinct lines, each carrying state / cause / both axes")
     branches = [G.classify(G.N_PARAMS - 1, G.N_PARAMS, 0.35, 0.03, True),    # rank deficient
                 G.classify(G.N_PARAMS, G.N_PARAMS, 0.35, None, True),        # no full scale
                 G.classify(G.N_PARAMS, G.N_PARAMS, 0.35, 0.03, False),       # off plateau
                 G.classify(G.N_PARAMS, G.N_PARAMS, 0.018, 0.03, True),       # below floor
                 G.classify(G.N_PARAMS, G.N_PARAMS, 0.35, 0.03, True)]        # resolved
     ck.add("gateA_quotable_is_written_only_by_the_plateau_axis",
-           all("quotable" not in b for b in branches)
+           all("quotable" not in b and "row_citable" not in b
+               and "claim_supported" not in b for b in branches)
            and {b["state"] for b in branches} == {"NOT_IDENTIFIABLE", "INDETERMINATE",
                                                  "RESOLVED"},
            [sorted(b.keys()) for b in branches[:1]],
-           "classify() returns state/cause/meets_noise_floor/note and never quotable")
+           "classify() returns state/cause/meets_noise_floor/note and neither axis field")
 
 
 def hygiene_checks(ck: Check) -> None:
