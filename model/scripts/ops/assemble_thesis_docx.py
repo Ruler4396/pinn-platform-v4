@@ -1345,11 +1345,55 @@ def selfcheck_stale():
     return 0 if ok else 1
 
 
+def selfcheck_terms_scope():
+    """必红夹具（统括官 16:5x 第③条，与"扫描域扩到表内"是同一个洞的另一个出口）：
+    **把一个短形旧词只放在表格单元里，"旧词已清"的断言必须响**。天然正对照＝原件——
+    表5-1（续表）里那格「启用阶段内PDE」是全称之外的截短形，全称匹配扫不到它。"""
+    from docx import Document
+    short = re.compile("|".join(re.escape(a) for _, a, _ in TERM_OPS))
+    src = Document(str(SRC))
+    cells = [c.text for t in src.tables for r in t.rows for c in r.cells if short.search(c.text)]
+    paras = [p.text for p in src.paragraphs if short.search(p.text)]
+    cp = sorted(OUT.glob("装配副本-20*.docx"), key=lambda f: f.stat().st_mtime, reverse=True)
+    now = ""
+    if cp:
+        d2 = Document(str(cp[0]))
+        n = sum(1 for t in d2.tables for r in t.rows for c in r.cells if short.search(c.text)) \
+            + sum(1 for p in d2.paragraphs if short.search(p.text))
+        now = f"；最新副本 {cp[0].name} 两层合计残留 {n} 处（应为 0）"
+    ok = len(cells) >= 1
+    print(f"[必红夹具·旧词只在表格里必须响] 原件：正文 {len(paras)} 段、表格单元 {len(cells)} 格命中旧词 ⇒ "
+          + ("尺覆盖表内 ✓" if ok else "**没覆盖：'旧词已清'这句没有凭据**") + now)
+    return 0 if ok else 1
+
+
+def selfcheck_rowids():
+    """必红夹具（统括官 16:5x 第④条）：**往工单里塞一行 `D1c`，`rows()` 的计数必须 +1**。
+    喂谓词不喂扫描器——真的临时改 `WORK` 再调 `rows()`，不是把正则抄一遍来测。"""
+    global WORK
+    base = [r["id"] for r in rows()]
+    real = WORK
+    tmp = WORK.with_name("_rowid_probe.md")
+    try:
+        tmp.write_text(real.read_text(encoding="utf-8")
+                       + "| D1c | 探针行（不是真工单行，跑完即删） | 探针 | 探针 | 探针 | 否 |\n", encoding="utf-8")
+        WORK = tmp
+        got = [r["id"] for r in rows()]
+    finally:
+        WORK = real
+        tmp.unlink(missing_ok=True)
+    ok = ("D1c" in got) and len(got) == len(base) + 1
+    print(f"[必红夹具·带后缀行号必须被数到] 基线 {len(base)} 行 ⇒ 塞入 D1c 后 {len(got)} 行、命中 D1c={'D1c' in got}")
+    if not ok:
+        print("[INVALID] 分类器看不见带字母后缀的行 ⇒ 新加的行会静默消失，拒出对照表")
+    return 0 if ok else 1
+
+
 def selfcheck_all(copy_path=None):
-    """七条子检查一次跑完（题注严判 / 豁免粒度 / 折叠必红 / 终端代码页 / 行数不丢 / 号整段相等 / 旧值扫描域）；
-    只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
+    """九条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
     return (selfcheck_caption() or selfcheck_guards() or selfcheck_fold()
-            or selfcheck_console() or selfcheck_rows() or selfcheck_ids(copy_path) or selfcheck_stale())
+            or selfcheck_console() or selfcheck_rows() or selfcheck_ids(copy_path)
+            or selfcheck_stale() or selfcheck_terms_scope() or selfcheck_rowids())
 
 
 def selfcheck_console():
