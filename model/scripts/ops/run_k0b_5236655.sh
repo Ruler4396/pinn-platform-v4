@@ -29,6 +29,7 @@ SUITED="${SUITED:-/mnt/workspace/route2_selftest}"   # must be OUTSIDE the repo 
 PHASE="${1:-check}"
 BUDGET_S="${BUDGET_S:-180}"
 CASE="${CASE:-TB-base}"
+SCALE_SRC="${SCALE_SRC:-$WS/route2_out}"   # read-only 6-digit S1 truth; never the output tree
 T_START=$(date +%s)
 mkdir -p "$LOGD" || exit 1
 export PYTHONPATH="$WS/pylibs:${PYTHONPATH:-}"
@@ -45,6 +46,53 @@ declare -A EXPECT=(
   [model/cases/contraction_2d/cfd/C-base_ns_re1/probe_syntax.edp]=a4ca809f0b05b932d76a76d8e7d2d87dcefb1174c3cf0817eb5603c579f6bb25
 )
 R2="$WS/model/scripts/route2"
+
+# ---------------------------------------------------------------------------------------------
+# The staging widths follow from the field magnitudes, so they are MEASURED, never guessed: the
+# emitter refuses an empty --truth-scales with no prior samples to read (that refusal is what
+# stopped the 15:03 smoke on this box, correctly -- but it means the first 12-digit run has to be
+# told where to measure).  SCALE_SRC is a read-only tree of the archived 6-digit S1 truth; the
+# per-level numbers are printed so the spread stays visible, and the plan uses the conservative
+# max across levels (a hi that is printable for every level).
+measure_trip_scales() {
+  local src="$1" out
+  out=$(cd "$R2" && python3 - "$src" <<'PY'
+import csv, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+want = ("x_star", "y_star", "u_star", "v_star", "p_star")
+per = {}
+for f in sorted(root.glob("**/*_samples_*.csv")):
+    lv = f.name.split("_samples_")[0]
+    with f.open(encoding="utf-8", newline="") as fh:
+        rd = csv.DictReader(fh)
+        if not rd.fieldnames or not all(w in rd.fieldnames for w in want):
+            continue
+        m = per.setdefault(lv, {w: 0.0 for w in want})
+        for row in rd:
+            for w in want:
+                try:
+                    v = abs(float(row[w]))
+                except (TypeError, ValueError):
+                    continue
+                if v > m[w]:
+                    m[w] = v
+if not per:
+    print("NO_SOURCE")
+    raise SystemExit(3)
+worst = {w: max(m[w] for m in per.values()) for w in want}
+for k in sorted(per):
+    print("PER_LEVEL %s %s" % (k, " ".join("%s=%.6g" % (w, per[k][w]) for w in want)))
+print("SCALES " + ",".join("%.6g" % worst[w] for w in want))
+PY
+)
+  local rc=$?
+  printf '%s\n' "$out" > "$LOGD/scales.txt"
+  if [ "$rc" != 0 ] || printf '%s' "$out" | grep -q NO_SOURCE; then
+    echo "NO_SOURCE"
+    return 1
+  fi
+  printf '%s' "$out" | awk '/^SCALES /{print $2}'
+}
 
 log() { printf '%s | %s\n' "$(date '+%H:%M:%S')" "$*"; }
 
@@ -157,7 +205,9 @@ case "$PHASE" in
     step probe_floor fatal 90 "cd '$(dirname "$PROBE")' && "$FFBIN" -nw '$(basename "$PROBE")'"
     grep -q "PROBE OK" "$LOGD/probe_floor.txt" || { log "ABORT: no PROBE OK -- do not emit a staged truth on an unproven floor"; exit 1; }
     log "probe: floor executed on v4.9 (see $LOGD/probe_floor.txt)"
-    step solve fatal 150 "cd '$R2' && python3 generate_t_case.py --case '$CASE' --levels '$LEVELS_SMOKE' --out-root '$LOGD/smoke'"
+    SCALES=$(measure_trip_scales "$SCALE_SRC") || { log "ABORT: no archived *_samples_*.csv under $SCALE_SRC to measure -- do not guess a staging width"; exit 1; }
+    log "measured scales (x,y,u,v,p) = $SCALES from $SCALE_SRC (per-level detail: $LOGD/scales.txt)"
+    step solve fatal 150 "cd '$R2' && python3 generate_t_case.py --case '$CASE' --levels '$LEVELS_SMOKE' --truth-scales '$SCALES' --out-root '$LOGD/smoke'"
     n=$(find "$LOGD/smoke" -name "*${LEVELS_SMOKE}*${LEVELS_SMOKE}_samples_*_staged.csv" 2>/dev/null | wc -l)
     [ "$n" -ge 8 ] || n=$(find "$LOGD/smoke" -name "*_staged.csv" | wc -l)
     log "companions written: $n (want 8 for one level)"
@@ -167,7 +217,9 @@ case "$PHASE" in
   run)
     restore_ff
     over_budget && exit 3
-    step full fatal 300 "cd '$R2' && python3 generate_t_case.py --case '$CASE' --levels '$LEVELS_FULL' --out-root '$LOGD/k0b'"
+    SCALES=$(measure_trip_scales "$SCALE_SRC") || { log "ABORT: cannot measure scales from $SCALE_SRC before the full emission"; exit 1; }
+    log "full-run scales = $SCALES (conservative max across the levels found under $SCALE_SRC)"
+    step full fatal 300 "cd '$R2' && python3 generate_t_case.py --case '$CASE' --levels '$LEVELS_FULL' --truth-scales '$SCALES' --out-root '$LOGD/k0b'"
     over_budget && log "WARN: budget spent during the levels -- reporting what landed"
     find "$LOGD/k0b" -name "*_staged.csv" | sort | while read -r f; do
       printf '  %-58s %s %sB\n' "$(basename "$f")" "$(sha256sum "$f" | cut -c1-16)" "$(stat -c%s "$f")"
