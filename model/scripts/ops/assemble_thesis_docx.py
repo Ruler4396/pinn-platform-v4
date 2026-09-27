@@ -2289,13 +2289,14 @@ def selfcheck_counts() -> int:
 
 
 def selfcheck_all(copy_path=None):
-    """十六条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
+    """全部子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。**条数不写死在这里**（今天已经在两处各自漂移过；要数就数注册串里那几个调用）。"""
     return (selfcheck_caption() or selfcheck_guards() or selfcheck_fold()
             or selfcheck_console() or selfcheck_rows() or selfcheck_ids(copy_path)
             or selfcheck_stale() or selfcheck_terms_scope() or selfcheck_rowids()
             or selfcheck_normid() or selfcheck_table_shapes(copy_path)
             or selfcheck_directives() or selfcheck_undeclared() or selfcheck_pointer()
-            or selfcheck_caliber() or selfcheck_counts())
+            or selfcheck_caliber() or selfcheck_counts()
+            or selfcheck_cli_rc())
 
 
 CALIBER_ROWS = {"D1b": ("mean-of-cases", "T5矩阵test口径读数", ("0.5684348", "0.0471148"))}
@@ -2315,6 +2316,35 @@ def caliber_violations(new: str, proof: str, spec) -> list:
     if not all(p in new or p in proof for p in pooled):
         v.append("本行凭据列缺 pooled 对照值 ⇒ 下一人会拿 pooled 当矛盾报")
     return v
+
+
+def selfcheck_cli_rc() -> int:
+    r"""第十七条·必红子检查（统括官 9/28 00:3x）：**`--count-needle` 的退码要表示"测过了"，不能恒 1**。
+    与"终端代码页那条"是同一个洞的两个方向：那条管"裸 `import` 时 reconfigure 没生效"，这条管"命令行入口这一段"——
+    **函数级的 `[闸·三数同框]` 四发从不经 CLI 入口，所以它永远照不到这里**。
+    验收打在消费端真正收到的字节上：真起子进程跑一次，断言 ① `rc == 0` ② stdout 含 `[三数同框]` ③ stderr **不再是**那行 `(a, b, c)` repr。"""
+    import subprocess
+    here = str(pathlib.Path(__file__).resolve())
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    impossible = "xyzzy-" + os.urandom(4).hex()          # 按构造不可能在工单里；只活在这一发子进程里，不落任何交付文本
+    bad = []
+    for kind, needle in (("在场串", "三数同框"), ("按构造不在场", impossible)):
+        p = subprocess.run([sys.executable, here, "--count-needle", needle],
+                           capture_output=True, text=True, env=env, cwd=str(REPO),
+                           encoding="utf-8", errors="replace")   # **父侧解码也要点名**：本机 locale 是 gbk，
+        # 不写 encoding 时 reader 线程直接 UnicodeDecodeError、`p.stdout` 变 None ⇒ 这一发自己崩（不是检出红，是装置红）。
+        # 与它同族的"终端代码页"那条子检查管的是子进程崩，这条管的是**父进程读不到**——两个方向都得堵。
+        so, se = p.stdout or "", p.stderr or ""
+        repr_on_stderr = bool(re.fullmatch(r"\(\d+, \d+, \d+\)\s*", se))
+        ok = p.returncode == 0 and "[三数同框]" in so and not repr_on_stderr
+        print(f"   [第十七条·CLI 退码] {kind}：rc={p.returncode}（应 0）｜stdout 有三数行={'[三数同框]' in p.stdout}"
+              f"｜stderr 是退出码 repr={repr_on_stderr}（必须 False）")
+        if not ok:
+            bad.append(kind)
+    if bad:
+        print(f"   ⇒ **{len(bad)} 发不对（{'、'.join(bad)}）**：修之前这三发都退 1，正是这一条要拦住的状态")
+        return 1
+    return 0
 
 
 def selfcheck_caliber() -> int:
@@ -2408,8 +2438,8 @@ def main() -> int:
                     help="只读：论文表格里的每个数对一遍仓内结果件，报命中率与未命中坐标（含两发夹具）")
     g.add_argument("--cell-coords", action="store_true",
                     help="只读：把『改一格文字』那类工单行（CELL_TEXT_ROWS）解析成全份（表序,行,列）坐标，命中≠1 即退 1")
-    g.add_argument("--count-needle", metavar="串", help="三数同框：数据行内／条文自身／全文件裸跑")
-    g.add_argument("--selfcheck", action="store_true", help="跑十六条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条／未声明行不得变／取件自拒／换口径必带声明）")
+    g.add_argument("--count-needle", metavar="串", help="三数同框：数据行内／条文自身／全文件裸跑——**只报数，退码恒 0；判定在子检查里做**")
+    g.add_argument("--selfcheck", action="store_true", help="跑全部子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条／未声明行不得变／取件自拒／换口径必带声明）")
     g.add_argument("--all", action="store_true",
                    help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（**不含来源列**，15:0x 裁定：来源由对照表承载）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
     ap.add_argument("--into", type=pathlib.Path, default=None,
@@ -2420,7 +2450,11 @@ def main() -> int:
     # **只读数、不碰 docx 的模式先分流**（统括官 9/28 00:1x：他在没装 python-docx 的解释器里跑 `--count-needle`
     # 直接崩在库缺失上 ⇒ 一个只读文本的正则凭什么要写作库？这条挪动本身就是那发"要一条必红"的前半。）
     if getattr(args, "count_needle", None):
-        return count_needle(args.count_needle)
+        count_needle(args.count_needle)
+        # **只报数、不判定 ⇒ 退码恒 0**（统括官 9/28 00:3x：修之前三发不同结果同一个 rc=1，那退码不带信息，
+        # 只会让下一个拿它做闸的人把"跑过了"读成"判不一致"）。判定在函数级做，那边要的是三元组不是退码。
+        # **别把 return 改回三元组**：`sys.exit(非 int)` 会把 repr 打到 stderr 再退 1，那行看着像输出、其实不是。
+        return 0
     import docx  # noqa: F401  ② 先确认库在，不在就别硬写
     from docx import Document
 
