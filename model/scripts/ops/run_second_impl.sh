@@ -222,7 +222,7 @@ read_pointer() {
 # Linux clone with autocrlf off, so its working bytes equal the blob bytes there; on a CRLF working
 # copy the two rulers part ways, which is why the number below is quoted with its ruler.
 declare -A EXPECT=(
-  [model/scripts/route2/solve_second_impl.py]=bb020a4f637fce9e
+  [model/scripts/route2/solve_second_impl.py]=6f603fa1add30396
 )
 # crosscheck_second_impl.py and install_external_solver.sh are checked for PRESENCE only: they landed
 # before this table existed, and their blobs are already in git (pin 7e67943 and earlier).
@@ -370,25 +370,30 @@ PY
 verify39_body() {
   require_venue
   read_pointer
-  local cid="${CASE:-TB-base}" py="${S1_PY:-python3}" d="$OUT/run39"
+  local cid="${CASE:-TB-base}" py="${S1_PY:-python3}" d="$OUT/run39" tree="$OUT/run39/tree" snap="$OUT/run39/snap"
+  # The two passes are generated into $tree and their manifests are snapshotted into $snap, a SIBLING.
+  # They used to be copied into $d itself, which is inside the hashed root: pass 2 then hashed a tree
+  # holding pass 1's own snapshots, and compare_manifests reported `files added in B (2):
+  # env_probe_pass1.json, manifest_pass1.json` -- my acceptance device adding files to the thing it is
+  # supposed to be measuring.  The rc=1 that produced was the device, not the run.
   # Both passes must be handed the SAME --truth-scales.  Left empty, pass 2 measures the staging from
   # pass 1's own tree, so a digest difference could be a real staging change rather than the stopwatch --
   # and §四L asks specifically to exclude the stopwatch before claiming reproducibility.
   [ -n "${TRUTH_SCALES:-}" ] || die "verify39 needs TRUTH_SCALES=x,y,u,v,p (one value set, used for BOTH passes); empty is refused"
-  [ -e "$d" ] || mkdir -p "$d" || die "cannot create $d"
-  [ -z "$(find "$d" -name '*.csv' -print -quit)" ] || die "$d already holds artefacts -- compare against a half-written tree is not an acceptance; use a fresh pointer (run preflight)"
+  mkdir -p "$tree" "$snap" || die "cannot create $tree / $snap"
+  [ -z "$(find "$tree" -name '*.csv' -print -quit)" ] || die "$tree already holds artefacts -- comparing against a half-written tree is not an acceptance; use a fresh pointer (run preflight)"
   for pass in 1 2; do
-    log "pass $pass of case=$cid levels=${LEVELS:-h1} into the SAME out-root $d (manifest keys are absolute, so two roots cannot be compared character by character)"
-    timeout "$SEGMENT_S" "$py" "$R2/generate_t_case.py" --case "$cid" --out-root "$d" \
+    log "pass $pass of case=$cid levels=${LEVELS:-h1} into the SAME out-root $tree (manifest keys are absolute, so two roots cannot be compared character by character)"
+    timeout "$SEGMENT_S" "$py" "$R2/generate_t_case.py" --case "$cid" --out-root "$tree" \
         --levels "${LEVELS:-h1}" --truth-scales "$TRUTH_SCALES" 2>&1 | tail -5 \
       || die "pass $pass failed rc=$?"
-    cp "$d/data/$cid/sha256sums.json" "$d/manifest_pass$pass.json" || die "no manifest after pass $pass"
-    cp "$d/data/$cid/env-probe.json" "$d/env_probe_pass$pass.json" 2>/dev/null
-    log "pass $pass snapshotted: $d/manifest_pass$pass.json"
+    cp "$tree/data/$cid/sha256sums.json" "$snap/manifest_pass$pass.json" || die "no manifest after pass $pass"
+    cp "$tree/data/$cid/env-probe.json" "$snap/env_probe_pass$pass.json" 2>/dev/null
+    log "pass $pass snapshotted: $snap/manifest_pass$pass.json -- in $snap, OUTSIDE the hashed root $tree"
   done
   log "acceptance = files_digest identical character for character + per-file names, never a total"
-  timeout 300 "$py" "$R2/compare_manifests.py" "$d/manifest_pass1.json" "$d/manifest_pass2.json" \
-      | tee "$d/compare.stdout" | tail -22
+  timeout 300 "$py" "$R2/compare_manifests.py" "$snap/manifest_pass1.json" "$snap/manifest_pass2.json" \
+      | tee "$snap/compare.stdout" | tail -22
   local rc=${PIPESTATUS[0]}
   log "compare rc=$rc  0=PASS 1=files moved (real difference) 2=procedure error (different roots)"
   log "the env block is EXPECTED to differ between the passes -- read env_probe_pass{1,2}.json; it sits outside files by 定档丙"

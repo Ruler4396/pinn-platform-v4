@@ -266,7 +266,11 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     ksp.solve(b, Usol.x.petsc_vec)
     reason, its = ksp.getConvergedReason(), ksp.getIterationNumber()
     if reason <= 0:
-        raise RuntimeError(f"KSP did not converge (reason={reason}, its={its}) -- "
+        try:
+            rname = PETSc.KSP.ConvergedReasons(reason).name
+        except Exception:
+            rname = "name-lookup-failed"
+        raise RuntimeError(f"KSP did not converge (reason={reason}/{rname}, its={its}) -- "
                            f"reporting an unconverged solve as a second implementation would be a lie")
     print(f"[solve] converged reason={reason} its={its}", flush=True)
 
