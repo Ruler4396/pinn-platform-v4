@@ -131,23 +131,33 @@ def n_await(await_) -> int:
 # 由对照表的「三张新表的来源」一节承载（`table_sources()` 是唯一声明处）。
 # ⇒ 以后谁把它加回论文表、或再丢任何一列，第 11 条子检查当场红。
 TABLE_SHAPES = {
-    "表4-4b": {"cols": 3, "min_rows": 5, "header": ("权重项", "该批取值", "说明")},
-    "表5-9": {"cols": 4, "min_rows": 13,
+    "表4-4b": {"cols": 3, "rows": 5, "last_col": "说明", "header": ("权重项", "该批取值", "说明")},
+    "表5-9": {"cols": 4, "rows": 13, "last_col": "备注",
               "header": ("方法与口径", "收缩 C-base (s)", "弯曲 B-base (s)", "备注")},
-    "表5-10": {"cols": 5, "min_rows": 5,
-               "header": ("方法与口径", "稠密", "分层 5%", "n", "备注")},
+    "表5-10": {"cols": 5, "rows": 5, "last_col": "备注",
+                "header": ("方法与口径", "稠密", "分层 5%", "n", "备注")},
+    # 两张被裁定改过结构的表也进声明（表5-7＝G4 加「模型批次」列 + B-test-2 行；表5-8＝A11 丙改三格文字）
+    "表5-7": {"cols": 7, "rows": 5, "last_col": "模型批次",
+              "header": ("工况", "几何类型", "观测条件", "速度场L2误差", "压力场L2误差", "压降相对误差", "模型批次")},
+    "表5-8": {"cols": 5, "rows": 3, "last_col": "最终最大压力误差",
+              "header": ("阶段内残差惩罚项", "压力阶段结束时压力场L2误差", "最终速度场L2误差",
+                          "最终压力场L2误差", "最终最大压力误差")},
 }
 
 
 def shape_violations(header, ncols, nrows, spec):
-    """纯函数：把一张表的实际形状与声明比对，返回不符清单。**夹具直接喂它**，不靠改文档。"""
+    """纯函数：**闸二＝逐表形状签名**（期望行数, 期望列数, 末列表头名, 全表头），任一不符即报并指名。
+    这道专管"丢一整列而终检照报 0"与"结构被等量替换"——它们对 ragged 判据天然不可见。
+    行数是**等值**而非下限：给表加一行也得同批改声明，这是刻意的摩擦。"""
     v = []
     if ncols != spec["cols"]:
         v.append(f"列数 {ncols} ≠ 声明 {spec['cols']}")
+    if header and header[-1] != spec["last_col"]:
+        v.append(f"末列表头 {header[-1]!r} ≠ 声明 {spec['last_col']!r}")
+    if nrows != spec["rows"]:
+        v.append(f"行数 {nrows} ≠ 声明 {spec['rows']}（要加行就同批改声明）")
     if tuple(header) != spec["header"]:
         v.append(f"表头与声明不符：现 {list(header)} ｜声明 {list(spec['header'])}")
-    if nrows < spec["min_rows"]:
-        v.append(f"行数 {nrows} < 声明下限 {spec['min_rows']}（行数只许增不许减）")
     return v
 
 
@@ -172,11 +182,14 @@ def selfcheck_table_shapes(copy_path=None):
             bad += [f"{tid}（{len(tb.rows)}×{len(hdr)}）：{x}" for x in v]
     # **必红夹具**：拿"少一列 + 末列不是备注"的形状喂 shape_violations，它必须报
     spec = TABLE_SHAPES["表5-10"]
-    dropped = shape_violations(list(spec["header"][:-1]), spec["cols"] - 1, spec["min_rows"], spec)
-    if not dropped:
-        bad.append("必红夹具失效：删掉一整列，shape_violations 仍然不报 ⇒ 这道闸是空的")
-    print(f"[第 11 条·新表形状] 三张表列数/表头名等于声明 = {'是' if not [b for b in bad if '必红' not in b] else '否'}"
-          f"；**必红夹具（删一列必须报）命中 {len(dropped)} 条**（应 ≥1）⇒ "
+    dropped = shape_violations(list(spec["header"][:-1]), spec["cols"] - 1, spec["rows"], spec)
+    renamed = shape_violations(list(spec["header"][:-1]) + ["来源件 + 行号"], spec["cols"], spec["rows"], spec)
+    shrunk = shape_violations(list(spec["header"]), spec["cols"], spec["rows"] - 1, spec)
+    if not (dropped and renamed and shrunk):
+        bad.append("必红夹具失效：删一整列／改末列名／少一行三种形状 shape_violations 仍不报 ⇒ 这道闸是空的")
+    print(f"[闸二·逐表形状签名] {len(TABLE_SHAPES)} 张表的（行数,列数,末列名,全表头）等于声明 = "
+          f"{'是' if not [b for b in bad if '必红' not in b] else '否'}"
+          f"；**必红三发**（删一列报 {len(dropped)} 条／改末列名报 {len(renamed)} 条／少一行报 {len(shrunk)} 条，均应 ≥1）⇒ "
           + ("全过 ✓" if not bad else f"**{len(bad)} 处不符**"))
     for x in bad:
         print("   ", x)
@@ -197,21 +210,46 @@ def count_needle(needle: str) -> int:
     return 0
 
 
-def s12_directives(width: int = 46):
-    """§12 是**散文条目** ⇒ `rows()` 的表格行正则看不见它：统括官写在 §12 里的"请/不得/必须"
-    不会变成任何一道闸的待办（9/27 15:44:40 那条"对照表状态要写成需作者粘贴"就这么漏过一整轮，
-    17:5x 他重发时才执行）。这里不判定、只**逐条打印**，逼每一轮读一遍——判定归人，但**不能靠记性**。"""
-    txt = WORK.read_text(encoding="utf-8")
-    if "## 12." not in txt:
-        return []
-    body = txt.split("## 12.", 1)[1]
+IMPERATIVE = ("请", "不得", "必须", "不许", "禁止", "应当", "要")
+
+
+def s12_directives(text: str | None = None, width: int = 46):
+    """§12 是**散文条目** ⇒ `rows()` 的表格行正则看不见它：统括官写在里面的"请/不得/必须"
+    不会变成任何一道闸的待办（9/27 15:44:40 那条 A13 指令就这么漏过一整轮）。
+    **只匹配条目首行会把缺陷搬到下一层**——祈使句大多在缩进子行里（本函数第一版就犯过，
+    统括官 19:1x 判出来），所以这里按**整条**扫：一条 = 从 `^N. ` 到下一条或下一节为止的全部行。
+    返回 [(条号, 命中在第几行, 摘句)]；命中在第 2 行以后即"子行"。不判定，只逐条打印逼本轮读。"""
+    if text is not None:                              # 夹具喂的就是条目正文本身，不再去读工单
+        body = text
+    else:
+        txt = WORK.read_text(encoding="utf-8")
+        if "## 12." not in txt:
+            return []
+        body = txt.split("## 12.", 1)[1]
     body = re.split(r"\n## ", body, 1)[0]
+    items = re.split(r"(?m)^(\d+)\.\s+", body)          # [前言, 号, 体, 号, 体, …]
     out = []
-    for m in re.finditer(r"^(\d+)\.\s+(.{0,300})", body, re.M):
-        line = re.sub(r"\s+", " ", m.group(2))
-        if any(k in line for k in ("请", "不得", "必须", "不许", "禁止", "应当")):
-            out.append((int(m.group(1)), line[:width]))
+    for k in range(1, len(items) - 1, 2):
+        num, blob = int(items[k]), items[k + 1]
+        lines = [l for l in blob.split("\n")]
+        for li, line in enumerate(lines):
+            if any(w in line for w in IMPERATIVE):
+                out.append((num, li + 1, re.sub(r"\s+", " ", line)[:width]))
+                break
     return out
+
+
+def selfcheck_directives():
+    """必红夹具：**只在子行里**埋一条祈使句，扫描器必须找到它（只读首行的旧版会漏 ⇒ 夹具即红）。"""
+    synth = "12. 标题句没有关键词\n    - **必须**：这条只在缩进子行里出现\n13. 另一条\n"
+    got = s12_directives(synth)
+    hit = [g for g in got if g[0] == 12 and g[1] > 1]
+    first_only = any("必须" in g[2] for g in got if g[1] == 1)
+    ok = bool(hit) and not first_only
+    print(f"[必红夹具·§12 指令扫整条] 合成件命中 {len(got)} 条，其中**子行**命中 {len(hit)} 条"
+          f"（应 ≥1）、首行误报 {first_only}（应 False）⇒ "
+          + ("子行里的祈使句也跑得出来 ✓" if ok else "**只读到首行＝把原缺陷搬下一层**"))
+    return 0 if ok else 1
 
 
 def rows():
@@ -1449,6 +1487,11 @@ def selfcheck_fold():
     return 0
 
 
+DECLARED_ROWS = 56        # 工单数据行的**声明值**（统括官 19:1x 闸一）。增/删行必须同批改这里：
+# 这是刻意的摩擦——J3 被 J4 顶掉那次，行数守恒、结构变了，`--plan` 与表格闸全绿。
+
+
+
 def selfcheck_rows():
     """必红子检查（9/27 15:5x，我自己把 J3 整行顶掉之后加的）：**工单少一行就红**。
     那次事故里 `--plan` 与表格闸全绿——因为行数没变、只是 J3 被 J4 换了位置，
@@ -1467,10 +1510,14 @@ def selfcheck_rows():
         print("[必红子检查·行数] HEAD 侧读到 **0 行** ⇒ 基线取不到，本条判未验（不是通过）")
         return 1
     lost = sorted(set(prev) - set(cur))
-    ok = not lost and not dup and len(cur) >= len(prev)
-    print(f"[必红子检查·行数] 工单数据行 HEAD {len(prev)} → 工作树 {len(cur)}；丢行 {lost or '无'}；重号 {dup or '无'}")
+    extra = sorted(set(cur) - set(prev))
+    # **闸一**：与声明值不等即红（HEAD 对比只防"净丢行"，防不了"等量替换"——J3/J4 就是那样漏过去的）
+    declared = len(cur) == DECLARED_ROWS
+    ok = declared and not lost and not dup and len(cur) >= len(prev)
+    print(f"[闸一·工单行数] 数据行 声明 {DECLARED_ROWS} ｜HEAD {len(prev)} → 工作树 {len(cur)}"          f"；丢行 {lost or '无'}｜相对 HEAD 新增 {extra or '无'}｜重号 {dup or '无'} ⇒ "              + ("等于声明且无丢行无重号 ✓" if ok else f"**不成立（改行数必须同批改 DECLARED_ROWS）**"))
     if not ok:
-        print("[INVALID] 有工单行消失或重号 ⇒ 渲染层看不出来，必须在这里红")
+        print(f"[INVALID] 行数断言不成立：丢行 {lost or '无'}｜相对 HEAD 新增 {extra or '无'}｜重号 {dup or '无'}"
+              f"｜声明值 {DECLARED_ROWS} vs 现 {len(cur)} ⇒ 渲染层看不出来，必须在这里红")
         return 1
     return 0
 
@@ -1601,11 +1648,12 @@ def selfcheck_rowids():
 
 
 def selfcheck_all(copy_path=None):
-    """十一条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
+    """十二条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
     return (selfcheck_caption() or selfcheck_guards() or selfcheck_fold()
             or selfcheck_console() or selfcheck_rows() or selfcheck_ids(copy_path)
             or selfcheck_stale() or selfcheck_terms_scope() or selfcheck_rowids()
-            or selfcheck_normid() or selfcheck_table_shapes(copy_path))
+            or selfcheck_normid() or selfcheck_table_shapes(copy_path)
+            or selfcheck_directives())
 
 
 def selfcheck_normid():
@@ -1660,7 +1708,7 @@ def main() -> int:
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
     g.add_argument("--count-needle", metavar="串", help="三数同框：数据行内／条文自身／全文件裸跑")
-    g.add_argument("--selfcheck", action="store_true", help="跑十一条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状）")
+    g.add_argument("--selfcheck", action="store_true", help="跑十二条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条）")
     g.add_argument("--all", action="store_true",
                    help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（**不含来源列**，15:0x 裁定：来源由对照表承载）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
     ap.add_argument("--into", type=pathlib.Path, default=None,
