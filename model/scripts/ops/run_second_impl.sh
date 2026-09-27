@@ -18,6 +18,9 @@
 #   run        the base level (180x40, the .edp's own border counts) + crosscheck vs the shipped
 #              FreeFEM truth. This is the row that decides the pre-registration's §4 verdict.
 #   refine     the doubled level (360x80) + the same crosscheck + the internal <2% mesh gate
+#   verify39   the #39 acceptance: same case twice into ONE out-root, same --truth-scales both
+#              passes, then compare_manifests.py -- digest must match character for character and
+#              the report is per-file names, never a total (§四L).  Needs TRUTH_SCALES=x,y,u,v,p.
 #   status     read-only: pointer, tree, env presence
 #
 # Every phase ends with one SEGMENT-END line: wall_used, the 8-hour window, what is missing, and
@@ -98,7 +101,7 @@ declare -A EXPECT=(
 check_blobs() {
   local f miss="" got
   [ -f "$REF_CSV" ] || miss="$miss C-base_raw.csv"
-  for f in solve_second_impl.py crosscheck_second_impl.py install_external_solver.sh; do
+  for f in solve_second_impl.py crosscheck_second_impl.py install_external_solver.sh compare_manifests.py generate_t_case.py artifacts.py t_geometry.py; do
     [ -f "$R2/$f" ] || miss="$miss $f"
   done
   for f in "${!EXPECT[@]}"; do
@@ -201,6 +204,34 @@ PY
   seg_end DONE ""
 }
 
+verify39_body() {
+  require_venue
+  read_pointer
+  local cid="${CASE:-TB-base}" py="${S1_PY:-python3}" d="$OUT/run39"
+  # Both passes must be handed the SAME --truth-scales.  Left empty, pass 2 measures the staging from
+  # pass 1's own tree, so a digest difference could be a real staging change rather than the stopwatch --
+  # and §四L asks specifically to exclude the stopwatch before claiming reproducibility.
+  [ -n "${TRUTH_SCALES:-}" ] || die "verify39 needs TRUTH_SCALES=x,y,u,v,p (one value set, used for BOTH passes); empty is refused"
+  [ -e "$d" ] || mkdir -p "$d" || die "cannot create $d"
+  [ -z "$(find "$d" -name '*.csv' -print -quit)" ] || die "$d already holds artefacts -- compare against a half-written tree is not an acceptance; use a fresh pointer (run preflight)"
+  for pass in 1 2; do
+    log "pass $pass of case=$cid levels=${LEVELS:-h1} into the SAME out-root $d (manifest keys are absolute, so two roots cannot be compared character by character)"
+    timeout "$SEGMENT_S" "$py" "$R2/generate_t_case.py" --case "$cid" --out-root "$d" \
+        --levels "${LEVELS:-h1}" --truth-scales "$TRUTH_SCALES" 2>&1 | tail -5 \
+      || die "pass $pass failed rc=$?"
+    cp "$d/data/$cid/sha256sums.json" "$d/manifest_pass$pass.json" || die "no manifest after pass $pass"
+    cp "$d/data/$cid/env-probe.json" "$d/env_probe_pass$pass.json" 2>/dev/null
+    log "pass $pass snapshotted: $d/manifest_pass$pass.json"
+  done
+  log "acceptance = files_digest identical character for character + per-file names, never a total"
+  timeout 300 "$py" "$R2/compare_manifests.py" "$d/manifest_pass1.json" "$d/manifest_pass2.json" \
+      | tee "$d/compare.stdout" | tail -22
+  local rc=${PIPESTATUS[0]}
+  log "compare rc=$rc  0=PASS 1=files moved (real difference) 2=procedure error (different roots)"
+  log "the env block is EXPECTED to differ between the passes -- read env_probe_pass{1,2}.json; it sits outside files by 定档丙"
+  seg_end "$([ $rc -eq 0 ] && echo DONE || echo RED)" "compare rc=$rc"
+}
+
 status_body() {
   log "read-only: venue, pointer, env, tree. Nothing installed, nothing solved."
   local why miss=""
@@ -229,6 +260,7 @@ case "$MODE" in
   smoke)     smoke_body ;;
   run)       run_body ;;
   refine)    refine_body ;;
+  verify39)  verify39_body ;;
   status)    status_body ;;
-  *) die "unknown mode '$MODE' (preflight|install|smoke|run|refine|status)" ;;
+  *) die "unknown mode '$MODE' (preflight|install|smoke|run|refine|verify39|status)" ;;
 esac
