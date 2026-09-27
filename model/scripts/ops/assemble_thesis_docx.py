@@ -96,6 +96,8 @@ def landable(new_raw: str, old_text: str):
                            f"整段替换会吃掉题注 ⇒ 走「插表注」或「改题注」算子")
     if any(k in new for k in INSTR):
         return False, "", "载荷仍含操作指令或工单内部注 ⇒ 不整段替换"
+    if not is_body_prose(new):
+        return False, "", "载荷是给表格加列/加行/写表注那类指令，不是正文句 ⇒ 走插表/改列算子"
     if len(new) < 0.6 * max(1, len(old_text)):
         return False, "", (f"载荷只有旧段落 {len(new) / max(1, len(old_text)):.0%}，"
                            f"是局部改写（旧 {len(old_text)} 字）⇒ 整段替换会吃内容")
@@ -132,6 +134,14 @@ def note_inserts(doc, auto_ids):
     return out
 
 
+TABLE_WORDS = ("说明列", "新增行", "表注", "表题", "列名", "行名", "增设", "逐行填实", "改为")
+
+
+def is_body_prose(new: str) -> bool:
+    """载荷得是一句正文，不能是"给表格加列/加行/写表注"那类指令性内容。"""
+    return not any(k in new[:24] for k in TABLE_WORDS) and not new.startswith("表注")
+
+
 def classify(doc):
     """⇒ (可整段重写, 术语算子, 成对删插, 待批, 人工)"""
     body = paras(doc)
@@ -161,16 +171,23 @@ def classify(doc):
             frag = norm(max((f for f in re.split(r"…+", anchor) if len(norm(f)) >= 8),
                             key=lambda f: len(norm(f)), default=""))
             hit_list = find_anchor(body_norm, frag)
-        if not hit_list and cited:                        # 定位器二：只报锚点，不自动写（9/27 实测它会把表题/公式号整段吃掉）
+        if not hit_list and cited:                        # 定位器二：按 :NNNN 反查正文段，但只在"本行处置写明确实是替换"时才允许写
             cand = sorted({b for ln in cited for b in line_to_body.get(ln, [])})
-            if cand:
+            act = r["act"]
+            repl_like = re.search(r"换数|改写|替换|降级|撤|换词|换句", act) and not re.search(r"新增|插", act)
+            if len(cand) == 1 and repl_like:
+                hit_list = cand
+                print(f"   [定位器二→自动] {rid} 处置={act[:14]} 认定替换正文段 {cand[0]}")
+            elif cand:
                 manual.append((rid, f"无摘引；按 :{sorted(cited)[:3]} 对应正文段 {cand[:3]}"
-                                     f"（只作定位线索，落字走插段/改题注算子或人工）"))
+                                     f"（处置不是替换类{'' if repl_like else '，或本行是新增/插段'}"
+                                     f"⇒ 只作定位线索）"))
+                continue
             else:
                 manual.append((rid, ":NNNN 不对应任何正文段（新增表/表位/仓库文件类）"))
-            continue
+                continue
         if not hit_list:
-            manual.append((rid, "无原句可摘且 :NNNN 不对应正文段（新增表/表位/仓库文件类）"
+            manual.append((rid, "无摘引且 :NNNN 不对应正文段（新增表/表位/仓库文件类）"
                          if not quotes else f"锚句在 docx 正文段不命中（thesis.txt 行="
                                             f"{[i + 1 for i, t in enumerate(dump) if frag and frag in t][:2] or '全无'}）"))
             continue
