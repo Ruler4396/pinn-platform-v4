@@ -15,7 +15,12 @@
 # pass as the K0b reference: `--require-12-digit-truth` makes the reader halt instead.
 set -uo pipefail
 
-FULL_PIN=70317a5965fb342ed5212fac71b5f6b20334eb5f
+# The caller's pin wins: run_coldtrip_one.sh fetches this driver AND the same python files
+# from its own table, so a private pin here could re-download an OLDER generate_t_case.py
+# over the parent's newer bytes.  Measured on dsw-2213920 at 14:52: the solve aborted on a
+# binary the 1.5 s probe had just used successfully (parent table pin 70317a5, driver pin
+# 5236655) -- two nested tables must not be allowed to disagree, so the child inherits.
+FULL_PIN="${FULL_PIN:-70317a5965fb342ed5212fac71b5f6b20334eb5f}"
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="$WS/ffroot.tgz"

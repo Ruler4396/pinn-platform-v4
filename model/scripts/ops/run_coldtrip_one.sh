@@ -22,7 +22,7 @@
 # No training, no money, no rewrite of pushed history.
 set -uo pipefail
 
-FULL_PIN="${FULL_PIN:-70317a5965fb342ed5212fac71b5f6b20334eb5f}"   # the commit the WANT table describes
+FULL_PIN="${FULL_PIN:-e5ee4761a0442455de04c3e8adca07b88bb21920}"   # the commit the WANT table describes
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="${FFROOT:-$WS/ffroot.tgz}"
@@ -57,7 +57,7 @@ declare -A WANT=(
   [model/scripts/route2/residual_scorers.py]=86c96b1cbf9c6bce
   [model/scripts/route2/t_geometry.py]=94329e67f178b7df
   [model/scripts/route2/selftest_route2_stdlib.py]=73ebf7eb0b7aa688
-  [model/scripts/ops/run_k0b_5236655.sh]=d341e5df95078ac1
+  [model/scripts/ops/run_k0b_5236655.sh]=f3cd8504765b35d1
   [model/cases/contraction_2d/cfd/C-base/C-base_stokes.edp]=2a62e0d41aa2fe98
   [model/cases/contraction_2d/cfd/C-base/C-base_raw.csv]=46bd0401cf0f92f5
   [model/cases/contraction_2d/cfd/C-base_ns_re1/probe_syntax.edp]=a4ca809f0b05b932
@@ -356,7 +356,7 @@ do_p2() {
     rc=0
     # fetch() lands files under $WS/<path>; $OUTD is only the log directory.  Calling the log
     # path gave rc=127 on the instance (14:41) -- loud, but a phase that never started.
-    BUDGET_S=$(( SEGMENT_S / 4 )) bash "$WS/model/scripts/ops/run_k0b_5236655.sh" "$ph" >"$OUTD/p2_$ph.log" 2>&1 || rc=$?
+    BUDGET_S=$(( SEGMENT_S / 4 )) FULL_PIN="$FULL_PIN" bash "$WS/model/scripts/ops/run_k0b_5236655.sh" "$ph" >"$OUTD/p2_$ph.log" 2>&1 || rc=$?
     say "P2 k0b-$ph rc=$rc :: $(grep -m1 -E 'PROBE OK|no PROBE OK|companions written|ABORT|scan json|CONTROL|total=' "$OUTD/p2_$ph.log" | cut -c1-140)"
     if [ "$rc" != 0 ]; then
       say "P2 STOP after $ph -- the refusal IS the finding. If it is 'no PROBE OK' then floor is not executable on v4.9, so the staged reference is NOT_EMITTABLE and K0b closes as R3; that is a different conclusion from 'the cell is unmeasurable by nature' and must be reported as the former."
