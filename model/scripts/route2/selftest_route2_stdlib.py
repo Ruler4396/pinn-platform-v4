@@ -1270,17 +1270,31 @@ def runtime_path_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
            "no exception from the real solve/post-process/manifest path")
     if "_raised" in plan:
         return
-    ages = plan["levels"][0].get("artifact_age_s", {})
+    vol = json.loads((out_root / "data" / geom.case.case_id / "s1_timing.json")
+                     .read_text(encoding="utf-8"))
+    ages = vol["artifact_age_s"][plan["levels"][0]["level"]]
     ck.add("runtime.artifact_age_column_is_live_and_ordered",
            len(ages) == 11 and max(ages.values()) > 5.0
            and sorted(ages.values())[0] > 0.0,
            {"n": len(ages), "first": min(ages.values()), "last": max(ages.values())},
            "11 artefacts, the staggered spread readable from it")
-    timing = plan.get("timing_s", {})
+    timing = vol["timing_s"]
     ck.add("runtime.stage_timers_accumulate",
            all(k in timing for k in ("render_s", "solve_s", "postprocess_s", "manifest_s"))
            and timing["postprocess_s"] > 0.0 and timing["solve_s"] > 0.0,
            timing, "postprocess_s and solve_s non-zero (an inert timer would read 0.0)")
+    man_now = json.loads((out_root / "data" / geom.case.case_id / "sha256sums.json")
+                         .read_text(encoding="utf-8"))
+    leaves = [k.rsplit("/", 1)[-1] for k in man_now["files"]]
+    ck.add("runtime.sidecars_stay_outside_the_hashed_set",
+           len(leaves) >= 20 and not any(n in leaves for n in ("s1_timing.json", "env-probe.json",
+                                                               "sha256sums.json")),
+           {"n_files": len(leaves)},
+           "摘要里有 20+ 枚、三枚边车/清单本体不在里面；将来谁把秒表放回 files，两趟摘要就又对不上")
+    ck.add("runtime.relocated_clocks_left_the_plan_clean",
+           "timing_s" not in plan and "total_solve_wall_s" not in plan
+           and all("artifact_age_s" not in e for e in plan["levels"]),
+           sorted(plan), "丙的第二层：秒表只在边车里，plan 进了 files_digest 就必须逐字节可复现")
     stats = plan["levels"][0]["dense_stats"]
     ck.add("runtime.solved_level_reports_the_membership_triple",
            stats["outside"] == 0 and stats["absorbed_print"] > 0
@@ -1380,7 +1394,7 @@ def runtime_path_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
     moved["freefem_version_probe_wall_s"] = 999.999          # pretend a second run, slower box
     art.write_json(data_dir / "env-probe.json", {"case": probe.get("case"), "env": moved})
     man2 = gc._manifest(out_root, geom.case, data_dir / "sha256sums.json",
-                        data_dir / "env-probe.json")
+                        data_dir / "env-probe.json", data_dir / "s1_timing.json")
     # Report WHICH entries moved, by file name -- "31 files" is not an answer to "why did it change?".
     # The same three lists are what the instance leg has to print for the two-run acceptance.
     k1, k2 = set(man["files"]), set(man2["files"])

@@ -1116,14 +1116,27 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
     # -- so once 甲 put the plan into the list, the list carried a hash of bytes already replaced.
     # (Getting this order wrong is what the determinism control caught: with the build above the plan
     # write, the manifest hashed a stale s1_plan.json and the digest moved between two identical runs.)
-    plan["timing_s"] = {k: round(v, 2) for k, v in timing.items()}
-    plan["total_solve_wall_s"] = round(timing["solve_s"], 2)
+    # 定档丙的第二层（9/28 02:11 的 compare 抓到）：丙搬走了 env-probe 那枚秒表，但 plan 自己还带
+    # timing_s / total_solve_wall_s / levels[*].artifact_age_s，所以"同参数两趟"仍在 files_digest 里对不上，
+    # 现读就是 `content changed (1): s1_plan.json`。这些秒数本身有用（成本表、惰性计时器的哨兵），
+    # 所以不删，搬到一枚同样不进哈希的边车 s1_timing.json，待遇与 env-probe.json 一致。
+    ages_by_level = {}
+    for e in plan.get("levels", []):
+        ages_by_level[str(e.get("level", "?"))] = e.pop("artifact_age_s", {})
+    volatile = {"case": case.case_id,
+                "timing_s": {k: round(v, 2) for k, v in timing.items()},
+                "total_solve_wall_s": round(timing["solve_s"], 2),
+                "artifact_age_s": ages_by_level,
+                "excluded_from_files_digest_because": "wall-clock seconds differ between two identical "
+                                                      "runs, and s1_plan.json is inside the digest"}
+    art.write_json(data_dir / "s1_timing.json", volatile)
     art.write_json(data_dir / "s1_plan.json", plan)
-    man = _manifest(out_root, case, data_dir / "sha256sums.json", data_dir / "env-probe.json")
+    man = _manifest(out_root, case, data_dir / "sha256sums.json", data_dir / "env-probe.json",
+                    data_dir / "s1_timing.json")
     timing["manifest_s"] += time.perf_counter() - _t3     # env-probe + build; the write below is outside
     art.write_json(data_dir / "sha256sums.json", man)
     print(f"manifest n_files={man['n_files']} files_digest={man['files_digest'][:16]}")
-    print("timing_s=" + ", ".join(f"{k}:{v}" for k, v in plan["timing_s"].items()))
+    print("timing_s=" + ", ".join(f"{k}:{v}" for k, v in volatile["timing_s"].items()))
     print("per-level FEM sample points (each costs 3 u/v/p lookups)="
           + ", ".join(f"{e['level']}:{e['n_fem_point_evaluations']['total']}"
                       f"=g{e['n_fem_point_evaluations']['grid_loops']}"
@@ -1195,7 +1208,7 @@ def freefem_probe() -> dict:
 
 
 def _manifest(out_root: Path, case: tg.TCase, manifest_path: Path,
-              env_probe_path: Path) -> dict:
+              env_probe_path: Path, timing_path: Path) -> dict:
     """content_sha256 over every artefact byte, plus a canonical digest of that map.
 
     Two files are excluded BY NAME, not by directory (定档甲): the manifest itself, which cannot hold
@@ -1208,7 +1221,7 @@ def _manifest(out_root: Path, case: tg.TCase, manifest_path: Path,
     anchor behind the public "truth is recomputable bit for bit" claim (#42).  The digest is computed
     over sorted `path:sha` lines so a comparison is one string equality, not a diff of JSON layout.
     """
-    skip = {manifest_path.resolve(), env_probe_path.resolve()}
+    skip = {p.resolve() for p in (manifest_path, env_probe_path, timing_path)}
     paths = [p for p in out_root.rglob("*") if p.is_file() and p.resolve() not in skip]
     files = {str(p).replace("\\", "/"): art.sha256_file(p) for p in sorted(paths)}
     canonical = "\n".join(f"{key}:{value}" for key, value in sorted(files.items()))
@@ -1217,8 +1230,8 @@ def _manifest(out_root: Path, case: tg.TCase, manifest_path: Path,
             "files": files,
             "files_digest": art.sha256_text(canonical),
             "digest_over": "sha256 of sorted 'path:content_sha256' lines joined by LF",
-            "excluded_by_name": [str(manifest_path).replace("\\", "/"),
-                                  str(env_probe_path).replace("\\", "/")]}
+            "excluded_by_name": [str(p).replace("\\", "/")
+                                  for p in (manifest_path, env_probe_path, timing_path)]}
 
 
 def main() -> int:
