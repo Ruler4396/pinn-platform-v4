@@ -733,6 +733,14 @@ FIG_IDS = {"图5-14": "fig514", "图5-16": "fig516", "图5-17": "fig517"}
 # 图5-14 的指向句（原件里它是"只有题注、正文零引用"的孤图）。授权口径与 TRANSITION_517 同一把：
 # 只把已有对象指过去，不带新数字、不带强度词、不写结论；句子本身仍要作者点头。
 FIG514_POINTER = "图 5-14 展示了 basic 与 geometry 两种输入特征集在收缩流道上的速度 Rel-L2 对照。"
+# 两张孤表（表3-4、表4-1）的指向句**只起草、不落字**：项目记忆里有一条"作者 14:1x 拍定选项①（补句、不删表）"，
+# 但它在盘上没有任何凭据（`git log revision/main` 与 `grep -r 指向性引用 docs/` 都取不到，且那枚时间戳晚于当回合真实钟点）。
+# 规则：署名用户的裁决必须先归因到件，证明不了就不入账 ⇒ 这里只把草稿交给对照表，等统括官把裁决落到工单条目再开落字。
+POINTER_DRAFT = {
+    "表3-4": "数据预处理各步的口径汇总于表 3-4。",
+    "表4-1": "实验各阶段与对应产物的关系汇总于表 4-1。",
+}
+
 
 
 def fig_data():
@@ -914,6 +922,8 @@ def figs(copy_path):
     for fid, key in FIG_IDS.items():
         print("   [图]", replace_figure(doc, fid, made[key]))
     print("   [图]", add_fig514_pointer(doc))
+    for k, v in POINTER_DRAFT.items():
+        print(f"   [待批] {k} 的指向句只起草未落字（那条「作者拍定」在项目记忆里、盘上无凭据）：{v}")
     stale = [i for i, p in enumerate(doc.paragraphs)
              if any(x in p.text for x in ("0.5612", "11.7598"))]
     if stale:
