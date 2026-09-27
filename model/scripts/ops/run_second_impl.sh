@@ -11,6 +11,9 @@
 # $R2 the route2 script dir) rather than inventing a second layout in the same tree.
 #
 #   preflight  venue + blob hashes + what the output tree already holds -- fetches and installs nothing
+#   bootstrap  pinned Miniforge onto the NAS (URL + sha256 + byte count all checked before anything runs).
+#              It exists because install_external_solver.sh correctly refuses when there is no conda on
+#              PATH, and because apt here gives dolfinx 0.3.0 -- which is NOT a fallback for a 0.9 driver.
 #   install    DELEGATES to route2/install_external_solver.sh (one declaration of the conda command,
 #              its own 60-min cap, its own tar+sha256+restore-line persistence)
 #   smoke      solve_second_impl.py --nx 2 --ny 2: the REAL entry point on a 2x2 mesh, seconds.
@@ -75,6 +78,60 @@ require_venue() {
 
 PYBIN() { [ -x "$PREFIX/bin/python" ] && printf '%s' "$PREFIX/bin/python" || printf '%s' "$(command -v python3 || true)"; }
 
+# --- channel bootstrap: Miniforge, pinned by URL + published sha256 + byte size -------------------
+# Why this exists: install_external_solver.sh stops (correctly) when no conda/mamba is on PATH, and
+# §四M measured from this instance that micromamba off micro.mamba.pm crawls (~120 KB/min) while GitHub
+# releases are reachable.  Nothing else in the repo puts a conda on the box, so without this step the
+# trip lands on the pre-registration's INDETERMINATE row for a reason that is neither the judgement nor
+# the network.  Pinned, not "latest": the digest below is the one the release API publishes, so a
+# re-published artifact fails loudly instead of installing silently.
+MF_TAG="${MF_TAG:-26.7.2-0}"
+MF_URL="${MF_URL:-https://github.com/conda-forge/miniforge/releases/download/${MF_TAG}/Miniforge3-${MF_TAG}-Linux-x86_64.sh}"
+MF_SHA="${MF_SHA:-281b0ac7d550802efc81af633225a5e6116d29ae72f3ab4eae7168c3931a4c05}"
+MF_BYTES="${MF_BYTES:-124514161}"
+MF_HOME="${MF_HOME:-$NAS/miniforge3}"
+FREE_GB_FLOOR="${FREE_GB_FLOOR:-4}"      # 119 MB installer + base + the dolfinx env + its tarball
+
+verify_installer() {  # both the byte count and the sha256 must match the pinned pair
+  local p="$1" got_bytes got_sha
+  got_bytes=$(stat -c %s "$p" 2>/dev/null || stat -f %z "$p")
+  got_sha=$(sha256sum "$p" | cut -d' ' -f1)
+  [ "$got_bytes" = "$MF_BYTES" ] || { log "installer bytes=$got_bytes expected=$MF_BYTES"; return 1; }
+  [ "$got_sha" = "$MF_SHA" ] || { log "installer sha=$got_sha expected=$MF_SHA"; return 1; }
+  log "installer verified: $got_bytes B / sha256 $got_sha (tag $MF_TAG)"
+}
+
+bootstrap_body() {
+  require_venue
+  if [ -x "$MF_HOME/bin/conda" ] && [ "${FORCE:-0}" != "1" ]; then
+    log "conda already there: $MF_HOME/bin/conda ($("$MF_HOME/bin/conda" --version 2>&1 | head -1))"
+    log "skipping the download -- segments re-run, and re-fetching 119 MB is not a heartbeat"
+    seg_end DONE ""
+    return
+  fi
+  local avail tmp
+  avail=$(df -Pm "$NAS" | awk 'NR==2{print int($4/1024)}')
+  [ "${avail:-0}" -ge "$FREE_GB_FLOOR" ] \
+    || die "only ${avail} GB free on $NAS (floor ${FREE_GB_FLOOR} GB: installer + base + env + tarball) -- report, do not fill the box"
+  log "free=${avail}GB >= floor ${FREE_GB_FLOOR}GB; fetching tag $MF_TAG"
+  tmp="$NAS/.miniforge_installer_$MF_TAG.sh"
+  timeout "$SEGMENT_S" curl -fsSL --retry 2 -m "$SEGMENT_S" -o "$tmp" "$MF_URL" \
+    || die "download failed rc=$? (url=$MF_URL) -- report the code; do NOT fall back to apt, which gives dolfinx 0.3.0 against a 0.9 driver"
+  if ! verify_installer "$tmp"; then
+    die "ARTIFACT MISMATCH -- kept for inspection at $tmp, nothing was executed. Bypassing this means editing MF_SHA, which needs a source note."
+  fi
+  log "installing into $MF_HOME (NAS only; never /usr, no cp -a, no ldconfig)"
+  timeout "$SEGMENT_S" bash "$tmp" -b -p "$MF_HOME" 2>&1 | tail -6 \
+    || die "installer rc=$? -- leave $tmp in place and report"
+  [ -x "$MF_HOME/bin/conda" ] || die "installer finished but $MF_HOME/bin/conda is not executable"
+  printf 'url=%s\ntag=%s\nsha256=%s\nbytes=%s\ninstalled_at=%s\nconda=%s\n' \
+    "$MF_URL" "$MF_TAG" "$MF_SHA" "$MF_BYTES" "$(date -Is)" "$("$MF_HOME/bin/conda" --version 2>&1 | head -1)" \
+    > "$MF_HOME/BOOTSTRAP-PROVENANCE.txt" || die "cannot write provenance next to the install"
+  [ "${KEEP_INSTALLER:-0}" = "1" ] || rm -f "$tmp"
+  log "provenance=$MF_HOME/BOOTSTRAP-PROVENANCE.txt installer_kept=${KEEP_INSTALLER:-0}"
+  seg_end DONE ""
+}
+
 # The output directory is named ONCE by preflight and read back from a pointer by every other mode.
 # "Take the newest timestamp" is how a trip reads the wrong tree; a missing pointer is an error, not
 # a reason to guess.
@@ -116,6 +173,7 @@ preflight_body() {
   OUT="$OUTROOT/$(date +%Y%m%dT%H%M%S)_second_impl"
   log "NAS=$NAS WS=$WS out=$OUT prefix=$PREFIX"
   log "solver python=$(PYBIN)"
+  log "conda: $([ -x "$MF_HOME/bin/conda" ] && echo "present at $MF_HOME ($("$MF_HOME/bin/conda" --version 2>&1 | head -1))" || echo "ABSENT -> run '$0 bootstrap' (pinned tag $MF_TAG, sha256 ${MF_SHA:0:12}...) before install")"
   [ -d "$OUTROOT" ] && { log "OUTROOT already holds:"; ls -1 "$OUTROOT" | tail -8; }
   local miss; miss=$(check_blobs)
   [ -z "$miss" ] || log "MISSING/stale in this checkout:$miss"
@@ -135,12 +193,23 @@ install_body() {
   require_venue
   read_pointer
   [ -f "$R2/install_external_solver.sh" ] || die "$R2/install_external_solver.sh absent -- the pre-registered installer is not in this checkout"
+  # The delegated script refuses to invent an environment when no conda is on PATH (that refusal is
+  # correct), so the dependency is named here with its remedy rather than letting the run fall through
+  # to the pre-registration's INDETERMINATE row for a reason that is neither the judgement nor the network.
+  [ -x "$MF_HOME/bin/conda" ] || die "no conda at $MF_HOME/bin/conda -- run '$0 bootstrap' first (pinned Miniforge tag $MF_TAG)"
   log "delegating to install_external_solver.sh (it owns the conda command, the two-attempt stop-loss,"
   log "the ${SEGMENT_S}s-then-report cap and the tar+sha256+restore line; this script does not re-declare them)"
-  RUN="${RUN:-1}" CAP_MIN="${CAP_MIN:-60}" PREFIX="$PREFIX" \
+  RUN="${RUN:-1}" CAP_MIN="${CAP_MIN:-60}" PREFIX="$PREFIX" PATH="$MF_HOME/bin:$PATH" \
     bash "$R2/install_external_solver.sh" 2>&1 | tail -25 || die "installer rc=$? -- report it; do not fall back to the laptop"
-  "$(PYBIN)" -c "import dolfinx, sys; print('dolfinx', dolfinx.__version__, sys.version.split()[0])" \
+  local pv
+  pv=$("$(PYBIN)" -c "import dolfinx, sys; print(dolfinx.__version__ + ' py' + sys.version.split()[0])") \
     || die "dolfinx not importable from $PREFIX after the installer said it ran"
+  # §四M asked for the version AND the channel in the result, so both go on disk, not into chat.
+  printf 'dolfinx=%s\nprefix=%s\nconda=%s\nchannel=conda-forge (explicit -c in install_external_solver.sh)\nbootstrap=%s\nrecorded=%s\n' \
+    "$pv" "$PREFIX" "$("$MF_HOME/bin/conda" --version 2>&1 | head -1)" \
+    "$(tr '\n' ';' < "$MF_HOME/BOOTSTRAP-PROVENANCE.txt" 2>/dev/null || echo none)" "$(date -Is)" \
+    > "$OUT/install_channel.txt"
+  log "version+channel recorded at $OUT/install_channel.txt: dolfinx $pv"
   seg_end DONE ""
 }
 
@@ -256,11 +325,12 @@ status_body() {
 
 case "$MODE" in
   preflight) preflight_body ;;
+  bootstrap) bootstrap_body ;;
   install)   install_body ;;
   smoke)     smoke_body ;;
   run)       run_body ;;
   refine)    refine_body ;;
   verify39)  verify39_body ;;
   status)    status_body ;;
-  *) die "unknown mode '$MODE' (preflight|install|smoke|run|refine|verify39|status)" ;;
+  *) die "unknown mode '$MODE' (preflight|bootstrap|install|smoke|run|refine|verify39|status)" ;;
 esac
