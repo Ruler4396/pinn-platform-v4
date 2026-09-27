@@ -53,6 +53,12 @@ INSTR = ("删除", "统一替换为", "同步替换", "替换为", "行名", "�
 PAIR_OPS = ("E2", "E3", "E4")   # ③ 换数+插段+删句三者同进同退，见 e_block()
 # 表内一格换标签（工单里"换标签"类）：只允许"旧标签是新标签的子串"那种纯扩展，且整格唯一命中才做。
 CELL_OPS = {"A16": ("表5-1", "阶段内残差惩罚项", "阶段内残差惩罚项（启用）")}
+# D1b：判决＝(a) 改数（统括官 16:4x 第三次量到旧值仍在表里）。新值不手打——每条都带正本行号，
+# 落字前现读那一行、里面没有这个数就拒做。同行 0.0274（B-test-1）不在表内 ⇒ 不会被碰。
+CELL_VALUES = {
+    "D1b-basic": ("表5-1", "0.5612", "0.539923", "docs/revision/T5矩阵test口径读数-20260926.md", 38),
+    "D1b-geometry": ("表5-1", "0.0390", "0.148723", "docs/revision/T5矩阵test口径读数-20260926.md", 39),
+}
 POINTER_ROWS = ("A18", "A19")     # 孤表指向句，凭据＝§12 第 13 条①（作者拍定"补句、不删表"）；句子只从工单载荷取
 LIMIT_ROWS = ("J4",)              # 新增一句局限，凭据＝§12 第 13 条③／作者 9/27 午后当回合选择（时刻以 git log %cI 为准）；句子与锚点都只从工单那一行取
 # 混合格子的正文切片：有些行的「新文本」把正文句和写作指令写在同一格（D1 就是），整格落字会把
@@ -1056,13 +1062,12 @@ def figs(copy_path):
         return 0
     if np_ != len(POINTER_ROWS):
         print(f"[注] 孤表指向句本轮插了 {np_}/{len(POINTER_ROWS)}（其余为「该号已有正文引用」⇒ 幂等跳过，不是失败）")
-    stale = [i for i, p in enumerate(doc.paragraphs)
-             if any(x in p.text for x in ("0.5612", "11.7598"))]
-    stale_cells = [(ti, ri, ci) for ti, t in enumerate(doc.tables) for ri, r in enumerate(t.rows)
-                   for ci, c in enumerate(r.cells) if any(x in c.text for x in ("0.5612", "11.7598"))]
+    stale, stale_cells = stale_hits(doc)          # 与 selfcheck_stale() 同一把尺，不留两份扫描逻辑
     if stale_cells:
         print(f"   [告警·表内旧数] 正文已换新数，但**表格单元里仍有** {stale_cells}（＝工单 D1b，判决＝改数）"
               f"⇒ 扫描面已扩到表内：旧数只藏在表格里也会响")
+    if stale:
+        print(f"   [告警·正文旧数] 正文段 {stale} 仍印着被禁的消融结论数")
     if stale:
         print(f"   [图][不一致告警] 图5-14 已换成 test 口径新数，但正文段 {stale} 仍印着旧数 0.5612/11.7598"
               f"（D1 行未落）⇒ 图文不一致只有「D1 落字」这一个封法，本副本不得当冻结版")
@@ -1119,6 +1124,47 @@ def add_limit_rows(doc):
     return n
 
 
+def cell_values_op(doc):
+    """D1b 这类**换承重格里的数**（不是换标签）：三重约束——① 表按题注号整段相等选（含续表一起找完再判唯一）；
+    ② 整格相等才认，命中数 != 1 就拒做；③ **新值必须在所引正本那一行里现读得到**（谓词级，不接受我手打的数）。"""
+    n = 0
+    for rid, (tid, old, new, srcrel, srcline) in CELL_VALUES.items():
+        line = (REPO / srcrel).read_text(encoding="utf-8").splitlines()[srcline - 1]
+        if new not in line:
+            print(f"   [数值] {rid}：正本 {srcrel}:{srcline} 里没有 {new} ⇒ 拒做（新值拿不到出处就是编的）")
+            continue
+        tbls = []
+        for t in doc.tables:
+            ids = caption_ids(_caption_above(t, doc))
+            if ids == tid:
+                tbls.append(t)
+        if not tbls:
+            print(f"   [数值] {rid}：没有题注恰为 {tid} 的表 ⇒ 不做")
+            continue
+        hits = [(k, ri, ci, c) for k, t in enumerate(tbls) for ri, r in enumerate(t.rows)
+                for ci, c in enumerate(r.cells) if c.text.strip() == old]
+        if len(hits) != 1:
+            print(f"   [数值] {rid}：{tid}（{len(tbls)} 张，含续表）里整格等于「{old}」的有 {len(hits)} 格 ⇒ 不唯一，交人工")
+            continue
+        k, ri, ci, cell = hits[0]
+        cell.text = new
+        n += 1
+        print(f"   [数值] {rid}：{tid} 第{k + 1}张 行{ri}列{ci}「{old}」→「{new}」出处 {srcrel}:{srcline}")
+    return n
+
+
+def _caption_above(tbl, doc):
+    body = list(doc.element.body)
+    at = body.index(tbl._tbl)
+    from docx.oxml.ns import qn
+    for k in range(at - 1, max(-1, at - 8), -1):
+        if body[k].tag.endswith("}p"):
+            s = "".join(x.text or "" for x in body[k].findall(f".//{qn('w:t')}")).strip()
+            if s:
+                return s
+    return ""
+
+
 def cells_op(copy_path):
     """表内一格换标签（A16 这类）：按**号整段相等**选表、按**整格相等**选格，命中数不是 1 就拒做。
     A11 故意不在这里：它说"列名改为…"，而表 5-8 现在的表头是「配置」——哪一列是"列名"是编辑判断，不猜。"""
@@ -1156,7 +1202,11 @@ def cells_op(copy_path):
         done += 1
         print(f"   [格] {rid}：{cap[:12]} 行{ri}列{ci}「{old}」→「{new}」（同行其余格未动）")
     nl = add_limit_rows(doc)
+    nv = cell_values_op(doc)
     doc.save(str(copy_path))
+    if nv != len(CELL_VALUES):
+        print(f"[INVALID] 承重格数值只换了 {nv}/{len(CELL_VALUES)} ⇒ 出处对不上或命中不唯一，D1b 未闭合")
+        return -1
     if nl != len(LIMIT_ROWS):
         print(f"[INVALID] 局限句只落了 {nl}/{len(LIMIT_ROWS)} ⇒ 锚点或句子取不到，别当已落")
         return -1
@@ -1223,10 +1273,83 @@ def selfcheck_rows():
     return 0
 
 
-def selfcheck_all():
-    """四条子检查一次跑完（题注严判 / 豁免粒度 / 折叠必红 / 终端代码页）；只声明一处，三处入口共用。"""
+def caption_ids(text: str):
+    """从一行文本里抽**整段相等**的表/图号；抽不出返回 None。所有工具共用这一份抽号规则，
+    免得每个工具各写一遍 `startswith` —— 今天同族已经犯两次（表5-1 吞 表5-10、表4-4 吞 表4-4b）。"""
+    m = re.match(r"^(表|图)\s*(\d+(?:-\d+)?[a-z]?)", text.strip().replace(" ", ""))
+    return (m.group(1) + m.group(2)) if m else None
+
+
+def resolve_caption(paras, tid: str):
+    """按号取题注段号：只认**整段相等**，且用题注严判（防把正文句当题注）。"""
+    return [i for i, t in enumerate(paras) if is_caption(t) and caption_ids(t) == tid]
+
+
+def selfcheck_ids(copy_path=None):
+    """必过夹具（统括官 16:4x：把"整段相等"从教训升级成尺）：两对**必须不同**的号，解析结果不许相交。
+    **必须跑在副本上**——`表5-10 / 表4-4b` 是本轮新建的表，原件里根本没有它们；
+    而副本里 表4-4 的题注在段 228、表4-4b 在段 229（紧挨着）⇒ 这正是前缀法必撞的位置，夹具才咬得住。
+    找不到副本 ⇒ 判**未验**并返回 1，不假装绿。"""
+    from docx import Document
+    cands = [pathlib.Path(str(copy_path))] if copy_path else []
+    # 只认带时间戳的候选正本，并按 mtime 取最新：`sorted(glob)` 会把 `装配副本-试插表.docx` 这类
+    # 早期试手件排在后面（名字里没 20…），夹具就跑在一枚早已作废的件上——跑错对象还能跑绿，最坏的一种红。
+    timed = sorted((f for f in OUT.glob("装配副本-20*.docx")), key=lambda f: f.stat().st_mtime, reverse=True)
+    cands += timed
+    p = next((c for c in cands if c.exists()), None)
+    if p is None:
+        print("[必过夹具·号整段相等] 副本不在场 ⇒ **未验**（新表号只存在于副本，跑原件等于空门）")
+        return 1
+    paras = [x.text for x in Document(str(p)).paragraphs]
+    bad = []
+    for a, b in (("表5-1", "表5-10"), ("表4-4", "表4-4b")):
+        ra, rb = resolve_caption(paras, a), resolve_caption(paras, b)
+        if not ra or not rb:
+            bad.append(f"{a}/{b} 有一号解析为空（{ra}/{rb}）⇒ 副本不对或抽号规则变了")
+        elif set(ra) & set(rb):
+            bad.append(f"{a} 与 {b} 解析到同一段 {sorted(set(ra) & set(rb))}")
+        naive = [i for i, t in enumerate(paras) if t.strip().replace(" ", "").startswith(a) and is_caption(t)]
+        if set(naive) == set(ra):
+            bad.append(f"{a}：前缀法与整段法同解 ⇒ 这个副本里夹具没有鉴别力（换一枚含兄弟号的副本）")
+    print(f"[必过夹具·号整段相等] 跑在 {p.name} 上，两对必不同 ⇒ " + ("全过 ✓" if not bad else f"**{len(bad)} 条失效**"))
+    for x in bad:
+        print("   失效：", x)
+    return 1 if bad else 0
+
+
+BANNED_VALUES = ("0.5612", "11.7598")
+
+
+def stale_hits(doc):
+    """被禁旧值的命中，**正文段与表格单元分开数**（统括官 16:4x 第③条：只扫正文会盖住表里的旧读数）。"""
+    paras = [i for i, p in enumerate(doc.paragraphs) if any(v in p.text for v in BANNED_VALUES)]
+    cells = [(ti, ri, ci) for ti, t in enumerate(doc.tables) for ri, r in enumerate(t.rows)
+             for ci, c in enumerate(r.cells) if any(v in c.text for v in BANNED_VALUES)]
+    return paras, cells
+
+
+def selfcheck_stale():
+    """正对照：闸必须在一件"旧值只活在表格里"的实物上响过，否则"表格单元也扫了"这句话没有凭据。
+    天然正对照就是**原件**——表5-1 那格 `0.5612` 在原件里就是表格单元、正文没有。"""
+    from docx import Document
+    op, oc = stale_hits(Document(str(SRC)))
+    cp = sorted(OUT.glob("装配副本-20*.docx"), key=lambda f: f.stat().st_mtime, reverse=True)
+    rp, rc = stale_hits(Document(str(cp[0]))) if cp else ([], [])
+    # 正对照只要求一件事：**旧值躺在表格单元里时必须被扫到**（原件正文里本来也有那处旧句，那是 D1 未改前的原文，
+    # 不是这条夹具要判的东西——我第一版误加了"正文必须 0 命中"，把夹具写成了永远红）
+    ok = len(oc) >= 1
+    print(f"[正对照·旧值只在表格里必须响] 原件：正文 {len(op)} 处、表格单元 {len(oc)} 处 {oc[:2]} ⇒ "
+          + ("闸有效 ✓" if ok else "**失效（要么没扫到表内，要么正文也漏了）**"))
+    print(f"    最新副本 {cp[0].name if cp else '（无）'}：正文 {len(rp)} 处、表格单元 {len(rc)} 处"
+          + ("（D1b 落字后应为 0）" if cp else ""))
+    return 0 if ok else 1
+
+
+def selfcheck_all(copy_path=None):
+    """七条子检查一次跑完（题注严判 / 豁免粒度 / 折叠必红 / 终端代码页 / 行数不丢 / 号整段相等 / 旧值扫描域）；
+    只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
     return (selfcheck_caption() or selfcheck_guards() or selfcheck_fold()
-            or selfcheck_console() or selfcheck_rows())
+            or selfcheck_console() or selfcheck_rows() or selfcheck_ids(copy_path) or selfcheck_stale())
 
 
 def selfcheck_console():
