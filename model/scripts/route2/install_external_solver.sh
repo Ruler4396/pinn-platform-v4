@@ -16,6 +16,14 @@
 set -uo pipefail
 
 PREFIX="${PREFIX:-/mnt/workspace/pinn-repro-2026/ext-fenics}"
+# The channel is one named thing, defaulted to what the work order registered.  Measured on
+# dsw-2214871 (2026-09-27/28, `_ops/route2/20260927/mirror_fix.txt`): conda.anaconda.org serves this
+# box ~48 KB/s and libmamba gave up with "Download error (28) Timeout was reached" (that is what
+# killed the 统括官's own attempt, `xchk/mf2.log`, and mine too at first), while the Tsinghua mirror of
+# the same channel does ~13.9 MB/s.  Both CONDA_CHANNEL_ALIAS and a custom_channels .condarc failed to
+# move libmamba -- only an explicit URL in `-c` did -- so the URL has to be reachable from here.
+# A mirror OF conda-forge is still conda-forge: same packages, same hashes, different host.
+CF_CHANNEL="${CF_CHANNEL:-conda-forge}"
 ARCHIVE="${ARCHIVE:-/mnt/workspace/pinn-repro-2026/extsolver.tgz}"
 CAP_MIN="${CAP_MIN:-60}"                       # pre-registered cap: installation wall clock
 START_EPOCH="$(date +%s)"
@@ -62,12 +70,13 @@ if [ "$RUN" = "1" ]; then mkdir -p "$PREFIX" || mkdir_ok=0; fi
 FENICS_OK=0
 if command -v mamba >/dev/null 2>&1 || command -v conda >/dev/null 2>&1; then
   PM="$(command -v mamba || command -v conda)"
-  do_ "$PM" create -y -p "$PREFIX" -c conda-forge python=3.11 fenics-dolfinx=0.9 petsc4py \
+  do_ "$PM" create -y -p "$PREFIX" -c "$CF_CHANNEL" python=3.11 fenics-dolfinx=0.9 petsc4py \
         numpy h5py meshio gmsh && FENICS_OK=1
+  log "channel used for attempt 1: $CF_CHANNEL  (what actually served the bytes is read from pkgs/urls.txt, not from here)"
   if [ "$FENICS_OK" = "0" ]; then
     # ONE retry, different lever: drop the pin, keep the channel. A second retry is out of budget.
     log "fenics attempt 1 failed; ONE retry without version pins (budget $(budget_left_min) min left)"
-    do_ "$PM" create -y -p "$PREFIX" -c conda-forge python=3.11 fenics-dolfinx \
+    do_ "$PM" create -y -p "$PREFIX" -c "$CF_CHANNEL" python=3.11 fenics-dolfinx \
           numpy h5py meshio gmsh && FENICS_OK=1
   fi
 else

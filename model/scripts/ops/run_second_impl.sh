@@ -209,24 +209,37 @@ install_body() {
   [ -x "$MF_HOME/bin/conda" ] || die "no conda at $MF_HOME/bin/conda -- run '$0 bootstrap' first (pinned Miniforge tag $MF_TAG)"
   log "delegating to install_external_solver.sh (it owns the conda command, the two-attempt stop-loss,"
   log "the ${SEGMENT_S}s-then-report cap and the tar+sha256+restore line; this script does not re-declare them)"
-  RUN="${RUN:-1}" CAP_MIN="${CAP_MIN:-60}" PREFIX="$PREFIX" PATH="$MF_HOME/bin:$PATH" \
+  RUN="${RUN:-1}" CAP_MIN="${CAP_MIN:-60}" PREFIX="$PREFIX" CF_CHANNEL="${CF_CHANNEL:-conda-forge}" \
+    PATH="$MF_HOME/bin:$PATH" \
     bash "$R2/install_external_solver.sh" 2>&1 | tail -25 || die "installer rc=$? -- report it; do not fall back to the laptop"
   use_env_python
   local pv
   pv=$("$ENVPY" -c "import dolfinx, sys; print(dolfinx.__version__ + ' py' + sys.version.split()[0])") \
     || die "dolfinx not importable from $PREFIX after the installer said it ran"
-  # §四M asked for the version AND the channel in the result, so both go on disk, not into chat.
-  # §四M asked for the version AND the channel in the result.  The channel is READ, not asserted:
-  # the substitution lives in cf.condarc, so claiming "conda-forge" here would be a hard-coded print of
-  # something the machine may have resolved elsewhere.
-  local chan condarc
-  condarc="${CONDARC:-}"
-  chan=$([ -n "$condarc" ] && [ -f "$condarc" ] && grep -m1 -E "^  conda-forge:" "$condarc" | sed 's/^ *//' || echo "default channel hosts (no CONDARC given)")
-  printf 'dolfinx=%s\nprefix=%s\nconda=%s\neffective_channel=%s\ncondarc=%s\nbootstrap=%s\nrecorded=%s\n' \
-    "$pv" "$PREFIX" "$("$MF_HOME/bin/conda" --version 2>&1 | head -1)" "$chan" "${condarc:-none}" \
+  # §四M asked for the version AND the channel, so both go on disk.  The channel is MEASURED: mamba
+  # writes every URL it actually fetched into pkgs/urls.txt.  Requesting a mirror is not the same fact
+  # as being served by it -- this box ignored CONDARC and CONDA_CHANNEL_ALIAS alike and pulled every
+  # byte from conda.anaconda.org at ~48 KB/s (mirror: 13.9 MB/s), so restating the request would be
+  # the hard-coded claim this file already carried once.
+  local hosts
+  hosts=$("$ENVPY" - "$PREFIX" "$MF_HOME" <<'PY'
+import collections, os, sys
+for cand in (os.path.join(sys.argv[1], "pkgs", "urls.txt"), os.path.join(sys.argv[2], "pkgs", "urls.txt")):
+    if os.path.exists(cand):
+        ls = [l.strip() for l in open(cand, errors="replace") if l.strip()]
+        cnt = collections.Counter(l.split("//")[1].split("/")[0] for l in ls if "//" in l)
+        print("%s -> %s" % (cand, ", ".join("%s:%d" % kv for kv in cnt.most_common(4))))
+        break
+else:
+    print("no pkgs/urls.txt -- serving host UNKNOWN, not assumed")
+PY
+)
+  printf 'dolfinx=%s\nprefix=%s\nconda=%s\nrequested_channel=%s\nserved_by=%s\ncondarc=%s\nbootstrap=%s\nrecorded=%s\n' \
+    "$pv" "$PREFIX" "$("$MF_HOME/bin/conda" --version 2>&1 | head -1)" "${CF_CHANNEL:-conda-forge}" \
+    "$hosts" "${CONDARC:-none}" \
     "$(tr '\n' ';' < "$MF_HOME/BOOTSTRAP-PROVENANCE.txt" 2>/dev/null || echo none)" "$(date -Is)" \
     > "$OUT/install_channel.txt"
-  log "version+channel recorded at $OUT/install_channel.txt: dolfinx $pv"
+  log "version+channel recorded at $OUT/install_channel.txt: dolfinx $pv | served_by=$hosts"
   seg_end DONE ""
 }
 
