@@ -332,6 +332,16 @@ def selfcheck(levels=LEVELS) -> int:
     return rc
 
 
+def field_maximum(path: Path, column: str = "p_star") -> float:
+    """Largest |column| in a truth CSV, read from the header -- not by position."""
+    with path.open(encoding="utf-8", newline="") as fh:
+        head = fh.readline().strip().split(",")
+        if column not in head:
+            raise ValueError(f"{path.name} has no column {column!r} (header: {head})")
+        j = head.index(column)
+        return max(abs(float(ln.strip().split(",")[j])) for ln in fh if ln.strip())
+
+
 def assert_p_star_unit_fixed(ref_csv: Path, level_csv: Path, tol: float = 0.02) -> float:
     """Ruling R2-7 (#33) constraint 2: the check that must THROW, written before the rerun.
 
@@ -339,12 +349,7 @@ def assert_p_star_unit_fixed(ref_csv: Path, level_csv: Path, tol: float = 0.02) 
     same comparison must land on 1.0 within `tol`.  Written as a raiser, not a printed number,
     because a ratio that only gets eyeballed is how the 1/Re survived one full round trip.
     """
-    def pmax(path: Path) -> float:
-        with path.open(encoding="utf-8", newline="") as fh:
-            head = fh.readline().strip().split(",")
-            j = head.index("p_star")
-            return max(abs(float(ln.strip().split(",")[j])) for ln in fh if ln.strip())
-    a, b = pmax(ref_csv), pmax(level_csv)
+    a, b = field_maximum(ref_csv), field_maximum(level_csv)
     if a <= 0:
         raise ValueError(f"reference p_star maximum is {a}: nothing to compare against")
     ratio = b / a
@@ -355,6 +360,45 @@ def assert_p_star_unit_fixed(ref_csv: Path, level_csv: Path, tol: float = 0.02) 
             f"still in the emitted line -- do not read this level's pressures, and do not "
             f"recompute the Delta-p drift column.")
     return ratio
+
+
+def assert_p_star_unit_scale(ref_csv: Path, level_csv: Path, level: str,
+                             tol: float = 0.02) -> tuple[float, str]:
+    """`assert_p_star_unit_fixed` where it can actually be decided, per level.
+
+    "ratio == 1" is a *unit* statement only while the physics cannot move the number: the
+    convective term enters as a relative perturbation of size Re, so at Re <= tol the real
+    deviation is O(Re) and lands inside the band -- a red there is a unit red, and `tol` is
+    the same pre-registered 0.02 the ruling named, not a number fitted to the reading.  At
+    Re = 10 or 50 the maximum may legitimately sit anywhere, so demanding 1 would blame the
+    units for physics.  What stays decidable at every Re != 1 is the defect's own signature:
+    ratio within tol of 1/Re.  At Re = 1 the two hypotheses coincide, and no reading of this
+    level can witness the fix -- said out loud instead of reported as a pass.
+    """
+    re_value = float(level)
+    if not STOKES_CSV.is_file():
+        raise FileNotFoundError(f"the Stokes reference {STOKES_CSV} is missing, so the unit "
+                                f"check for Re={level} cannot run. Refusing rather than "
+                                f"skipping: without it this level's pressures are unverified.")
+    a, b = field_maximum(ref_csv), field_maximum(level_csv)
+    if a <= 0:
+        raise ValueError(f"reference p_star maximum is {a}: nothing to compare against")
+    ratio = b / a
+    if abs(re_value - 1.0) > 1e-12 and abs(ratio - 1.0 / re_value) <= tol:
+        raise ValueError(
+            f"|p_star|max of {level_csv.name} over the Stokes reference = {ratio:.6g}, which "
+            f"is 1/Re (1/{re_value:g} = {1.0 / re_value:.6g}) within {tol}: the p/Re division "
+            f"is back in an emitted line. This is the shape the companion stream had after "
+            f"the main stream was fixed, so check the hi/lo block as well as the solve.")
+    if re_value <= tol:
+        assert_p_star_unit_fixed(ref_csv, level_csv, tol)
+        return ratio, "tested (Stokes-like level: ratio must be 1)"
+    if abs(re_value - 1.0) <= 1e-12:
+        return ratio, ("not testable (Re=1 makes 1/Re == 1, so this level cannot witness the "
+                       "unit fix; the Re=1e-3 level is the one that does)")
+    return ratio, ("defect signature absent (near-1 is not a unit statement at this Re; only "
+                   f"ratio ~= 1/Re = {1.0 / re_value:.6g} would be)")
+
 
 
 def read_rows(path: Path):
@@ -398,6 +442,17 @@ def finalize(level: str, dry_run: bool) -> int:
               f"raw={h_raw} pair={h_pair} -- refusing rather than merging by position")
         return 1
     field_scale = {f: max(abs(float(r[ir[f]])) for r in r_raw) for f in FIELDS}
+
+    # R2-7 constraint 2, wired: the unit check runs on the 6-digit file the .edp wrote, before
+    # anything of this level is merged or trusted, and again on the 10-digit output below.
+    # It is a raiser, so a level whose companion stream still divides by Re cannot reach disk.
+    try:
+        ratio_raw, verdict_raw = assert_p_star_unit_scale(STOKES_CSV, raw, level)
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"[FAIL] unit check on the 6-digit raw: {exc}")
+        return 1
+    print(f"[unit] Re={level} raw: |p_star|max / Stokes reference = {ratio_raw:.6g} -> "
+          f"{verdict_raw}")
 
     # The precondition of a chosen N is a magnitude bound, and it is measured here, on the
     # artefact, rather than assumed from the Stokes file.  Note what is *not* checked: a
@@ -448,13 +503,24 @@ def finalize(level: str, dry_run: bool) -> int:
               f"trusting the file")
         return 1
     if dry_run:
-        print("[dry-run] nothing written")
+        print("[dry-run] nothing written; the unit check on the merged file is skipped with "
+              "it, because the file does not exist in a dry run. It runs on every real write.")
         return 0
     out = d / f"C-base_ns_re{level}_raw_10dig.csv"
     with out.open("w", encoding="utf-8", newline="\n") as fh:
         fh.write(",".join(h_raw) + "\n")
         for r in merged:
             fh.write(",".join(r) + "\n")
+    try:
+        ratio_10, verdict_10 = assert_p_star_unit_scale(STOKES_CSV, out, level)
+    except (ValueError, FileNotFoundError) as exc:
+        out.unlink()
+        print(f"[FAIL] unit check on the merged 10-digit file: {exc} -- {out.name} deleted, "
+              f"the 6-digit raw is untouched")
+        return 1
+    print(f"[unit] Re={level} merged: |p_star|max / Stokes reference = {ratio_10:.6g} -> "
+          f"{verdict_10} (the merge moves p_star by <=1e-6 relative, so a raw that passed and "
+          f"a merged that fails would mean the hi/lo convention, not the units)")
     print(f"wrote {out.relative_to(CFD.parents[2])}  "
           f"(the 6-digit *_raw.csv is kept: it is what the .edp wrote, and the two must be "
           f"reconcilable, not overwritten)")

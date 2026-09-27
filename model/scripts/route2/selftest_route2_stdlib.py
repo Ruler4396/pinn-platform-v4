@@ -1860,6 +1860,86 @@ def k0_chain_contract_checks(ck: Check) -> None:
            "a.first_total_derivative" in boolmsg, boolmsg[:150])
 
 
+def _call_sites(src: str, enclosing: str = "", names=()) -> dict:
+    """How often each name is *called*, optionally only inside one function.
+
+    Written because of how the R2-7 unit check first shipped: `assert_p_star_unit_fixed` was
+    defined, argued against the 998.07 fingerprint, and had zero call sites, so no product path
+    could ever run it -- and a definition reads like the real thing to whoever is grepping.
+    A definition is therefore not a call here, and neither is a mention in a string.
+    """
+    import ast
+    tree = ast.parse(src)
+    bodies = []
+    if enclosing:
+        bodies = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and n.name == enclosing]
+        if not bodies:
+            return {n: -1 for n in names}          # the enclosing function is gone: not zero
+    else:
+        bodies = [tree]
+    out = {n: 0 for n in names}
+    for body in bodies:
+        for node in ast.walk(body):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                    and node.func.id in out:
+                out[node.func.id] += 1
+    return out
+
+
+def ns_unit_wiring_checks(ck: Check) -> None:
+    """Ruling R2-7 follow-up, holes 1 and 2: an assertion must have a call site, and the fix
+    must be in every stream, not only the one that was read."""
+    import ast                                        # noqa: F401  (used by _call_sites)
+    if str(HERE.parent) not in sys.path:
+        sys.path.insert(0, str(HERE.parent))
+    import gen_ns_re_edp as gz
+    import finalize_ns_truth as fz
+
+    fin = HERE.parent / "finalize_ns_truth.py"
+    if not fin.is_file():
+        ck.skip("ns_unit.call_sites_wired", str(fin), "the merger is not next to route2/")
+        return
+    src = fin.read_text(encoding="utf-8")
+    inside = _call_sites(src, "finalize", ("assert_p_star_unit_fixed",
+                                           "assert_p_star_unit_scale"))
+    ck.add("ns_unit.call_sites_wired",
+           inside.get("assert_p_star_unit_scale", -1) >= 2
+           and inside.get("assert_p_star_unit_fixed", -1) >= 0,
+           inside,
+           ">=2 calls inside finalize() (the 6-digit raw and the merged 10-digit file); "
+           "-1 would mean finalize() itself is gone")
+    never = _call_sites("def assert_p_star_unit_fixed(a, b):\n    return 1.0\n\n\n"
+                        "def finalize():\n    return 0\n", "finalize",
+                        ("assert_p_star_unit_fixed", "assert_p_star_unit_scale"))
+    ck.add("ns_unit.control_a_definition_without_a_call_is_zero",
+           never == {"assert_p_star_unit_fixed": 0, "assert_p_star_unit_scale": 0}, never,
+           "positive control: this is the exact shape the check had before it was wired, and "
+           "the scan must be able to say so -- 0 call sites is what makes the gate red")
+
+    divisions = {}
+    targets = [gz.CASE_DIR.parent / f"C-base_ns_re{label}" / f"C-base_ns_re{label}.edp"
+               for label in fz.LEVELS]
+    targets.append(gz.CASE_DIR.parent / "C-base_ns_re1" / "probe_syntax.edp")
+    for path in targets:
+        if not path.is_file():
+            divisions[path.name] = "missing"
+            continue
+        hits = gz.unit_findings(path.read_text(encoding="utf-8").replace("\r\n", "\n"))
+        if hits:
+            divisions[path.name] = [(n, ln.strip()) for n, _k, ln in hits]
+    ck.add("ns_unit.emitted_files_have_no_re_division", divisions == {},
+           divisions or f"0 hits across {len(targets)} emitted files",
+           "the companion stream is an append-only insertion, so the invertibility proof cannot "
+           "see a `/Re` there -- this is the scan that can")
+    red = gz.unit_findings('  real hp = p(Th(ii).x, Th(ii).y)/Re;\n')
+    ck.add("ns_unit.control_the_division_line_is_flagged", len(red) == 1,
+           [ln.strip() for _n, _k, ln in red],
+           "the line that was in probe_syntax.edp until this commit must be caught")
+    ck.add("ns_unit.reference_csv_present", fz.STOKES_CSV.is_file(), str(fz.STOKES_CSV),
+           "without it assert_p_star_unit_scale raises instead of skipping")
+
+
 def module_hygiene_checks(ck: Check) -> None:
     """Defect 5's second face: `--selfcheck-raw` also used `json` without importing it.
 
@@ -1930,6 +2010,7 @@ def main() -> int:
     defect8_checks(ck)
     k0_referee_checks(ck)
     k0_chain_contract_checks(ck)
+    ns_unit_wiring_checks(ck)
     real_artefact_checks(ck)
     impedance_checks(ck, summaries, tmp_root)
 

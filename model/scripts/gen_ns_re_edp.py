@@ -329,6 +329,31 @@ def syntax_findings(text: str) -> list[tuple[int, str, str]]:
     return hits
 
 
+# R2-7: the weak form already carries the Re scaling (coefficient 1 on diffusion/pressure,
+# `Re*convection`), so the solved `p` IS the level's pressure.  Any division by Re in an
+# emitted line re-introduces the factor the unit fix removed -- and it lives in the *streams*,
+# which are append-only insertions, so the invertibility proof cannot see it.
+RE_DIVISOR = re.compile(r"/\s*Re\b")
+
+
+def unit_findings(text: str) -> list[tuple[int, str, str]]:
+    """Every non-comment line that divides by Re.  Returns (line number, kind, line)."""
+    return [(n, "division by Re in an emitted stream (R2-7 unit defect)", ln)
+            for n, ln in enumerate(code_only(text).split("\n"), start=1)
+            if RE_DIVISOR.search(ln)]
+
+
+def assert_no_re_division(*texts: str, where: str = "") -> None:
+    hits = []
+    for t in texts:
+        hits.extend(unit_findings(t))
+    if hits:
+        detail = "; ".join(f"line {n}: {ln.strip()[:60]}" for n, _k, ln in hits)
+        raise SystemExit(f"{where or 'emitted text'} carries {len(hits)} division(s) by Re "
+                         f"-- {detail}. Refusing: the level's p is already at its physical "
+                         f"scale, so p/Re injects a spurious 1/Re into the truth.")
+
+
 PROBE_PATH_SWAP = (SHIPPED_ABS, "probe_syntax_raw.csv")
 
 
@@ -411,7 +436,7 @@ def probe_text(stokes: str, widths: dict[str, int]) -> str:
         "for (int ii = 0; ii < Th.nv; ++ii) {",
         "  real hu = u(Th(ii).x, Th(ii).y);",
         "  real hv = v(Th(ii).x, Th(ii).y);",
-        "  real hp = p(Th(ii).x, Th(ii).y)/Re;",
+        "  real hp = p(Th(ii).x, Th(ii).y);",
     ]
     body += hi_lines(widths)
     body += [
@@ -445,6 +470,14 @@ def syntax_selfcheck() -> int:
     rc |= 0 if ok else 1
     print(f"[{'PASS' if ok else 'FAIL'}] control: a trailing comment is flagged as "
           f"unprecedented ({len(tc)}, want 1)")
+    # R2-7: the removed defect must be catchable where it actually lived -- a stream line.
+    div = unit_findings('  real hp = p(Th(ii).x, Th(ii).y)/Re;\n'
+                        '  real hp = p(Th(ii).x, Th(ii).y);\n'
+                        '// a comment mentioning p/Re must not trip it\n')
+    ok = len(div) == 1 and div[0][0] == 1
+    rc |= 0 if ok else 1
+    print(f"[{'PASS' if ok else 'FAIL'}] control: /Re in an emitted stream is flagged, the "
+          f"fixed line and comments are not ({len(div)}, want 1 at line 1)")
     # the emitted widths must equal the derived ones, and a wrong one must be catchable
     try:
         widths = derived_widths()
@@ -529,14 +562,18 @@ def main() -> int:
         same = invert(ns, re_label, spec).strip() == stokes.strip()
         conv = [ln for ln in ns.split("\n") if "u0*dx(u)" in ln]
         hits = syntax_findings(ns)
+        unit_hits = unit_findings(ns)
         added, replaced = difference_report(stokes, ns)
         print(f"Re={re_label:5s}  lines {len(stokes.splitlines())} -> {len(ns.splitlines())}"
               f"  inserted={len(added)}  replaced={len(replaced)}  convection lines="
               f"{len(conv)}  rejectable-tokens={len(hits)}  "
+              f"re-divisions={len(unit_hits)}  "
               f"invert-to-Stokes={'OK' if same else 'MISMATCH'}")
         for n, kind, ln in hits[:4]:
             print(f"    [{kind}] line {n}: {ln[:70]}")
-        bad += len(hits)
+        for n, kind, ln in unit_hits[:4]:
+            print(f"    [{kind}] line {n}: {ln[:70]}")
+        bad += len(hits) + len(unit_hits)
         if not same:
             bad += 1
             for ln in list(difflib.unified_diff(stokes.split("\n"),
@@ -589,11 +626,13 @@ def main() -> int:
         pfile.write_text(probe, encoding="utf-8")
         tail = probe[len(base_h):]
         phits = syntax_findings(probe)
+        punit = unit_findings(probe)
         print(f"wrote {pfile.relative_to(case_dir.parents[1])}: the shipped text with its 2 "
               f"output paths redirected, plus {len(tail.splitlines())} appended lines "
-              f"(one construct each), rejectable tokens={len(phits)} -- run this before the "
+              f"(one construct each), rejectable tokens={len(phits)} "
+              f"re-divisions={len(punit)} -- run this before the "
               f"levels; it writes probe_syntax_raw.csv and probe_syntax_pair.csv, costs ~1.5 s")
-        bad += len(phits)
+        bad += len(phits) + len(punit)
     if bad:
         print("REFUSING TO SHIP: the emitted text is either not the shipped file plus a "
               "declared difference set, or it uses a construct v4.9 is known to reject")

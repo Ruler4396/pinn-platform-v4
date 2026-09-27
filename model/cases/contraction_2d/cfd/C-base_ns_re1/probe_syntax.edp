@@ -149,7 +149,7 @@ fpair << "x_star,y_star,u_hi,u_lo,v_hi,v_lo,p_hi,p_lo" << endl;
 for (int ii = 0; ii < Th.nv; ++ii) {
   real hu = u(Th(ii).x, Th(ii).y);
   real hv = v(Th(ii).x, Th(ii).y);
-  real hp = p(Th(ii).x, Th(ii).y)/Re;
+  real hp = p(Th(ii).x, Th(ii).y);
   real uHi = floor(hu*1.0e4)/1.0e4;
   real vHi = floor(hv*1.0e6)/1.0e6;
   real pHi = floor(hp*1.0e2)/1.0e2;
