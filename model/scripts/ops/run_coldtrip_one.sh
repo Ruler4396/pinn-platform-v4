@@ -92,6 +92,13 @@ fetch() { # path -> $WS/<path>, refused unless sha256 prefix matches WANT
 }
 
 FFHOME="${FFHOME:-$WS/ffrun}"
+DEB_DIR="${DEB_DIR:-$WS/debs}"
+# The four sonames FreeFEM's `ldd` demands are NOT inside ffroot.tgz (that archive was built from
+# `dpkg -L` + `ldd` on the earlier box, and the packages were apt-installed afterwards), and their
+# entries in the archive are dangling relative symlinks.  Measured on dsw-2213920 9/27 14:29-14:31:
+# unpacking these jammy packages into $FFHOME with `dpkg-deb -x` and exporting LD_LIBRARY_PATH gets
+# `ldd` to `not found: 0` -- no /usr writes, no ldconfig, nothing installed system-wide.
+FFLIB_PKGS="${FFLIB_PKGS:-libumfpack5 libcholmod3 libarpack2 libhdf5-103-1 libamd2 libcamd2 libccolamd2 libcolamd2 libsuitesparseconfig5 libmetis5 libsz2 libaec0}"
 # HARD CONSTRAINT (orchestrator, 9/27 14:2x): recovery lands ONLY in an instance-local directory plus
 # LD_LIBRARY_PATH.  No `cp -a` into /usr, no `ldconfig`, no extraction to `/` -- the previous instance
 # was replaced after exactly that kind of recovery, so if the archive cannot satisfy the loader path
@@ -205,7 +212,7 @@ do_preflight() {
     # The marker means "a solver will actually run", not "an archive exists": measured on the
     # instance 9/27 14:25, the archive-present branch used to print a next step and still PASS,
     # which handed p1/p2/p3 a green light with nothing to solve with.
-    [ -f "$FFROOT" ] && say "  next: '$0 restore' unpacks it into $FFHOME (instance-local), then preflight again"
+    [ -f "$FFROOT" ] && say "  next: '$0 restore' unpacks it into $FFHOME and, if the archive lacks the sonames, fetches them into the same prefix (no /usr writes), then preflight again"
     [ -f "$FFROOT" ] || say "  and $FFROOT is absent too, so FreeFEM would have to be installed"
     fail=1
   fi
@@ -228,6 +235,21 @@ do_preflight() {
   return "$fail"
 }
 
+fetch_libs() { # download the .debs and unpack them into the instance-local prefix ONLY
+  mkdir -p "$DEB_DIR" || { say "LIBS REFUSE: cannot create $DEB_DIR"; return 1; }
+  say "LIBS apt-get download (jammy, mirrors as configured on this box): $FFLIB_PKGS"
+  ( cd "$DEB_DIR" && apt-get download $FFLIB_PKGS ) >"$OUTD/libs_apt.txt" 2>&1 \
+    || { say "LIBS REFUSE: apt-get download failed (see $OUTD/libs_apt.txt); will NOT touch /usr"; return 1; }
+  local n=0 d
+  for d in "$DEB_DIR"/*.deb; do
+    [ -f "$d" ] || continue
+    dpkg-deb -x "$d" "$FFHOME" || say "LIBS note: dpkg-deb -x $d exited $?"
+    n=$((n + 1))
+  done
+  say "LIBS unpacked $n package trees into $FFHOME"
+  export_fflib >/dev/null
+  say "LIBS LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+}
 do_restore() {
   [ -f "$FFROOT" ] || { say "RESTORE REFUSE: no $FFROOT on this instance"; return 1; }
   mkdir -p "$FFHOME" || { say "RESTORE REFUSE: cannot create $FFHOME"; return 1; }
@@ -242,6 +264,17 @@ do_restore() {
   if ff=$(solver_path); then
     miss=$(ldd "$ff" 2>/dev/null | awk '/not found/{print $1}' | tr '\n' ' ')
     say "RESTORE candidate: $ff unresolved_libs=[$miss]"
+      if [ ! -f "$OUTD/.libs.done" ]; then
+        say "RESTORE attempting the documented package recovery into $FFHOME (instance-local, no /usr)"
+        mkdir -p "$OUTD" && touch "$OUTD/.libs.done"
+        fetch_libs
+        miss=$(ldd "$ff" 2>/dev/null | awk '/not found/{print $1}' | tr '\n' ' ')
+        if [ -z "$miss" ]; then
+          say "RESTORE ok after fetch_libs: $ff -- all shared objects resolved"
+          return 0
+        fi
+        say "RESTORE still unresolved after recovery: [$miss]"
+      fi
     if [ -n "$miss" ]; then
       say "RESTORE INCOMPLETE: the archive does not carry those objects. Per the standing constraint this run will NOT copy them into /usr or run ldconfig -- the missing list is written to $OUTD/missing_libs.txt and escalated."
       echo "$miss" > "$OUTD/missing_libs.txt"
