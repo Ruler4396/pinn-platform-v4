@@ -30,6 +30,7 @@ OUT = ROOT / ".scratch"
 AWAITING = {"A13": "待作者批（窗口 9/28，沉默即按降级档执行）"}
 # 术语类算子：整段替换会吃内容，必须走"整词替换 + 只动了目标词"校验
 TERM_OPS = [("A15", "阶段内PDE约束", "阶段内残差惩罚项"),
+            ("A15b", "阶段内PDE", "阶段内残差惩罚项"),   # 表内截短形（"启用阶段内PDE"）——旧算子只认全称，漏了一格
             ("A14", "协同修正", "交替更新")]
 TERM_RE = re.compile("|".join(re.escape(a) for _, a, _ in TERM_OPS))
 FOLD_RE = re.compile("|".join(re.escape(w) for _, a, b in TERM_OPS for w in (a, b)))
@@ -77,7 +78,7 @@ def clean(md: str) -> str:
 def rows():
     out = []
     for line in WORK.read_text(encoding="utf-8").splitlines():
-        if re.match(r"^\| [A-J]\d+ \|", line):
+        if re.match(r"^\| [A-J]\d+[a-z]? \|", line):
             c = [x.strip() for x in line.split("|")[1:-1]]
             out.append({"id": c[0], "loc": c[1], "act": c[2], "new": c[3] if len(c) > 3 else ""})
     return out
