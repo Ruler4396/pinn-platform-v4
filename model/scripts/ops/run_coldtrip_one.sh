@@ -72,6 +72,14 @@ fetch() { # path -> $WS/<path>, refused unless sha256 prefix matches WANT
   want="${WANT[$p]:-}"; wantb="${BYTES[$p]:-}"
   tmp="$OUTD/$(basename "$p").part"
   mkdir -p "$(dirname "$WS/$p")" "$OUTD" || return 1
+  # A stalling mirror costs more than a download does: on dsw-2213920 (15:08-15:12) every file was
+  # already on disk and hash-verified by the previous phase, and re-fetching nearly spent the whole
+  # segment cap.  The skip is a SUCCESS (return 0) and it requires the pinned hash to match, so it
+  # can never paper over a wrong or truncated file.
+  if [ -n "$want" ] && [ -f "$WS/$p" ] && [ "$(sha256sum "$WS/$p" | cut -c1-16)" = "$want" ]; then
+    say "SKIP $(basename "$p") already at $want (pinned hash matches, no download)"
+    return 0
+  fi
   for m in "https://gh-proxy.com/https://raw.githubusercontent.com" "https://raw.githubusercontent.com"; do
     if curl -fsSL --max-time 90 --retry 2 -o "$tmp" "$m/$REPO/$FULL_PIN/$p" 2>/dev/null; then
       got=$(sha256sum "$tmp" | cut -c1-16)

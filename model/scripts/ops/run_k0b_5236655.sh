@@ -108,6 +108,10 @@ over_budget() {
 fetch_one() {
   local p="$1" tmp m got want
   want="${EXPECT[$p]}"
+  # see run_coldtrip_one.sh fetch(): a verified file on disk is not worth another mirror round trip
+  if [ -f "$WS/$p" ] && [ "$(sha256sum "$WS/$p" | cut -c1-16)" = "${want:0:16}" ]; then
+    log "SKIP $p already matches the pinned hash (no download)"; return 0
+  fi
   tmp="$LOGD/$(basename "$p").part"
   mkdir -p "$(dirname "$WS/$p")" || return 1
   for m in "https://gh-proxy.com/https://raw.githubusercontent.com" "https://raw.githubusercontent.com"; do
