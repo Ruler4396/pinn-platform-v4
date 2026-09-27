@@ -9,7 +9,7 @@
 #   1. Everything lands under the NAS workspace ($PREFIX), never in a throwaway env, and the
 #      script ENDS by packaging that tree into a tarball + sha256 + a one-line restore
 #      command. A user who has to reinstall after an instance restart did not get a tool.
-#   2. Hard stop-loss: FEniCSx first (conda-forge, then pip wheel -- ONE retry each),
+#   2. Hard stop-loss: FEniCSx via conda-forge ONLY (one retry on a different channel);
 #      OpenFOAM only from a PREBUILT conda package, and NEVER from source. Total wall clock
 #      is capped; past the cap the script reports what it got and the last evidence line,
 #      and the work order's INDETERMINATE row applies. No GPU, no money.
