@@ -399,6 +399,153 @@ CELL_TEXT_ROWS = {"G1": ("表3-3", "转角泛化测试工况"),
                   "C2": ("表5-1", "壁面u残余")}
 
 
+ARTIFACT_GLOBS = ("model/results/pinn/**/*.json",)     # 扫描范围要写死并在输出里点名（CSV 不在内，另说）
+
+
+def artifact_values(repo=None):
+    """把仓内结果件的**所有数值**收成 `⇒ {四舍五入到 k 位小数的字符串: [(件, 路径), …]}`，k=2..8。
+    这不是"证明某个数对"，只回答一个问题：**论文表里这个数，仓里有没有任何一个产物能供上。**"""
+    import json
+    repo = pathlib.Path(str(repo)) if repo else REPO
+    idx = {}
+    n_files = 0
+    for pat in ARTIFACT_GLOBS:
+        for f in repo.glob(pat):
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            n_files += 1
+            stack = [(d, "")]
+            while stack:
+                o, path = stack.pop()
+                if isinstance(o, dict):
+                    stack += [(v, f"{path}.{k}") for k, v in o.items()]
+                elif isinstance(o, list):
+                    stack += [(v, f"{path}[{i}]") for i, v in enumerate(o)]
+                elif isinstance(o, bool):
+                    continue
+                elif isinstance(o, (int, float)):
+                    for k in range(2, 9):
+                        idx.setdefault(f"{o:.{k}f}", []).append((f.relative_to(repo).as_posix(), path))
+    return idx, n_files
+
+
+def history_values(repo=None):
+    """A2 级＝**训练历史**（`model/results/pinn/**/history.csv`）。表5-2 那种「阶段起始值」是逐 epoch 的读数，
+    本来就不可能原样躺在评估 JSON 里——不把它单独成层，就会被算进"两层都无"的假清单（这正是拿错尺的样子）。
+    只按 `k=2..6` 位小数收，够论文表用；再多位就是自找麻烦。"""
+    repo = pathlib.Path(str(repo)) if repo else REPO
+    idx = set()
+    n = 0
+    for f in repo.glob("model/results/pinn/**/history.csv"):
+        n += 1
+        head = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        if not head:
+            continue
+        for line in head[1:]:
+            for cell in line.split(","):
+                s = cell.strip()
+                if not s or len(s) > 24 or s[0] not in "0123456789-":
+                    continue
+                try:
+                    v = float(s)
+                except ValueError:
+                    continue
+                for k in range(2, 7):
+                    idx.add(f"{v:.{k}f}")
+    return idx, n
+
+
+def doc_tokens():
+    """B 级=**登记件**里出现过的数（`docs/revision/*.md`）。它不证明数对，只说明"这个数已被人登记过、
+    有口径出处"，与 A 级（结果件里原样存在的数）必须分开报，不能合成一个命中率糊过去。"""
+    out = set()
+    for f in sorted((REPO / "docs" / "revision").glob("*.md")):
+        out |= set(re.findall(r"\d+\.\d{2,}|\d\.\d+[eE][-+]?\d+", f.read_text(encoding="utf-8", errors="replace")))
+    return out
+
+
+def value_prov_report() -> int:
+    """`--value-prov`：论文表格里每个读数 token 对一遍 **A 级=结果件 / B 级=登记件** 两层；
+    两发夹具当场跑（必过＝刚落字的读数至少在 B 级在场；必红＝合成数两层都不在，否则这把尺恒真）。"""
+    from docx import Document
+    p = candidate()
+    if p is None:
+        print("[未验] 候选正本指针缺失/失效 ⇒ 不做数值溯源（不猜一份副本）")
+        return 1
+    idx, nf = artifact_values()
+    hist, nh = history_values()
+    bset = doc_tokens()
+    nd = len(list((REPO / "docs" / "revision").glob("*.md")))
+    # **碰撞地板**：A2 把 37 枚 history.csv 的每个数都按 2..6 位收进索引 ⇒ 位数为 2~3 的 token 会撞上别的 run。
+    # 所以先量这把尺的假阳性率，否则"两层都没有 = 0"会被读成"全部有源"——那是把筛查当证明。
+    import random
+    rnd = random.Random(20260927)
+    floor = {}
+    for d in (2, 3, 4, 5, 6):
+        probes = [f"{rnd.uniform(0.0, 1.0):.{d}f}" for _ in range(300)]
+        floor[d] = (sum(1 for q in probes if q in idx) / len(probes),
+                    sum(1 for q in probes if q in hist) / len(probes),
+                    sum(1 for q in probes if q in bset) / len(probes))
+    tok = re.compile(r"\d+\.\d{2,}|\d\.\d+[eE][-+]?\d+")
+    doc = Document(str(p))
+    sci = []
+    tiers = {"A": [], "A2": [], "WEAK": [], "B": [], "NONE": []}
+    by_dec = {}
+    total = 0
+    for ti, tb in enumerate(doc.tables):
+        for ri, row in enumerate(tb.rows):
+            for ci, cell in enumerate(row.cells):
+                for m in tok.finditer(cell.text):
+                    s = m.group(0)
+                    if cell.text[m.end():m.end() + 1] in ("e", "E"):
+                        sci.append((ti, ri, ci, s + cell.text[m.end():m.end() + 3]))
+                        continue
+                    total += 1
+                    d = len(s.split(".")[1]) if "." in s and "e" not in s.lower() else 6
+                    tier = "A" if s in idx else ("A2" if s in hist else ("B" if s in bset else "NONE"))
+                    if tier == "A2" and floor[d][1] >= 0.20:
+                        tier = "WEAK"        # 该位数上 A2 的假命中率 ≥20% ⇒ 这个"命中"不构成来源
+                    tiers[tier].append((ti, ri, ci, s))
+                    by_dec.setdefault(d, dict.fromkeys(("A", "A2", "WEAK", "B", "NONE"), 0))[tier] += 1
+    print(f"[数值溯源·范围] A 级＝评估/度量 JSON {nf} 枚（{'、'.join(ARTIFACT_GLOBS)}）；"
+          f"A2 级＝训练历史 {nh} 枚（`model/results/pinn/**/history.csv`）；B 级＝登记件 {nd} 枚（`docs/revision/*.md`）｜"
+          f"**不在范围内**：`predictions/*.csv`、`.npz`、`out/**`（仓内 0 枚 ⇒ E5 那格的一手读数在**实例侧**、不在仓）｜"
+          f"副本 {p.name} 的 {len(doc.tables)} 张表共 {total} 个读数")
+    print("    碰撞地板（随机造 300 枚同位数、[0,1) 的数看它「假装命中」的比例）："
+          + "；".join(f"{d} 位 A={floor[d][0]:.0%}/A2={floor[d][1]:.0%}/B={floor[d][2]:.0%}" for d in sorted(floor)))
+    print(f"    ⇒ **A 原样命中 {len(tiers['A'])}（{len(tiers['A']) / max(total, 1):.1%}）** ｜ "
+          f"A2＝训练历史 {len(tiers['A2'])} ｜ **弱命中 {len(tiers['WEAK'])}**（该位数上 A2 地板 ≥20%，不算来源） ｜ "
+          f"仅 B 级命中 {len(tiers['B'])}（＝派生量或口径合成分，如均值／比值／加速比／sd） ｜ "
+          f"**两层都没有 {len(tiers['NONE'])}**（这才是待归因清单）")
+    n5 = sum(sum(v.values()) for d, v in by_dec.items() if d >= 5)
+    print("    按位数分档（**可引用的只有这张**：位数 ≤4 时字符串命中不构成来源证明）")
+    for d in sorted(by_dec):
+        v = by_dec[d]
+        print(f"       {d} 位：共 {sum(v.values()):3d} 枚 ⇒ A {v['A']:3d}｜A2 {v['A2']:2d}｜弱 {v['WEAK']:2d}"
+              f"｜仅登记 {v['B']:2d}｜无 {v['NONE']:2d} ｜A 级碰撞地板 {floor[d][0]:.0%} ⇒ "
+              + ("命中可信" if floor[d][0] <= 0.05 else "**不足为证，要 per-cell 归属**"))
+    print(f"       ⇒ 全表 {total} 枚里 **≥5 位的只有 {n5} 枚**，其余 {total - n5} 枚是 2~4 位读数"
+          f"（论文四舍五入到 4 位是常规写法）｜另 {len(sci)} 枚科学计数法（`3.84e-05` 这类）不进位数分档。"
+          f"**结论：这道闸做不到逐格自动定源**——缺的是一张 per-cell 归属表（哪张表哪一行来自哪个 run 的哪个字段），"
+          f"它不在仓里，靠字符串索引是造不出来的")
+    for u in tiers["A2"][:3]:
+        print(f"   A2 训练历史：表序{u[0]} (行{u[1]},列{u[2]}) = {u[3]}")
+    for u in tiers["WEAK"][:8]:
+        print(f"   弱命中（要人工指 run 才能定源）：表序{u[0]} (行{u[1]},列{u[2]}) = {u[3]}")
+    for u in tiers["B"][:6]:
+        print(f"   仅 B 级：表序{u[0]} (行{u[1]},列{u[2]}) = {u[3]}")
+    for u in tiers["NONE"]:
+        print(f"   ⚠两层都无：表序{u[0]} (行{u[1]},列{u[2]}) = {u[3]}")
+    must_pass = ("0.539923" in idx or "0.539923" in bset) and ("0.026912" in idx or "0.026912" in hist)
+    must_fail = ("0.987654" not in idx and "0.987654" not in bset and "0.987654" not in hist)
+    print(f"[夹具] 刚落字的 `0.539923` 至少在一层在场={must_pass}（应 True）；"
+          f"合成数 `0.987654` 三层都不在场={must_fail}（必须 True，否则这把尺恒真）⇒ "
+          + ("两发都对 ✓" if must_pass and must_fail else "**夹具失效，本模式本轮不给结论**"))
+    return 0 if (must_pass and must_fail) else 1
+
+
 def cell_coords(doc=None):
     """只读：⇒ {行号: (表号, 旧格文本, [(全份表序, 行, 列), …])}。
     一把尺＝**整格文本归一后相等**（与 `--cells` 落字用的同一判据，不留第二份）。"""
@@ -1896,6 +2043,8 @@ def main() -> int:
     g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
+    g.add_argument("--value-prov", action="store_true",
+                    help="只读：论文表格里的每个数对一遍仓内结果件，报命中率与未命中坐标（含两发夹具）")
     g.add_argument("--cell-coords", action="store_true",
                     help="只读：把『改一格文字』那类工单行（CELL_TEXT_ROWS）解析成全份（表序,行,列）坐标，命中≠1 即退 1")
     g.add_argument("--count-needle", metavar="串", help="三数同框：数据行内／条文自身／全文件裸跑")
@@ -1910,6 +2059,8 @@ def main() -> int:
     import docx  # noqa: F401  ② 先确认库在，不在就别硬写
     from docx import Document
 
+    if getattr(args, "value_prov", None):
+        return value_prov_report()
     if args.cell_coords:
         return cell_coords_report()
     if getattr(args, "count_needle", None):
