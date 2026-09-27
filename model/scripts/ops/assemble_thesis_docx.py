@@ -460,10 +460,16 @@ def history_values(repo=None):
 def doc_tokens():
     """B 级=**登记件**里出现过的数（`docs/revision/*.md`）。它不证明数对，只说明"这个数已被人登记过、
     有口径出处"，与 A 级（结果件里原样存在的数）必须分开报，不能合成一个命中率糊过去。"""
-    out = set()
+    out, skipped = set(), []
     for f in sorted((REPO / "docs" / "revision").glob("*.md")):
+        # **必须排除过程日志（`回执-*`／含「对照表」的件）**——本回合是被**夹具自己**抓出来的：
+        # 我在回执里写「合成数 0.987654 三层都不在场」这句话，于是 B 级把 `0.987654` 数成"有登记"
+        # ⇒ **必红那一发被自己的日志拓灭**（假绿）。登记件那一层只收**读数正本／工单**，不收日志。
+        if f.name.startswith("回执") or "对照表" in f.name:
+            skipped.append(f.name)
+            continue
         out |= set(re.findall(r"\d+\.\d{2,}|\d\.\d+[eE][-+]?\d+", f.read_text(encoding="utf-8", errors="replace")))
-    return out
+    return out, skipped
 
 
 def value_prov_report() -> int:
@@ -476,8 +482,8 @@ def value_prov_report() -> int:
         return 1
     idx, nf = artifact_values()
     hist, nh = history_values()
-    bset = doc_tokens()
-    nd = len(list((REPO / "docs" / "revision").glob("*.md")))
+    bset, bskip = doc_tokens()
+    nd = len(list((REPO / "docs" / "revision").glob("*.md"))) - len(bskip)
     # **碰撞地板**：A2 把 37 枚 history.csv 的每个数都按 2..6 位收进索引 ⇒ 位数为 2~3 的 token 会撞上别的 run。
     # 所以先量这把尺的假阳性率，否则"两层都没有 = 0"会被读成"全部有源"——那是把筛查当证明。
     import random
@@ -510,7 +516,7 @@ def value_prov_report() -> int:
                     tiers[tier].append((ti, ri, ci, s))
                     by_dec.setdefault(d, dict.fromkeys(("A", "A2", "WEAK", "B", "NONE"), 0))[tier] += 1
     print(f"[数值溯源·范围] A 级＝评估/度量 JSON {nf} 枚（{'、'.join(ARTIFACT_GLOBS)}）；"
-          f"A2 级＝训练历史 {nh} 枚（`model/results/pinn/**/history.csv`）；B 级＝登记件 {nd} 枚（`docs/revision/*.md`）｜"
+          f"A2 级＝训练历史 {nh} 枚（`model/results/pinn/**/history.csv`）；B 级＝登记件 {nd} 枚（`docs/revision/*.md`，**已排除过程日志 {len(bskip)} 枚**：{chr(12289).join(bskip)}）｜"
           f"**不在范围内**：`predictions/*.csv`、`.npz`、`out/**`（仓内 0 枚 ⇒ E5 那格的一手读数在**实例侧**、不在仓）｜"
           f"副本 {p.name} 的 {len(doc.tables)} 张表共 {total} 个读数")
     print("    碰撞地板（随机造 300 枚同位数、[0,1) 的数看它「假装命中」的比例）："
