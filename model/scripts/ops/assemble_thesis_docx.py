@@ -543,6 +543,57 @@ def _unused_main() -> int:
     return made
 
 
+T57_BATCH = {                       # 只填仓内说得出处的；说不出来就写"需人工"，不手填
+    "B-test-1__ip_blunted": "bend_strict_blunted_sparse5_stagepde_20260503（削平入口·5% 稀疏）｜来源：工单 G4/I4",
+    "B-test-2": "bend_independent_geometry_notemplate_parabolic_mainline_v1_20260419｜来源：一手评估件 "
+                 "model/results/pinn/bend_independent_geometry_notemplate_parabolic_mainline_v1_20260419/evaluations/metrics_test.json",
+    "C-test-1": "需人工（仓内未指明 C 行的模型批次；只知走 `evaluations/metrics_test_dense.json` 的 `case_metrics[0]`）",
+    "C-test-2": "需人工（同上，`case_metrics[1]`）",
+}
+
+
+def update_t57(copy_path):
+    """表 5-7：加「模型批次」列 + 追加 B-test-2 行，四格数字**从仓内一手评估件现取**（不手填）。"""
+    import json
+    from docx import Document
+    from docx.shared import Pt
+    doc = Document(str(copy_path))
+    tgt = next((t for t in doc.tables if t.rows[0].cells[0].text.strip() == "工况"
+                and any(c.text.strip() == "B-test-1__ip_blunted" for c in t.rows[-1].cells)
+                and len(t.columns) == 6), None)
+    if tgt is None:
+        print("[t57] 没定位到表 5-7（工况/观测条件/5%稀疏 B 行三特征要同时命中）⇒ 不动")
+        return 0
+    jp = REPO / "model/results/pinn/bend_independent_geometry_notemplate_parabolic_mainline_v1_20260419/evaluations/metrics_test.json"
+    d = json.loads(jp.read_text(encoding="utf-8"))
+    row2 = next(c for c in d["case_metrics"] if c.get("case_id") == "B-test-2")
+    vals = [row2["rel_l2_speed"], row2["rel_l2_p"], row2["pressure_drop_rel_error"]]
+    print(f"[t57] 现取 B-test-2：speed={vals[0]:.6f} p={vals[1]:.6f} 压降={vals[2]:.6f}"
+          f"（split={d['split_name']}、eval_source={d['eval_source']}，件 sha256 前缀 "
+          f"{hashlib.sha256(jp.read_bytes()).hexdigest()[:12]}）")
+    tgt.add_column(Pt(90))
+    last = len(tgt.columns) - 1
+    tgt.cell(0, last).text = "模型批次"
+    for r in range(1, len(tgt.rows)):
+        key = tgt.cell(r, 0).text.strip()
+        tgt.cell(r, last).text = T57_BATCH.get(key, "需人工")
+    new = tgt.add_row()
+    for i, v in enumerate(["B-test-2", "弯曲流道", "dense（θ=60°，转角外推）",
+                           f"{vals[0]:.4f}", f"{vals[1]:.4f}", f"{vals[2]:.4f}"]):
+        new.cells[i].text = v
+    new.cells[last].text = T57_BATCH["B-test-2"]
+    for c in new.cells:
+        for p in c.paragraphs:
+            for r in p.runs:
+                r.font.size = Pt(9)
+    doc.save(str(copy_path))
+    after = Document(str(copy_path))
+    t2 = next(t for t in after.tables if t.rows[0].cells[0].text.strip() == "工况"
+              and len(t.columns) == 7)
+    print(f"[t57] 表 5-7 现 {len(t2.rows)} 行 × {len(t2.columns)} 列（改前 4×6）")
+    return len(t2.rows)
+
+
 def main() -> int:
     for s in (sys.stdout, sys.stderr):
         try:
@@ -555,6 +606,7 @@ def main() -> int:
     g.add_argument("--apply", action="store_true")
     g.add_argument("--verify", type=pathlib.Path)
     g.add_argument("--tables", type=pathlib.Path, help="在给定副本上插三张新表（表4-4b/5-9/5-10）")
+    g.add_argument("--t57", type=pathlib.Path, help="在给定副本上改表 5-7：加「模型批次」列 + 追加 B-test-2 行（数字现取）")
     ap.add_argument("--expect-changed", type=int, default=None,
                     help="--apply 用：期望被改段落数，不接等即 INVALID（闸三）")
     args = ap.parse_args()
@@ -563,6 +615,12 @@ def main() -> int:
 
     if args.verify:
         return verify(args.verify)
+    if args.t57:
+        if not args.t57.exists():
+            print(f"[INVALID] 副本不存在：{args.t57}", file=sys.stderr)
+            return 2
+        return 0 if update_t57(args.t57) >= 5 else 1
+
     if args.tables:
         if not args.tables.exists():
             print(f"[INVALID] 副本不存在：{args.tables}", file=sys.stderr)
