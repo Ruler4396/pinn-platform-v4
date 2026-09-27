@@ -1887,6 +1887,29 @@ def _call_sites(src: str, enclosing: str = "", names=()) -> dict:
     return out
 
 
+NS_UNIT_NAMES = ("assert_p_star_unit_fixed", "assert_p_star_unit_scale")
+
+
+def _ns_unit_counts(src: str) -> dict:
+    """Call-site counts the wiring gate reads: inside finalize(), and whole-file."""
+    inside = _call_sites(src, "finalize", NS_UNIT_NAMES)
+    whole = _call_sites(src, "", NS_UNIT_NAMES)
+    return {"finalize": inside, "file": whole}
+
+
+def _ns_unit_wiring_ok(counts: dict) -> bool:
+    """The predicate, kept separate so a control can feed it a MUTATED source.
+
+    `whole[fixed] >= 1` is the clause that was missing: the only legal call to
+    `assert_p_star_unit_fixed` sits inside `assert_p_star_unit_scale`, so an inside-finalize
+    comparison could never see it being removed -- and `>= 0`, which is what was written there,
+    is true for 0.  A gate whose failure condition cannot be produced is not a gate.
+    """
+    return (counts["finalize"].get("assert_p_star_unit_scale", -1) >= 2
+            and counts["file"].get("assert_p_star_unit_fixed", -1) >= 1
+            and counts["finalize"].get("assert_p_star_unit_scale", -1) != -1)
+
+
 def ns_unit_wiring_checks(ck: Check) -> None:
     """Ruling R2-7 follow-up, holes 1 and 2: an assertion must have a call site, and the fix
     must be in every stream, not only the one that was read."""
@@ -1901,14 +1924,12 @@ def ns_unit_wiring_checks(ck: Check) -> None:
         ck.skip("ns_unit.call_sites_wired", str(fin), "the merger is not next to route2/")
         return
     src = fin.read_text(encoding="utf-8")
-    inside = _call_sites(src, "finalize", ("assert_p_star_unit_fixed",
-                                           "assert_p_star_unit_scale"))
-    ck.add("ns_unit.call_sites_wired",
-           inside.get("assert_p_star_unit_scale", -1) >= 2
-           and inside.get("assert_p_star_unit_fixed", -1) >= 0,
-           inside,
-           ">=2 calls inside finalize() (the 6-digit raw and the merged 10-digit file); "
-           "-1 would mean finalize() itself is gone")
+    counts = _ns_unit_counts(src)
+    ck.add("ns_unit.call_sites_wired", _ns_unit_wiring_ok(counts), counts,
+           "finalize() must call the scale check twice (6-digit raw + merged 10-digit file) AND "
+           "`assert_p_star_unit_fixed` must be called at least once SOMEWHERE in the file -- "
+           "whole-file, not inside finalize: the only legal call is the one inside the wrapper, "
+           "and `inside >= 0` would have accepted deleting it")
     never = _call_sites("def assert_p_star_unit_fixed(a, b):\n    return 1.0\n\n\n"
                         "def finalize():\n    return 0\n", "finalize",
                         ("assert_p_star_unit_fixed", "assert_p_star_unit_scale"))
@@ -1916,6 +1937,25 @@ def ns_unit_wiring_checks(ck: Check) -> None:
            never == {"assert_p_star_unit_fixed": 0, "assert_p_star_unit_scale": 0}, never,
            "positive control: this is the exact shape the check had before it was wired, and "
            "the scan must be able to say so -- 0 call sites is what makes the gate red")
+    # ... but "the scanner can print 0" is not "the gate goes red".  That is a different claim,
+    # and the only way to test it is to hand the PREDICTED-FALSE source to the predicate itself.
+    lines = src.split("\n")
+    doomed = [i for i, ln in enumerate(lines)
+              if ln.strip().startswith("assert_p_star_unit_fixed(ref_csv")]
+    mutated_ok, why = False, "no call line found to mutate -- the control would be vacuous"
+    if len(doomed) == 1:
+        mut = "\n".join(lines[:doomed[0]] + lines[doomed[0] + 1:])
+        mc = _ns_unit_counts(mut)
+        mutated_ok = (mc["file"]["assert_p_star_unit_fixed"] == 0
+                      and mc["finalize"] == counts["finalize"]
+                      and not _ns_unit_wiring_ok(mc))
+        why = ("mutated file counts %s -> gate %s" % (mc["file"],
+                                                      "red as required" if mutated_ok
+                                                      else "STILL GREEN"))
+    ck.add("ns_unit.control_deleting_the_only_call_turns_the_gate_red", mutated_ok, why,
+           "delete the single legal call to assert_p_star_unit_fixed (inside the scale wrapper) "
+           "and the gate must refuse; the finalize-side counts must not move, or the mutation "
+           "proved the wrong thing")
 
     divisions = {}
     targets = [gz.CASE_DIR.parent / f"C-base_ns_re{label}" / f"C-base_ns_re{label}.edp"
