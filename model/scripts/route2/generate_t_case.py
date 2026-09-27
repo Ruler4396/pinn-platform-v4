@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -964,11 +965,26 @@ def _nearest(table: Dict[float, float], target: float) -> float:
 
 # --------------------------------------------------------------------- driver
 def freefem_executable() -> str:
+    """The solver, with an explicit override for the instance-local recovery.
+
+    On a replaced DSW instance FreeFEM comes back from `ffroot.tgz` into a directory under
+    /mnt/workspace plus an LD_LIBRARY_PATH -- it is deliberately NOT installed into /usr, because
+    that is the recovery that cost the previous instance.  So PATH alone cannot find it, and the
+    runner exports FREEFEM_BIN=<absolute path>.  An override that is not executable is a refusal,
+    not a silent fall back to PATH: silently dropping back would let "we solved it" mean a
+    different binary than the one the trip verified.
+    """
+    override = os.environ.get("FREEFEM_BIN", "").strip()
+    if override:
+        if os.path.isfile(override) and os.access(override, os.X_OK):
+            return override
+        raise FileNotFoundError(f"FREEFEM_BIN={override!r} is not an executable file -- "
+                               f"refusing to fall back to a different binary")
     for cand in ("FreeFem++", "FreeFEM++", "freefem++"):
         path = shutil.which(cand)
         if path:
             return path
-    raise FileNotFoundError("FreeFem++ not in PATH")
+    raise FileNotFoundError("FreeFem++ not in PATH and FREEFEM_BIN is unset")
 
 
 def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,

@@ -104,11 +104,13 @@ FFHOME="${FFHOME:-$WS/ffrun}"
 FFBIN="${FFBIN:-}"
 restore_ff() {
   if [ -n "$FFBIN" ] && [ -x "$FFBIN" ]; then
-    log "FreeFem++ supplied by the caller: $FFBIN (LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-unset})"
+    export FREEFEM_BIN="$FFBIN"
+    log "FreeFem++ supplied by the caller: $FFBIN -> FREEFEM_BIN exported (LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-unset})"
     return 0
   fi
   if command -v FreeFem++ >/dev/null 2>&1; then
-    FFBIN=$(command -v FreeFem++); log "FreeFem++ on PATH: $FFBIN"; return 0
+    FFBIN=$(command -v FreeFem++); export FREEFEM_BIN="$FFBIN"
+    log "FreeFem++ on PATH: $FFBIN (FREEFEM_BIN exported so the python steps use the same binary)"; return 0
   fi
   local cand
   for cand in "$FFHOME/usr/bin/FreeFem++" "$FFHOME/bin/FreeFem++"; do
@@ -117,7 +119,8 @@ restore_ff() {
       local d; d=$(find "$FFHOME" -name '*.so*' -type f 2>/dev/null | sed 's|/[^/]*$||' | sort -u | tr '
 ' ':')
       export LD_LIBRARY_PATH="${d}${LD_LIBRARY_PATH:-}"
-      log "FreeFem++ from the instance-local prefix: $FFBIN (LD_LIBRARY_PATH exported for this run only)"
+      export FREEFEM_BIN="$FFBIN"
+      log "FreeFem++ from the instance-local prefix: $FFBIN (LD_LIBRARY_PATH + FREEFEM_BIN for this run only)"
       return 0
     fi
   done
