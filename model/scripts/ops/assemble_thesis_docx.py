@@ -38,6 +38,8 @@ FOLD_RE = re.compile("|".join(re.escape(w) for _, a, b in TERM_OPS for w in (a, 
 INSTR = ("删除", "统一替换为", "同步替换", "替换为", "行名", "更正", "撤回", "定档", "凭据",
          "不许", "禁写", "见 §", "若将来", "留作投稿", "前置核查", "⇒", "本工单", "区间都要带上")
 PAIR_OPS = ("E2", "E3", "E4")   # ③ 换数+插段+删句三者同进同退，见 e_block()
+# 表内一格换标签（工单里"换标签"类）：只允许"旧标签是新标签的子串"那种纯扩展，且整格唯一命中才做。
+CELL_OPS = {"A16": ("表5-1", "阶段内残差惩罚项", "阶段内残差惩罚项（启用）")}
 # 混合格子的正文切片：有些行的「新文本」把正文句和写作指令写在同一格（D1 就是），整格落字会把
 # "两列都进表""（样本口径；格13 sd …）""前置核查（写作闸门）"这类话印进论文。
 # 白名单里**每条都必须逐字是该行新文本的子串**（下面断言），所以这条路不许造新句；被排除的句子留在工单里由作者自己粘。
@@ -948,6 +950,46 @@ def figs(copy_path):
     return len(made)
 
 
+def cells_op(copy_path):
+    """表内一格换标签（A16 这类）：按**号整段相等**选表、按**整格相等**选格，命中数不是 1 就拒做。
+    A11 故意不在这里：它说"列名改为…"，而表 5-8 现在的表头是「配置」——哪一列是"列名"是编辑判断，不猜。"""
+    from docx import Document
+    from docx.oxml.ns import qn
+    doc = Document(str(copy_path))
+    body = list(doc.element.body)
+    done = 0
+    for rid, (tid, old, new) in CELL_OPS.items():
+        tbls = []
+        for t in doc.tables:
+            at = body.index(t._tbl)
+            cap = ""
+            for k in range(at - 1, max(-1, at - 8), -1):
+                if body[k].tag.endswith("}p"):
+                    s = "".join(x.text or "" for x in body[k].findall(f".//{qn('w:t')}")).strip()
+                    if s:
+                        cap = s
+                        break
+            m = re.match(r"^(表|图)\s*(\d+(?:-\d+)?[a-z]?)", cap.replace(" ", ""))
+            if m and m.group(1) + m.group(2) == tid:      # 整段相等，表5-1 不会串到 表5-10
+                tbls.append((cap, t))
+        if not tbls:
+            print(f"   [格] {rid}：没找到题注恰为 {tid} 的表 ⇒ 不做")
+            continue
+        # 同一号可能跨页分几张（"（续表）"），目标格可能在任一张 ⇒ 全部找完再判唯一
+        hits = [(cap, ri, ci, c) for cap, t in tbls for ri, row in enumerate(t.rows)
+                for ci, c in enumerate(row.cells) if c.text.strip() == old]
+        if len(hits) != 1:
+            print(f"   [格] {rid}：{tid}（{len(tbls)} 张，含续表）里整格等于「{old}」的有 {len(hits)} 格 ⇒ 不唯一，交人工")
+            continue
+        cap, ri, ci, cell = hits[0]
+        assert old in new, f"{rid} 的新标签不含旧标签 ⇒ 这是改内容不是换标签，拒做"
+        cell.text = new
+        done += 1
+        print(f"   [格] {rid}：{cap[:12]} 行{ri}列{ci}「{old}」→「{new}」（同行其余格未动）")
+    doc.save(str(copy_path))
+    return done
+
+
 def main() -> int:
     for s in (sys.stdout, sys.stderr):
         try:
@@ -963,6 +1005,7 @@ def main() -> int:
     g.add_argument("--t57", type=pathlib.Path, help="在给定副本上改表 5-7：加「模型批次」列 + 追加 B-test-2 行（数字现取）")
     g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
+    g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
     g.add_argument("--selfcheck", action="store_true", help="只跑题注夹具（必过 + 必红各一条）")
     g.add_argument("--all", action="store_true",
                    help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（含来源列）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
@@ -990,8 +1033,8 @@ def main() -> int:
         dst = OUT / f"装配副本-{datetime.datetime.now():%Y%m%dT%H%M%S}.docx"
         shutil.copy2(SRC, dst)
         here = str(pathlib.Path(__file__).resolve())
-        for step in (["--apply-into", str(dst)], ["--tables", str(dst)], ["--t57", str(dst)],
-                     ["--pair57", str(dst)], ["--figs", str(dst)]):
+        for step in (["--apply-into", str(dst)], ["--cells", str(dst)], ["--tables", str(dst)],
+                     ["--t57", str(dst)], ["--pair57", str(dst)], ["--figs", str(dst)]):
             if step[0] == "--apply-into":
                 r = subprocess.run([sys.executable, here, "--apply", "--into", str(dst)],
                                    capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -1016,6 +1059,16 @@ def main() -> int:
             print(f"[INVALID] 副本不存在：{args.pair57}", file=sys.stderr)
             return 2
         return 0 if pair57(args.pair57) else 1
+
+    if args.cells:
+        if not args.cells.exists():
+            print(f"[INVALID] 副本不存在：{args.cells}", file=sys.stderr)
+            return 2
+        n = cells_op(args.cells)
+        if n != len(CELL_OPS):
+            print(f"[INVALID] 表内标签算子只做了 {n}/{len(CELL_OPS)} ⇒ 命中不唯一或表没找到，别当已落")
+            return 1
+        return 0
 
     if args.figs:
         if not args.figs.exists():
