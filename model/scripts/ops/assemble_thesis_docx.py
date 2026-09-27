@@ -465,6 +465,14 @@ NEW_TABLES = {
     "表5-9": {
         "anchor": ("before-para", "5.8 PDE约束与双模型耦合作用分析"),
         "caption": "表5-9  PINN 与 CFD 的单次成本、训练入账与盈亏平衡工况数（混合口径）",
+        "extra_rows": [["同机 CFD 单次 Stokes 解（`dsw-2213920`，pin `70317a59…`）", "0.618（=618 ms）",
+                        "未测（该趟只跑一具几何）",
+                        "n=7、rc≠0 剔除 0 次、min 0.587 / max 0.730；计时前先一次不计时真解（2113 数据行）；"
+                        "**新增不替换**：上一行旧主机值与本行不同机，四个加速比仍按旧主机、跨机比值标注"]],
+        "note_suffix": ("同机（`dsw-2213920`）单次 Stokes 解 median 618 ms，n=7，min 587 / max 730，pin `70317a59…`；"
+                        "一手件 `out/coldtrip_20260927/e5_runs.tsv.summary.json`（928 B、sha256 前缀 `52c717434c098541`），"
+                        "它替代 `e5_cfd_price_a0d1375.INVALID_rc127_do-not-cite.json`（旧件仍不得引用）。"
+                        "本行只新增、不改上面任何比值；弯曲几何未测 ⇒ 不许由本行外推。"),
         "sources_md": {           # 表 5-9 每一行的来源（行号取自当前工单/读数，写前先核件在不在）
             "CFD 单工况": "docs/benchmarks/pinn_vs_cfd_speed_benchmark_20260420.md:14-17（旧主机 `iZ7xv…`，`metadata.cfd_runs=3`）",
             "PINN 单工况推理": "同上 md:14-15（`metadata.pinn_runs=7`）",
@@ -477,8 +485,9 @@ NEW_TABLES = {
             "评估单价": "`T5矩阵run坐标索引-20260926.psv` 的 eval 行（1.533 s）"},
         "from_markdown": "**表 5-9（",   # 必须钉到标题行：只写"表 5-9"会先命中 §0 里提到这四个字的那一行
         "note": ("本表 A、C 两列取自 2026-04-20 旧主机（`iZ7xv19l7qsogyq3hzyhydZ`）的一次计时，"
-                 "B 列取自本轮 8 核实例的五种子实测中位 ⇒ A、C 与 B 不同机、不同次，为混合口径；"
-                 "同机补测（E5）本轮未做，故本限定不可删。K*=B/(A−C) 逐格向上取整，单价一换必整列重算。"),
+                 "B 列取自本轮 8 核实例的五种子实测中位 ⇒ A、C 与 B 不同机、不同次，为混合口径，本限定句保留"
+                 "（9/27 同机补测已到账，见本表末行；末行是**新增**，不改上面任何比值）。"
+                 "K*=B/(A−C) 逐格向上取整，单价一换必整列重算。"),
     },
     "表5-10": {
         "anchor": ("before-para", "5.9 本章小结"),   # 不能用"但当前模型仍有部分不足"：那段正是 B2 的落字目标，落字后原文已不在
@@ -547,6 +556,10 @@ def table_sources():
                         return v
                 return "需人工（该行来源未登记）"
             srcs = [pick(r[0]) for r in rows]
+        for er in spec.get("extra_rows") or []:
+            srcs = list(srcs) + ["统括官 15:2x 一手读回：`out/coldtrip_20260927/e5_runs.tsv.summary.json`"
+                                 "（928 B、sha256 前缀 `52c717434c098541`、instance `dsw-2213920`、pin `70317a59…`）"]
+            rows = list(rows) + [er]
         out[name] = [(rows[i][0], srcs[i] if i < len(srcs) else "需人工（该行来源未登记）") for i in range(len(rows))]
     return out
 
@@ -568,7 +581,10 @@ def insert_tables(copy_path):
                 print(f"   [跳过 {name}] 工单里找不到该 markdown 块")
                 continue
         width = len(header)
+        for er in spec.get("extra_rows") or []:          # 一手读数到账：新增行，不替换任何旧行
+            rows.append((er + [""] * (width - len(er)))[:width])
         rows = [r + [""] * (width - len(r)) for r in rows]
+        note = spec["note"] + (" " + spec["note_suffix"] if spec.get("note_suffix") else "")
         kind, key = spec["anchor"]
         if kind == "before-para":
             tgt = next((p for p in doc.paragraphs if p.text.strip().startswith(key)), None)
@@ -599,9 +615,9 @@ def insert_tables(copy_path):
         for i, r in enumerate(rows, start=1):
             for j in range(width):
                 tab.cell(i, j).text = clean(str(r[j]))
-        note = doc.add_paragraph(spec["note"])
+        note_p = doc.add_paragraph(note)
         # 把刚建的三段搬到锚点前/后（add_* 只会追加到文末）
-        els = [cap._p, tab._tbl, note._p]
+        els = [cap._p, tab._tbl, note_p._p]
         ref = tgt._p if hasattr(tgt, "_p") else tgt        # before-para 给的是 Paragraph，after-table 给的是 w:tbl 元素
         if kind == "before-para":                          # 插在锚点段之前 ⇒ 正序 addprevious
             for e in els:
