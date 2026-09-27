@@ -50,6 +50,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import artifacts as art                          # noqa: E402
+import generate_t_case as gt                     # noqa: E402  (the .edp is the ruler for a companion)
 import residual_scorers as rs                    # noqa: E402
 import t_geometry as tg                          # noqa: E402
 
@@ -63,6 +64,55 @@ TRAIN_BUDGET = {"steps": (600, 600), "lrs": (1.0e-3, 1.0e-4), "hidden": (64, 64,
                 "activation": "Tanh", "collocation": 1024, "seed": 20260925,
                 "dtype": "float64", "envelope_sharpness": 12.0}
 BRANCH_SAMPLE_SETS = ("stem", "branch_up", "branch_down")
+# K0b: the reference is the staged (>=12-digit) companion stream, not the 6-digit column the
+# same loop prints.  A run without it is still a legitimate 6-digit run -- it just may not be
+# reported as K0b, because "the 6-digit truth is what made the old K0 undecidable".
+STAGED_SUFFIX = "_staged"
+STAGED_FIELDS = ("u_star", "v_star", "p_star")
+REQUIRE_STAGED_TRUTH = False
+
+
+def staged_rows(path: Path, widths: dict = None):
+    """Read a companion stream and fold its chunks back: {row index: {field: value}}.
+
+    Paired by ROW ORDER, which is what the emitter guarantees (one loop, both streams, the same
+    iteration).  The row count must match exactly, and so must the chunk count per field: a
+    companion that stopped halfway through would otherwise look like a truth whose tail is 6
+    digits -- the failure this whole package exists to make impossible.
+
+    `widths` comes from the .edp that wrote this companion (never from the plan the caller
+    hoped for), and it buys the one check a printed chunk cannot do itself: a chunk whose
+    numerator outgrew six digits is STILL a multiple of 1e-N, so a lattice test can never see
+    the truncation -- only the magnitude bound can.  That is the T6 lesson, kept as a gate.
+    """
+    if not path.is_file():
+        return None
+    header, rows = art.read_csv_rows(path)
+    per_field, out = {}, {}
+    for f in STAGED_FIELDS:
+        cols = [c for c in header if c.startswith(f + "_s")]
+        if not cols:
+            raise ValueError(f"{path.name}: no staged columns for {f} (header {header}) -- "
+                             f"refusing to read a partial companion")
+        if widths is not None and len(cols) != len(widths[f]):
+            raise ValueError(f"{path.name}: {len(cols)} staged columns for {f} while the .edp "
+                             f"emits lattices {widths[f]} ({len(widths[f])} columns) -- the "
+                             f"companion and the file that wrote it are not the same version")
+        per_field[f] = [header.index(c) for c in cols]
+    if widths is not None:
+        for f, idxs in per_field.items():
+            head_room = max(abs(float(r[idxs[0]])) for r in rows) if rows else 0.0
+            budget = 10.0 ** (6 - widths[f][0])
+            if head_room >= budget:
+                raise ValueError(
+                    f"{path.name}: {f}'s first staged chunk reaches {head_room:.6g} against a "
+                    f"budget of {budget:.6g} for lattice 1e-{widths[f][0]}, so the printer "
+                    f"rounded the chunk itself -- this companion is NOT {len(widths[f]) * 6} "
+                    f"digits. Re-plan with a coarser first lattice (measure the field again) "
+                    f"and re-solve; do not merge it.")
+    for i, r in enumerate(rows):
+        out[i] = {f: sum(float(r[j]) for j in idxs) for f, idxs in per_field.items()}
+    return {"by_row": out, "n_stages": {f: len(per_field[f]) for f in STAGED_FIELDS}}
 
 
 # ============================================================ truth side (stdlib)
@@ -82,11 +132,36 @@ def load_lattice(case_root: Path, case_id: str, level: str, branch: str,
         raise FileNotFoundError(f"missing S1 sample grid: {path}")
     header, rows = art.read_csv_rows(path)
     idx = {n: i for i, n in enumerate(header)}
-    pts = [(float(r[idx["x_star"]]), float(r[idx["y_star"]]), float(r[idx["u_star"]]),
-            float(r[idx["v_star"]]), float(r[idx["p_star"]]),
+    staged_path = path.with_name(path.stem + STAGED_SUFFIX + ".csv")
+    widths = None
+    if staged_path.is_file():
+        # The lattice the companion was written with comes from the .edp, not from the caller's
+        # plan: a chunk rounded by the six-digit printer is still a multiple of 1e-N, so only
+        # the (width, magnitude) pair taken from the file that produced it can catch it.
+        edp = path.with_name(f"{case_id}_{level}.edp")
+        if not edp.is_file():
+            raise FileNotFoundError(
+                f"{staged_path.name} exists but {edp.name} does not: without the .edp that "
+                f"wrote it the staged lattice is unknowable, and an unverifiable companion is "
+                f"not a 12-digit reference")
+        widths = gt.staged_widths_from_edp(edp.read_text(encoding="utf-8"))
+    staged = staged_rows(staged_path, widths)
+    if staged is None and REQUIRE_STAGED_TRUTH:
+        raise FileNotFoundError(
+            f"{path.stem}{STAGED_SUFFIX}.csv is missing while REQUIRE_STAGED_TRUTH is set: the "
+            f"reference here is the 6-digit stream, which is the thing K0b exists to replace -- "
+            f"reading it would be the old 6-digit truth wearing a new gate's name")
+    if staged is not None and len(staged["by_row"]) != len(rows):
+        raise ValueError(f"{path.name}: companion has {len(staged['by_row'])} rows against "
+                         f"{len(rows)} here, so the row-order pairing is broken -- refusing "
+                         f"to merge two grids that are not the same grid")
+    def value_at(i: int, row: Sequence[str], field: str) -> float:
+        return staged["by_row"][i][field] if staged is not None else float(row[idx[field]])
+    pts = [(float(r[idx["x_star"]]), float(r[idx["y_star"]]), value_at(i, r, "u_star"),
+            value_at(i, r, "v_star"), value_at(i, r, "p_star"),
             float(r[idx["xi"]]) if "xi" in idx else float(r[idx["x_star"]]),
             float(r[idx["eta"]]) if "eta" in idx else float(r[idx["y_star"]]))
-           for r in rows]
+           for i, r in enumerate(rows)]
     if not pts:
         raise ValueError(f"{path.name}: empty sample grid")
     a0 = sorted({round(p[5], 9) for p in pts})
@@ -102,6 +177,9 @@ def load_lattice(case_root: Path, case_id: str, level: str, branch: str,
     h1, uni1 = _uniform_step(a1, path)
     return {"branch": branch, "tag": tag, "path": path, "n0": len(a0), "n1": len(a1),
             "h0": h0, "h1": h1, "table": table, "n_points": len(pts),
+            "truth_source": ("staged companion, %s chunks per field" % staged["n_stages"]
+                             if staged is not None else
+                             "printed 6-digit columns (no companion beside this grid)"),
             "uniformity": {"xi": uni0, "eta": uni1}}
 
 
@@ -801,7 +879,16 @@ def main() -> int:
     ap.add_argument("--sigma", type=float, default=SIGMA_PRIMARY)
     ap.add_argument("--plans", default="a,b")
     ap.add_argument("--dry-run", action="store_true", help="no torch, no training")
+    ap.add_argument("--require-12-digit-truth", action="store_true",
+                    help="K0b: halt if a sample grid has no staged companion, because a "
+                         "6-digit reference under this gate's name is the exact thing the "
+                         "pre-registration forbids (old readings must not pass as new ones)")
     args = ap.parse_args()
+    global REQUIRE_STAGED_TRUTH
+    REQUIRE_STAGED_TRUTH = bool(args.require_12_digit_truth)
+    print("[truth] reference requirement: %s"
+          % ("staged companion REQUIRED (K0b)" if REQUIRE_STAGED_TRUTH else
+             "companion used when present, printed columns otherwise (not a K0b run)"))
 
     case_root = Path(args.case_root)
     plans = [p.strip() for p in args.plans.split(",") if p.strip()]

@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import shutil
 import subprocess
 import sys
@@ -90,7 +91,7 @@ def section_eta_nodes(half_width: float, eta_step: float = SECTION_ETA_STEP) -> 
 # see TRUTH_EMISSION_WIRED, which the self-check asserts rather than assumes.
 TRUTH_DIGITS_REQUIRED = 12
 TRUTH_STAGES_MAX = 4
-TRUTH_EMISSION_WIRED = False        # the staged stream is NOT yet spliced into the .edp
+TRUTH_EMISSION_WIRED = True         # the staged companion is rendered; see selfcheck_emission
 
 
 def stage_widths(scale: float, stages: int) -> list:
@@ -182,11 +183,145 @@ def assert_truth_digits_plan(digits: int, plans: dict) -> None:
             raise SystemExit("%s: no staging plan -- refusing to write" % name)
 
 
+# ------------------------------------------- the companion (staged) stream itself
+# K0b pre-registration §一: the field values cannot be printed at 12 digits, so each sample
+# grid gets a second stream written in the SAME loop, in the SAME row order, carrying the
+# staged chunks.  Coordinates are deliberately not in it -- the lattice never goes through the
+# printer (the .edp expands Python's `:.12g` parameters), so staging them would invent columns
+# nothing reads.
+STAGED_FIELDS = ("u_star", "v_star", "p_star")
+STAGED_SCALE_KEY = {"u_star": "u", "v_star": "v", "p_star": "p"}
+STAGED_VAR = {"u_star": "qU", "v_star": "qV", "p_star": "qP"}
+STAGED_SUFFIX = "_staged"
+
+
+def staged_plans(scales: dict, digits: int = TRUTH_DIGITS_REQUIRED) -> dict:
+    """Per-field plans keyed by the CSV column name, from the measured scales."""
+    return {f: split_plan(scales[STAGED_SCALE_KEY[f]], digits) for f in STAGED_FIELDS}
+
+
+def staged_header(plans: dict) -> list:
+    """Companion columns in print order: `<field>_s0..s<k-1>`, the last one is the leftover."""
+    return ["%s_s%d" % (f, j) for f in STAGED_FIELDS for j in range(len(plans[f]))]
+
+
+def staged_chunk_lines(field: str, plan: list) -> list:
+    """FreeFEM statements splitting `qU` (already evaluated) into its staged chunks.
+
+    chunk_j = floor(residual * 1e-N_j) / 1.0e-N_j, and the next stage works on what that left.
+    Identifiers carry no underscore because v4.9 rejects `_` in code (`lint_edp` enforces it on
+    the rendered text); the header is a string literal, so it keeps the `_`.
+    """
+    var = STAGED_VAR[field]
+    out, rest = [], var
+    for j, n in enumerate(plan[:-1]):
+        out.append("      real %s%d = floor(%s*1.0e%d)/1.0e%d;" % (var, j, rest, n, n))
+        out.append("      real %sr%d = %s - %s%d;" % (var, j, rest, var, j))
+        rest = "%sr%d" % (var, j)
+    return out
+
+
+def staged_print_terms(field: str, plan: list) -> list:
+    """The expressions printed for one field -- exactly `len(plan)` of them."""
+    var = STAGED_VAR[field]
+    terms = ["%s%d" % (var, j) for j in range(len(plan) - 1)]
+    terms.append("%sr%d" % (var, len(plan) - 2) if len(plan) > 1 else var)
+    return terms
+
+
+def staged_value(row: dict, field: str) -> float:
+    """Merge one staged row back: the sum of its chunks, read by name from the header.
+
+    The reconstruction is the sum because each chunk is the floor of the residual at its own
+    lattice, so the chunks partition the value down to the leftover's printing bound.
+    """
+    return sum(float(row[c]) for c in row if c.startswith(field + "_s"))
+
+
+def assert_staged_render(text: str, plans: dict, n_grids: int, name: str) -> None:
+    """The rendered post-condition: every companion is there, and every one prints as many
+    columns as its plan says.  Written because the first splice landed after a `return`, i.e.
+    it rendered nothing and still printed a plan."""
+    expected = len(staged_header(plans))
+    heads = re.findall(r'ofstream fst\("([^"]+)"\);', text)
+    if len(heads) != n_grids:
+        raise ValueError(f"{name}: {len(heads)} companion streams rendered, expected "
+                         f"{n_grids} -- a staged plan that is not emitted is the same defect "
+                         f"as an uncalled assertion")
+    for path in heads:
+        if not path.endswith(".csv") or (STAGED_SUFFIX + ".csv") not in path:
+            raise ValueError(f"{name}: companion stream {path} is not named <grid>"
+                             f"{STAGED_SUFFIX}.csv, so the reader will not find it")
+    hdrs = re.findall(r'fst << "([^"]+)" << endl;', text)
+    if len(hdrs) != n_grids:
+        raise ValueError(f"{name}: {len(hdrs)} companion headers, expected {n_grids}")
+    for h in hdrs:
+        cols = h.split(",")
+        if len(cols) != expected:
+            raise ValueError(f"{name}: the companion header carries {len(cols)} columns "
+                             f"({cols}) while the plan says {expected} "
+                             f"({staged_header(plans)}) -- header and plan disagreeing is how "
+                             f"a merge silently shifts by one column")
+    body = [b for b in re.findall(r'fst << ([^\n]*?) << endl;', text)
+            if not b.strip().startswith('"')]          # the header line is a bare literal
+    if len(body) != n_grids:
+        raise ValueError(f"{name}: {len(body)} companion row prints, expected {n_grids}")
+    for b in body:
+        terms = [t for t in (x.strip() for x in b.split("<<"))
+                 if t and not (t.startswith('"') and t.endswith('"'))]
+        if len(terms) != expected:
+            raise ValueError(f"{name}: a companion row prints {len(terms)} values "
+                             f"({terms}) against {expected} header columns -- a header and a "
+                             f"row that disagree are how a merge shifts by one column silently")
+
+
+def staged_widths_from_edp(text: str) -> dict:
+    """Read the staged lattices back out of the .edp that wrote a companion.
+
+    The rule lives in the artefact, not in a docstring: an earlier revision of the sibling
+    T6 merger carried `hi = 1e-4` in prose while the .edp emitted something else, and the
+    assertion passed on both.  Parsing the emitted `floor(qU*1.0eN)/1.0eN` makes the reader
+    disagree with a stale .edp instead of agreeing with a wrong claim.
+
+    Parsed per companion block, and all blocks must agree: the same eight grids each re-declare
+    their chunks, so scanning the whole file at once would return eight copies of the plan and
+    call that a lattice (which is exactly what the first version of this function did).
+    """
+    blocks = text.split('ofstream fst("')[1:]
+    if not blocks:
+        raise ValueError("the .edp carries no companion stream, so there is no staged lattice "
+                         "to read -- this is a 6-digit emission, not a K0b reference")
+    per_block = []
+    for blk in blocks:
+        found = {}
+        for field in STAGED_FIELDS:
+            var = STAGED_VAR[field]
+            ns = [int(m.group(1)) for m in
+                  re.finditer(r"floor\(%s\w*\*1\.0e(\d+)\)/1\.0e\1" % var, blk)]
+            if not ns:
+                raise ValueError(f"a companion block carries no staged chunks for {field} "
+                                 f"(looked for floor({var}...)) -- cannot read a companion "
+                                 f"whose lattice is not in the file that wrote it")
+            found[field] = ns + [0]
+        per_block.append(found)
+    if any(b != per_block[0] for b in per_block[1:]):
+        raise ValueError(f"the .edp's companion blocks disagree on the lattice: "
+                         f"{ {k: [b[k] for b in per_block] for k in STAGED_FIELDS} } -- one "
+                         f"grid staged differently from the others is not one reference")
+    return per_block[0]
+
+
+def staged_budget_scale(width: int) -> float:
+    """Largest |value| whose 1e-`width` chunk still fits a six-digit printer."""
+    return 10.0 ** (tg.FREEFEM_PRINT_DIGITS - width)
+
+
 def selfcheck_emission() -> int:
     """Controls for the staging plan.  At least one of them is a refusal."""
     rc = 0
     scales = {"x": 5.0, "y": 0.5, "u": 2.5, "v": 2.5, "p": 415.058}
     plans = {k: split_plan(v, TRUTH_DIGITS_REQUIRED) for k, v in scales.items()}
+    plans_f = staged_plans(scales, TRUTH_DIGITS_REQUIRED)
     try:
         assert_truth_digits_plan(6, plans)
         ok, why = False, "NO REFUSAL -- a 6-digit truth would have been emitted"
@@ -213,10 +348,33 @@ def selfcheck_emission() -> int:
     rc |= 0 if ok else 1
     print("[%s] the window claim as a number: |p|=415 needs 2 stages for 10 digits (T6's case)"
           " and 3 for 12 (K0b's) -> %s vs %s" % ("PASS" if ok else "FAIL", p10, p12))
-    ok = not TRUTH_EMISSION_WIRED
-    print("[%s] honesty control: TRUTH_EMISSION_WIRED=%s -- the staged stream is not spliced "
-          "into the .edp yet, so this script still cannot emit 12-digit truth even though the "
-          "plan is computed" % ("PASS" if ok else "FAIL", TRUTH_EMISSION_WIRED))
+    ok = bool(TRUTH_EMISSION_WIRED)
+    rc |= 0 if ok else 1
+    print("[%s] wiring control: TRUTH_EMISSION_WIRED=%s -- it must be True before a run claims "
+          "12-digit truth, and the two checks below are what back the word 'wired'"
+          % ("PASS" if ok else "FAIL", TRUTH_EMISSION_WIRED))
+    # The splice is judged on a RENDERED file, not on the flag: the first attempt set the plan,
+    # passed the flag, and put the companion after a `return`.
+    case = tg.case_by_id("TB-base")
+    geom = tg.TGeometry(case)
+    lvl = {"name": "h1", "spacing": 0.1, "graded": False,
+           "counts": tg.border_counts(geom, 0.1, False)}
+    text = render_edp(geom, case, lvl, Path("/tmp/x"), truth_plans=plans_f)
+    grids = text.count('ofstream fst("')
+    ok = grids == 8 and text.count(STAGED_SUFFIX + '.csv') == 8
+    rc |= 0 if ok else 1
+    print("[%s] render control: a real .edp carries %d companion streams and %d staged file "
+          "names (8 sample grids, coordinates excluded on purpose)"
+          % ("PASS" if ok else "FAIL", grids, text.count(STAGED_SUFFIX + ".csv")))
+    bad = {f: plans_f[f][:1] for f in STAGED_FIELDS}          # one column short, as if the
+    try:                                                      # plan changed after rendering
+        assert_staged_render(text, bad, 8, "synthetic.edp")
+        ok, why = False, "NO REFUSAL -- a header/plan mismatch would ship"
+    except ValueError as exc:
+        ok, why = True, str(exc).splitlines()[0][:78]
+    rc |= 0 if ok else 1
+    print("[%s] control: a rendered companion whose columns disagree with the plan is refused "
+          "(%s)" % ("PASS" if ok else "FAIL", why))
     return rc
 
 
@@ -234,7 +392,8 @@ def precision_prefix(var: str, digits: int) -> list[str]:
 
 def render_edp(geom: tg.TGeometry, case: tg.TCase, level: dict, out_dir: Path,
                section_eta_step: float = SECTION_ETA_STEP,
-               coord_digits: int = 17) -> str:
+               coord_digits: int = 17,
+               truth_plans: Optional[dict] = None) -> str:
     spacing = level["spacing"]
     counts = level["counts"]
     jx, jy = geom.j_point
@@ -329,28 +488,39 @@ def render_edp(geom: tg.TGeometry, case: tg.TCase, level: dict, out_dir: Path,
     for key in (tg.STEM, tg.UP, tg.DOWN):
         for mult, tag in ((1.0, "h"), (2.0, "h2")):
             o.extend(_emit_branch_grid(geom, geom.branch_grid(key, spacing * mult),
-                                       prefix, case, tag, coord_digits))
+                                       prefix, case, tag, coord_digits, truth_plans))
     for mult, tag in ((1.0, "h"), (2.0, "h2")):
         o.extend(_emit_junction_grid(geom, geom.junction_grid(spacing * mult), prefix, case,
-                                  tag, coord_digits))
+                                  tag, coord_digits, truth_plans))
     o.extend(_emit_sections(geom, prefix, case, section_eta_step, coord_digits))
     a('cout << "done" << endl;')
-    return "\n".join(o) + "\n"
+    text = "\n".join(o) + "\n"
+    if truth_plans:
+        # 3 branches x (h, h2) + junction x (h, h2): the grids `sample_grid()` reads.  The
+        # post-condition is on the RENDERED TEXT, not on the argument list, because the first
+        # splice put the companion after a `return` and still printed a plan.
+        assert_staged_render(text, truth_plans, 8,
+                             f"{case.case_id}_{level['name']}.edp")
+    return text
 
 
 def _emit_branch_grid(geom: tg.TGeometry, spec: dict, prefix: Path, case: tg.TCase,
-                      tag: str, digits: int = 17) -> List[str]:
+                      tag: str, digits: int = 17,
+                      plans: Optional[dict] = None) -> List[str]:
     path = Path(prefix.as_posix() + f"_samples_{spec['branch']}_{tag}.csv")
     n_xi, n_eta = spec["n_xi"], spec["n_eta"]
     d_xi = (spec["xi1"] - spec["xi0"]) / max(n_xi - 1, 1)
     d_eta = 2.0 * spec["eta_max"] / max(n_eta - 1, 1)
     ox, oy = spec["origin"]
     (dx_, dy_), (mx, my) = spec["d"], spec["m"]
-    return [
+    o = [
         "{",
         f'  ofstream fo("{path.as_posix()}");',
         *precision_prefix("fo", digits),
         f'  fo << "{SAMPLE_HEADER}" << endl;',
+    ]
+    o += _staged_stream_lines(path, plans)
+    o += [
         f"  int NX = {n_xi}; int NE = {n_eta};",
         f'  real XI0 = {spec["xi0"]:.12g}; real DXI = {d_xi:.12g};',
         f'  real ETA0 = {-spec["eta_max"]:.12g}; real DETA = {d_eta:.12g};',
@@ -363,25 +533,64 @@ def _emit_branch_grid(geom: tg.TGeometry, spec: dict, prefix: Path, case: tg.TCa
         "      real eta = ETA0 + j * DETA;",
         "      real xx = OX + xi * DDX + eta * MDX;",
         "      real yy = OY + xi * DDY + eta * MDY;",
+        *(_field_value_lines() if plans else []),
         '      fo << xx << "," << yy << "," << u(xx,yy) << "," << v(xx,yy) << "," << p(xx,yy)'
         f' << "," << xi << "," << eta << ",{spec["branch"]}" << endl;',
+        *_staged_print_lines(plans),
         "    }",
         "  }",
         "}",
         "",
     ]
+    return o
+
+
+def _field_value_lines() -> List[str]:
+    """Evaluate each field once, in the order the primary stream prints them.
+
+    Both streams have to read the SAME numbers, and printing `u(xx,yy)` twice in two `<<`
+    chains is two interpolations of the same FE function at the same point: identical, but
+    only this form lets the staged stream print the value the primary one printed rather than
+    a second evaluation that could differ if the point changed.
+    """
+    return ["      real qU = u(xx,yy); real qV = v(xx,yy); real qP = p(xx,yy);"]
+
+
+def _staged_stream_lines(path: Path, plans: Optional[dict]) -> List[str]:
+    if not plans:
+        return []
+    staged = Path(str(path).replace(".csv", STAGED_SUFFIX + ".csv"))
+    return [f'  ofstream fst("{staged.as_posix()}");',
+            f'  fst << "{",".join(staged_header(plans))}" << endl;']
+
+
+def _staged_print_lines(plans: Optional[dict]) -> List[str]:
+    if not plans:
+        return []
+    o: List[str] = []
+    for field in STAGED_FIELDS:
+        o += staged_chunk_lines(field, plans[field])
+    terms = []
+    for field in STAGED_FIELDS:
+        terms += staged_print_terms(field, plans[field])
+    o.append("      fst << " + ' << "," << '.join(terms) + " << endl;")
+    return o
 
 
 def _emit_junction_grid(geom: tg.TGeometry, spec: dict, prefix: Path, case: tg.TCase,
-                        tag: str, digits: int = 17) -> List[str]:
+                        tag: str, digits: int = 17,
+                        plans: Optional[dict] = None) -> List[str]:
     path = Path(prefix.as_posix() + f"_samples_junction_{tag}.csv")
     n_x = max(3, int(round((spec["x1"] - spec["x0"]) / spec["spacing"])) + 1)
     n_y = max(3, int(round((spec["y1"] - spec["y0"]) / spec["spacing"])) + 1)
-    return [
+    o = [
         "{",
         f'  ofstream fo("{path.as_posix()}");',
         *precision_prefix("fo", digits),
         f'  fo << "{SAMPLE_HEADER}" << endl;',
+    ]
+    o += _staged_stream_lines(path, plans)
+    o += [
         f"  int NX = {n_x}; int NY = {n_y};",
         f'  real X0 = {spec["x0"]:.12g}; real DX = {(spec["x1"] - spec["x0"]) / (n_x - 1):.12g};',
         f'  real Y0 = {spec["y0"]:.12g}; real DY = {(spec["y1"] - spec["y0"]) / (n_y - 1):.12g};',
@@ -393,13 +602,16 @@ def _emit_junction_grid(geom: tg.TGeometry, spec: dict, prefix: Path, case: tg.T
         "      real yy = Y0 + j * DY;",
         "      if ((xx - CX) * (xx - CX) + (yy - CY) * (yy - CY) < R * R) continue;",
         "      if (!inDomain(xx, yy)) continue;",
+        *(_field_value_lines() if plans else []),
         '      fo << xx << "," << yy << "," << u(xx,yy) << "," << v(xx,yy) << "," << p(xx,yy)'
         ' << "," << xx << "," << yy << ",junction" << endl;',
+        *_staged_print_lines(plans),
         "    }",
         "  }",
         "}",
         "",
     ]
+    return o
 
 
 def _emit_sections(geom: tg.TGeometry, prefix: Path, case: tg.TCase,
@@ -760,7 +972,8 @@ def freefem_executable() -> str:
 
 
 def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
-             sigma: float = 0.15, coord_digits: int = 17) -> dict:
+             sigma: float = 0.15, coord_digits: int = 17,
+             truth_plans: Optional[dict] = None) -> dict:
     geom = tg.TGeometry(case)
     data_dir = out_root / "data" / case.case_id
     cfd_root = out_root / "cfd"
@@ -783,20 +996,26 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
         lvl_dir.mkdir(parents=True, exist_ok=True)
         edp = lvl_dir / f"{case.case_id}_{lvl['name']}.edp"
         _t0 = time.perf_counter()
-        text = render_edp(geom, case, lvl, lvl_dir, coord_digits=coord_digits)
+        text = render_edp(geom, case, lvl, lvl_dir, coord_digits=coord_digits,
+                          truth_plans=truth_plans)
         timing["render_s"] += time.perf_counter() - _t0
         assert_edp_clean(text, edp.name)      # refuse to ship an .edp FreeFEM cannot eat
         edp.write_text(text, encoding="utf-8")
         n_evals = _point_evaluations(geom, lvl["spacing"])
+        sample_names = [f"{case.case_id}_{lvl['name']}_samples_{n}_{t}.csv"
+                        for n in ("stem", "branch_up", "branch_down", "junction")
+                        for t in ("h", "h2")]
+        # A requested companion that FreeFEM did not write is a FAILURE, not an absence: the
+        # plan printed in the log would otherwise look like a 12-digit truth over a 6-digit file.
+        expected = ([f"{case.case_id}_{lvl['name']}{suf}.csv"
+                     for suf in ["_raw", "_summary", "_sections"]] + sample_names)
+        if truth_plans:
+            expected += [n.replace(".csv", STAGED_SUFFIX + ".csv") for n in sample_names]
         entry = {"level": lvl["name"], "spacing_star": lvl["spacing"], "graded": lvl["graded"],
                  "n_fem_point_evaluations": n_evals,
                  "border_counts": lvl["counts"], "edp": edp.name,
                  "edp_sha256": art.sha256_file(edp),
-                 "expected": [f"{case.case_id}_{lvl['name']}{suf}.csv" for suf in
-                              ["_raw", "_summary", "_sections"]
-                              + [f"_samples_{n}_{t}" for n in
-                                 ("stem", "branch_up", "branch_down", "junction")
-                                 for t in ("h", "h2")]]}
+                 "expected": expected}
         if not execute:
             entry["status"] = "rendered-only (dry-run: nothing solved, gate not evaluated)"
             plan["levels"].append(entry)
@@ -1041,11 +1260,17 @@ def main() -> int:
                 % (cfd, args.truth_digits))
     truth_plans = {k: split_plan(scales[k], args.truth_digits) for k in scales}
     assert_truth_digits_plan(args.truth_digits, truth_plans)
-    print("truth staging (K0b, plan only -- emission not wired): "
+    staged = staged_plans(scales, args.truth_digits)
+    print("truth staging (K0b): "
           + ", ".join("%s=%s" % (k, truth_plans[k]) for k in sorted(truth_plans))
           + "; worst floor %.2e of scale (target 1e-%d)"
           % (max(stage_floor(truth_plans[k]) / scales[k] for k in truth_plans),
-             args.truth_digits))
+             args.truth_digits)
+          + "; companion columns " + str(staged_header(staged)))
+    if TRUTH_EMISSION_WIRED and not staged:
+        raise SystemExit("TRUTH_EMISSION_WIRED is True but no staged plan was built -- the "
+                         "emitter would render the old single-stream .edp while the log claims "
+                         "a companion, so refusing to run either way")
     if not TRUTH_EMISSION_WIRED:
         print("[NOT WIRED] the staged companion stream is not spliced into the .edp yet, so "
               "these widths are a plan, not an artefact: do not read S1 output as 12-digit "
@@ -1053,7 +1278,8 @@ def main() -> int:
               " checked on a rendered file.")
 
     res = run_case(case, out_root, levels, execute, sigma=args.blend_sigma,
-                   coord_digits=args.coord_precision)
+                   coord_digits=args.coord_precision,
+                   truth_plans=staged if TRUTH_EMISSION_WIRED else None)
     plan = res["plan"]
     print(f"out_root={out_root}")
     for entry in plan["levels"]:

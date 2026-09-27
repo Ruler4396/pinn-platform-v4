@@ -1940,6 +1940,168 @@ def ns_unit_wiring_checks(ck: Check) -> None:
            "without it assert_p_star_unit_scale raises instead of skipping")
 
 
+def staged_truth_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
+    """K0b item 2 end to end: does the staged companion really carry 12 digits INTO the reader,
+    and do the three refusals fire?
+
+    The stand-in has to match FreeFEM where it matters: the chunks are taken at the lattices the
+    rendered .edp names, every column goes through the six-significant-digit printer the instance
+    measured, and the plan is derived from the magnitudes this fixture actually writes -- not from
+    a declared scale, which is how a 7-digit numerator quietly gets rounded away.
+    """
+    import generate_t_case as gc
+    import k0_truth_gate as kg
+
+    case_id, level = "TB-base", "h1"
+    root = tmp / "staged" / case_id
+    d = root / "cfd" / f"{case_id}_{level}"
+    d.mkdir(parents=True, exist_ok=True)
+    lvl = {"name": level, "spacing": 0.05, "graded": False,
+           "counts": tg.border_counts(geom, 0.05, False)}
+    def analytic(x: float, y: float):
+        return (1.0 + 0.25 * x - 0.1 * y, 0.5 - 0.3 * x, 12.0 - 3.0 * x + 0.7 * y)
+
+    pts_by_grid = {geom.frames[k].name:
+                   [(x, y) + analytic(x, y) + geom.frames[k].local(x, y)
+                    for x, y in geom.grid_points(geom.branch_grid(k, 0.05))]
+                   for k in (STEM, UP, DOWN)}
+    seen = [q for rows in pts_by_grid.values() for q in rows]
+    # the plan comes from the magnitudes this fixture actually writes -- a declared scale is
+    # how a 7-digit numerator quietly gets rounded away, and the control below shows the refusal
+    measured = {"x": 4.0, "y": 1.0,
+                "u": max(abs(q[2]) for q in seen), "v": max(abs(q[3]) for q in seen),
+                "p": max(abs(q[4]) for q in seen)}
+    plans = gc.staged_plans(measured, gc.TRUTH_DIGITS_REQUIRED)
+    text = gc.render_edp(geom, tg.case_by_id(case_id), lvl, d, truth_plans=plans)
+    (d / f"{case_id}_{level}.edp").write_text(text, encoding="utf-8")   # the reader parses it
+    hits = gc.lint_edp(text)
+    ck.add("staged.rendered_edp_lints_clean", hits == [], hits[:3],
+           "the staged identifiers are qU0/qUr1, not u_star_s0: v4.9 rejects underscores in "
+           "code, while the header keeps them because a string literal is not an identifier")
+    ck.add("staged.eight_companion_streams_rendered", text.count("ofstream fst") == 8,
+           text.count("ofstream fst"), 8)
+    back = gc.staged_widths_from_edp(text)
+    ck.add("staged.lattices_are_readable_from_the_edp", back == plans,
+           {"from_edp": back, "plan": plans},
+           "the companion means what the file that wrote it says, so the round trip must close")
+
+    def staged_cols(values, which) -> list:
+        out = []
+        for i, field in enumerate(gc.STAGED_FIELDS):
+            rest = values[i]
+            for n in which[field][:-1]:
+                chunk = math.floor(rest * 10.0 ** n) / 10.0 ** n
+                out.append("%.*g" % (6, chunk))
+                rest -= chunk
+            out.append("%.*g" % (6, rest))
+        return out
+
+    def pr6(q):
+        return "%.*g" % (6, q)
+
+    names, expect, companions = [], {}, {}
+    for name, rows in pts_by_grid.items():
+        main, staged = [], []
+        for q in rows:
+            x, y, u, v, p, xi, eta = q
+            main.append([pr6(t) for t in (x, y, u, v, p, xi, eta)] + [name])
+            staged.append(staged_cols((u, v, p), plans))
+        base = f"{case_id}_{level}_samples_{name}_h"
+        art.write_csv(d / (base + ".csv"), ["x_star", "y_star", "u_star", "v_star", "p_star",
+                                           "xi", "eta", "branch"], main)
+        art.write_csv(d / (base + gc.STAGED_SUFFIX + ".csv"), gc.staged_header(plans), staged)
+        names.append(name)
+        expect[name] = [(q[5], q[6], (q[2], q[3], q[4])) for q in rows]
+        companions[name] = (gc.staged_header(plans), staged)
+
+    def errors():
+        """Worst |read - analytic| over each field's own magnitude, POSITION-matched.
+
+        Deliberately not a sorted-multiset compare: one grid drops a point to the crotch disk,
+        another collapses a repeated lattice index, the two lists come out the same length and
+        the pairs align wrong -- which showed up here as a 3.1e-06 "error" on a fold that is
+        exact to 3.2e-16.  Matching on (xi, eta) cannot be fooled that way.
+        """
+        out = {"u_star": 0.0, "v_star": 0.0, "p_star": 0.0}
+        n_cmp = 0
+        for name in names:
+            lat = kg.load_lattice(root, case_id, level, name, "h")
+            pts = expect[name]
+            a0 = sorted({round(xi, 9) for xi, _e, _v in pts})
+            a1 = sorted({round(eta, 9) for _x, eta, _v in pts})
+            p0 = {v: i for i, v in enumerate(a0)}
+            p1 = {v: i for i, v in enumerate(a1)}
+            span = {f: max(abs(vals[j]) for _x, _e, vals in pts)
+                    for f, j in (("u_star", 0), ("v_star", 1), ("p_star", 2))}
+            for xi, eta, vals in pts:
+                cell = lat["table"].get((p0[round(xi, 9)], p1[round(eta, 9)]))
+                if cell is None:
+                    continue
+                n_cmp += 1
+                for f, got, want in zip(("u_star", "v_star", "p_star"), cell, vals):
+                    out[f] = max(out[f], abs(got - want) / span[f])
+        return out, n_cmp
+
+    worst, n_cmp = errors()
+    ck.add("staged.twelve_digits_survive_the_six_digit_printer",
+           n_cmp > 500 and all(v <= 1.0e-12 for v in worst.values()),
+           dict(worst, n_compared=n_cmp, plans={f: plans[f] for f in worst}),
+           "<= 1e-12 of each field's own magnitude, position-matched against the analytic "
+           "values the fixture wrote")
+    src = kg.load_lattice(root, case_id, level, names[0], "h")["truth_source"]
+    ck.add("staged.reader_says_which_reference_it_read", "staged companion" in src, src)
+
+    for nm in names:                                     # same fixture, no companion
+        (d / f"{case_id}_{level}_samples_{nm}_h{gc.STAGED_SUFFIX}.csv").unlink()
+    printed, n2 = errors()
+    ck.add("staged.without_the_companion_the_floor_is_the_printer",
+           n2 > 500 and all(1.0e-8 < v < 1.0e-5 for v in printed.values()), printed,
+           "5e-7 of scale is six significant digits: this is the reference the old K0 ran on")
+    ck.add("staged.the_companion_is_what_moved_the_number",
+           all(printed[f] / max(worst[f], 1.0e-16) > 1.0e3 for f in printed),
+           {f: "%.1e" % (printed[f] / max(worst[f], 1.0e-16)) for f in printed},
+           "same fixture, same reader, only the companion added or removed")
+
+    old = kg.REQUIRE_STAGED_TRUTH
+    try:
+        kg.REQUIRE_STAGED_TRUTH = True
+        raised = ""
+        try:
+            kg.load_lattice(root, case_id, level, names[0], "h")
+        except FileNotFoundError as exc:
+            raised = str(exc)
+        ck.add("staged.control_missing_companion_refuses_a_K0b_run",
+               "6-digit" in raised, raised[:150],
+               "companions gone and the flag on: reading this as K0b is refused, not warned")
+        hdr, srows = companions[names[1]]
+        art.write_csv(d / f"{case_id}_{level}_samples_{names[1]}_h{gc.STAGED_SUFFIX}.csv",
+                      hdr, srows[:-1])
+        raised = ""
+        try:
+            kg.load_lattice(root, case_id, level, names[1], "h")
+        except ValueError as exc:
+            raised = str(exc)
+        ck.add("staged.control_row_order_pairing_bites", "row" in raised.lower(), raised[:150],
+               "one row short: the pairing is by order, so a truncated companion must halt "
+               "rather than shift every value by one grid point")
+        # a too-fine first lattice: |field| reaches ~15 while N=8 budgets 1e-2
+        bad = {f: [8, 13, 0] for f in gc.STAGED_FIELDS}
+        bad_path = d / f"{case_id}_{level}_samples_{names[0]}_h{gc.STAGED_SUFFIX}.csv"
+        art.write_csv(bad_path, gc.staged_header(bad),
+                      [staged_cols((q[2], q[3], q[4]), bad) for q in pts_by_grid[names[0]]])
+        raised = ""
+        try:
+            kg.staged_rows(bad_path, bad)
+        except ValueError as exc:
+            raised = str(exc)
+        ck.add("staged.control_an_underbudget_plan_is_refused",
+               "budget" in raised and "Re-plan" in raised, raised[:170],
+               "a chunk whose numerator outgrew six digits is still a multiple of 1e-N, so the "
+               "magnitude bound is the only thing that can see the truncation (the T6 lesson)")
+    finally:
+        kg.REQUIRE_STAGED_TRUTH = old
+
+
 def module_hygiene_checks(ck: Check) -> None:
     """Defect 5's second face: `--selfcheck-raw` also used `json` without importing it.
 
@@ -2011,6 +2173,7 @@ def main() -> int:
     k0_referee_checks(ck)
     k0_chain_contract_checks(ck)
     ns_unit_wiring_checks(ck)
+    staged_truth_checks(ck, TGeometry(case_by_id("TB-base")), tmp_root)
     real_artefact_checks(ck)
     impedance_checks(ck, summaries, tmp_root)
 
