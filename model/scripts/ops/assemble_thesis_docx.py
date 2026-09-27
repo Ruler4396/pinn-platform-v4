@@ -142,6 +142,13 @@ def note_inserts(doc, auto_ids):
 TABLE_WORDS = ("说明列", "新增行", "表注", "表题", "列名", "行名", "增设", "逐行填实", "改为")
 
 
+def is_caption(text: str) -> bool:
+    """唯一的题注判据（统括官 12:4x 指出我此前有两把尺：粗判"以号开头"会把"图5-15中，…""表5-8显示，…"
+    这类正文句误归为题注 ⇒ 既造出假告警，又会在反向放行真删）。题注 = 以号开头 **且** 无句末标点 **且** 短。"""
+    s = text.strip()
+    return bool(re.match(r"^(表|图)\s*\d", s)) and "。" not in s and len(s) < 60
+
+
 def is_body_prose(new: str) -> bool:
     """载荷得是一句正文，不能是"给表格加列/加行/写表注"那类指令性内容。"""
     return not any(k in new[:24] for k in TABLE_WORDS) and not new.startswith("表注")
@@ -385,7 +392,7 @@ def e_block(doc, auto):
         t = norm(tag)
         # 题注段自己不算引用：只数"不以该号开头"的段落，删完才不会留下没人引用的孤图
         others = sum(x.count(t) for i, x in enumerate(body_norm)
-                     if i != hits4[0] and not body[i].strip().startswith(tag.replace(" ", "")))
+                     if i != hits4[0] and not is_caption(body[i]))          # 共用同一把题注判据
         if others == 0:
             orphans.append(tag)
     if orphans:
@@ -594,6 +601,67 @@ def update_t57(copy_path):
     return len(t2.rows)
 
 
+TRANSITION_517 = "图 5-17 展示了按上一节绝对耗时换算得到的相对加速倍数。"
+# 统括官 9/27 12:4x 授权的四条约束：同块同进同退／不得引入新数字或新比较对象／强度评价词全禁／
+# 句式只准"图 5-17 展示 <已核对象>"。旧句里的"十分显著"与被换掉的四个旧倍数一起在此消失，图号仍在。
+FORBID_IN_TRANSITION = ("十分", "显著", "大幅", "明显", "优异", "领先", "远远", "4.34", "1.98", "30.44", "9.01")
+# 注：不锁"倍"字——图 5-17 的本名就叫"PINN相对CFD的加速倍数对比图"，锁了会把图名本身判违规（我先就栽在这儿）
+
+
+def pair57(copy_path):
+    """5.7 成对块：E2 换数 → E3 插 K* 段 → E4 的结论句改成受约束的过渡句（图5-17 引用保住）。"""
+    from docx import Document
+    doc = Document(str(copy_path))
+    body = paras(doc)
+    bn = [norm(x) for x in body]
+    if any(k in TRANSITION_517 for k in FORBID_IN_TRANSITION) or re.search(r"\d", TRANSITION_517[TRANSITION_517.find("展示") if "展示" in TRANSITION_517 else 0:]):
+        print(f"[INVALID] 过渡句含被禁强度词/旧倍数/任何数字（{TRANSITION_517}）⇒ 不推")
+        return 0
+    rows = {r["id"]: r for r in rows_iter()}
+    i2 = next((i for i, x in enumerate(bn) if norm("0.111") in x and norm("0.394") in x), None)
+    i4 = next((i for i, x in enumerate(bn) if norm("十分显著") in x), None)
+    if i2 is None or i4 is None:
+        print(f"[pair57] 锚点缺失：E2 段 {i2}、E4 段 {i4} ⇒ 整块不推")
+        return 0
+    new2, new3 = payload(rows["E2"]["new"]), payload(rows["E3"]["new"])
+    for lo, hi in ((i2, i4), (i4, i2)):
+        pass
+    p2, p4 = doc.paragraphs[i2], doc.paragraphs[i4]
+    p2.runs[0].text = new2
+    for r in p2.runs[1:]:
+        r.text = ""
+    p4.runs[0].text = TRANSITION_517
+    for r in p4.runs[1:]:
+        r.text = ""
+    insert_after(p2, new3)                                   # E3 紧跟 E2
+    doc.save(str(copy_path))
+    aft = Document(str(copy_path))
+    ap = paras(aft)
+    ref517 = sum(1 for x in ap if "图5-17" in x.replace(" ", "") and not is_caption(x))
+    print(f"[pair57] 三处同进同退完成：E2→段{i2} 换数、E3 插在其后、E4→段{i4} 改为受约束过渡句；"
+          f"段落 {len(body)}→{len(ap)}；图5-17 正文引用数（排除题注）= {ref517}（应 ≥1）")
+    return 1 if ref517 >= 1 else 0
+
+
+def rows_iter():
+    return rows()
+
+
+def selfcheck_caption():
+    """两条夹具（统括官 12:4x 要求）：真正文句必须算正文、真题注必须算题注。任一不满足 ⇒ 尺不可信。"""
+    prose = ["图5-15中，弯道转角附近的速度高值区域与参考真值基本一致。",
+             "表5-8显示，阶段内残差惩罚项对速度场最终误差影响较小。",
+             "若将绝对耗时换算为图5-17中的加速倍数可以发现，收缩流道实现了 6.04 倍。"]
+    caps = ["图5-16  PINN与CFD在同一环境下的中位耗时对比图",
+            "表5-8  阶段内残差惩罚项对模型最终性能的影响"]
+    bad = [x for x in prose if is_caption(x)] + [x for x in caps if not is_caption(x)]
+    print(f"[题注夹具] 正文句 {len(prose)} 条、题注 {len(caps)} 条 ⇒ 判错 {len(bad)} 条"
+          + ("（**尺不可信，先修尺再谈装配**）" if bad else "，全对 ✓"))
+    for x in bad:
+        print("   判错：", x[:60])
+    return 1 if bad else 0
+
+
 def main() -> int:
     for s in (sys.stdout, sys.stderr):
         try:
@@ -607,6 +675,7 @@ def main() -> int:
     g.add_argument("--verify", type=pathlib.Path)
     g.add_argument("--tables", type=pathlib.Path, help="在给定副本上插三张新表（表4-4b/5-9/5-10）")
     g.add_argument("--t57", type=pathlib.Path, help="在给定副本上改表 5-7：加「模型批次」列 + 追加 B-test-2 行（数字现取）")
+    g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
     ap.add_argument("--expect-changed", type=int, default=None,
                     help="--apply 用：期望被改段落数，不接等即 INVALID（闸三）")
     args = ap.parse_args()
@@ -620,6 +689,12 @@ def main() -> int:
             print(f"[INVALID] 副本不存在：{args.t57}", file=sys.stderr)
             return 2
         return 0 if update_t57(args.t57) >= 5 else 1
+
+    if args.pair57:
+        if not args.pair57.exists():
+            print(f"[INVALID] 副本不存在：{args.pair57}", file=sys.stderr)
+            return 2
+        return 0 if pair57(args.pair57) else 1
 
     if args.tables:
         if not args.tables.exists():
