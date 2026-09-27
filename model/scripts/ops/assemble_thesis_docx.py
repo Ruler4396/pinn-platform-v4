@@ -522,6 +522,27 @@ def md_block(md_text: str, title_marker: str):
     return header, rows
 
 
+def table_sources():
+    """每张新表逐行的来源（件 + 行号）。统括官 15:0x 裁定：**来源列不进论文表**（仓内路径不可出版），
+    改由对照表与回复稿承载 ⇒ 这里只有一份声明源，脚本与对照表都读它，不许两处各写一遍。"""
+    md = WORK.read_text(encoding="utf-8")
+    out = {}
+    for name, spec in NEW_TABLES.items():
+        header, rows = spec.get("header"), spec.get("rows")
+        if spec.get("from_markdown"):
+            header, rows = md_block(md, spec["from_markdown"])
+        srcs = spec.get("sources") or []
+        if spec.get("sources_md"):
+            def pick(cell):
+                for k, v in spec["sources_md"].items():
+                    if k in cell:
+                        return v
+                return "需人工（该行来源未登记）"
+            srcs = [pick(r[0]) for r in rows]
+        out[name] = [(rows[i][0], srcs[i] if i < len(srcs) else "需人工（该行来源未登记）") for i in range(len(rows))]
+    return out
+
+
 def insert_tables(copy_path):
     """③ 新建表框：表 4-4b / 5-9 / 5-10。逐张插到锚点后，并回读结构差。"""
     from docx import Document
@@ -538,17 +559,6 @@ def insert_tables(copy_path):
             if not header:
                 print(f"   [跳过 {name}] 工单里找不到该 markdown 块")
                 continue
-        srcs = spec.get("sources") or []
-        if spec.get("sources_md"):
-            def pick(cell):
-                for k, v in spec["sources_md"].items():
-                    if k in cell:
-                        return v
-                return "需人工（该行来源未登记）"
-            srcs = [pick(r[0]) for r in rows]
-        if srcs:
-            header = header + ["来源件 + 行号"]
-            rows = [r + [s] for r, s in zip(rows, srcs)]
         width = len(header)
         rows = [r + [""] * (width - len(r)) for r in rows]
         kind, key = spec["anchor"]
@@ -662,7 +672,30 @@ def update_t57(copy_path):
     t2 = next(t for t in after.tables if t.rows[0].cells[0].text.strip() == "工况"
               and len(t.columns) == 7)
     print(f"[t57] 表 5-7 现 {len(t2.rows)} 行 × {len(t2.columns)} 列（改前 4×6）")
+    add_t57_note(doc)
     return len(t2.rows)
+
+
+T57_NOTE = "表内数值由 metrics_test.json 的原始未取整值四舍五入到 6 位。"
+
+
+def add_t57_note(doc):
+    """统括官 15:0x 裁定②：拿展示值反推派生数今天已经算出过一次假错（加速比 30.83 vs 30.7237）
+    ⇒ 一句表注堵掉下一次。紧跟表块之后，已有就不重复插（幂等）。"""
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+    if any(T57_NOTE in p.text for p in doc.paragraphs):
+        print("   [表注] 表 5-7 的取整注已在 ⇒ 不重复插")
+        return
+    t2 = next((t for t in doc.tables if len(t.columns) >= 6 and "观测条件" in t.rows[0].cells[2].text
+               and any("B-test-2" in c.text for c in t.rows[-1].cells)), None)
+    if t2 is None:
+        print("   [表注] 没定位到表 5-7 的表块 ⇒ 不猜位置，交人工")
+        return
+    el = t2._tbl.makeelement(qn("w:p"), {})
+    t2._tbl.addnext(el)
+    Paragraph(el, t2._parent).add_run(T57_NOTE)
+    print(f"   [表注] 已插在表 5-7 之后：{T57_NOTE}")
 
 
 TRANSITION_517 = "图 5-17 展示了按上一节绝对耗时换算得到的相对加速倍数。"
@@ -1035,6 +1068,25 @@ def cells_op(copy_path):
     return done
 
 
+def selfcheck_guards():
+    """两条**豁免夹具**（统括官 15:0x：判得对，不许放开限制；改的是判据粒度，并把两次误拦做成夹具）。
+    这两条防的是"尺太粗把自己拦死"，与 selfcheck_caption() 防的"尺太粗把正文误判成题注"成对。"""
+    bad = []
+    if any(w in TRANSITION_517 for w in FORBID_IN_TRANSITION):
+        bad.append(f"TRANSITION_517 被强度词黑名单拦了（图名本身含'倍' ⇒ 黑名单不许锁单字）：{TRANSITION_517}")
+    if re.search(r"\d", re.sub(r"图\s*5-17", "", TRANSITION_517.replace("图 5-17", "图5-17"))):
+        bad.append("TRANSITION_517 剔掉图号后仍有数字 ⇒ 号位豁免失效")
+    r14 = re.sub(re.escape("图5-14"), "", FIG514_POINTER.replace(" ", ""))
+    if re.search(r"\d", r14.replace("Rel-L2", "").replace("L2", "")):
+        bad.append(f"FIG514_POINTER 剔号与指标名后仍有数字：{r14}")
+    if "（启用）" not in CELL_OPS["A16"][2] or CELL_OPS["A16"][2] not in CELL_OPS["A16"][2]:
+        bad.append("CELL_OPS 的'新标签必含旧标签'断言被绕开")
+    print(f"[豁免夹具] 4 条（倍字界／两处号位豁免／格标签必含旧标签）⇒ " + ("全过 ✓" if not bad else f"**{len(bad)} 条失效**"))
+    for x in bad:
+        print("   失效：", x)
+    return 1 if bad else 0
+
+
 def main() -> int:
     for s in (sys.stdout, sys.stderr):
         try:
@@ -1063,14 +1115,14 @@ def main() -> int:
     from docx import Document
 
     if args.selfcheck:
-        return selfcheck_caption()
+        return selfcheck_caption() or selfcheck_guards()
     if args.verify:
-        if selfcheck_caption():                 # 同上：尺先自证，再谈终检结论
+        if selfcheck_caption() or selfcheck_guards():   # 同上：尺先自证，再谈终检结论
             return 3
         return verify(args.verify)
     if args.all:
         import subprocess
-        if selfcheck_caption():                 # 题注夹具不过 ⇒ 整条链不开跑（统括官 13:0x：不能靠每次手看）
+        if selfcheck_caption() or selfcheck_guards():   # 夹具不过 ⇒ 整条链不开跑（统括官 13:0x：不能靠每次手看）
             return 3
         st = SRC.stat()
         print(f"[原件只读] {st.st_size:,} B mtime={datetime.datetime.fromtimestamp(st.st_mtime).isoformat(timespec='seconds')} "
