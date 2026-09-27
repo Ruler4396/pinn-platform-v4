@@ -36,7 +36,7 @@ FOLD_RE = re.compile("|".join(re.escape(w) for _, a, b in TERM_OPS for w in (a, 
 # 新文本里出现这些词 ⇒ 判定为"操作指令或工单内部注"，不整段替换
 INSTR = ("删除", "统一替换为", "同步替换", "替换为", "行名", "更正", "撤回", "定档", "凭据",
          "不许", "禁写", "见 §", "若将来", "留作投稿", "前置核查", "⇒", "本工单", "区间都要带上")
-PAIR_OPS = ("E4", "E3")        # ③ 删段与插段成对：单独执行任何一个都 INVALID
+PAIR_OPS = ("E2", "E3", "E4")   # ③ 换数+插段+删句三者同进同退，见 e_block()
 
 
 def norm(s: str) -> str:
@@ -98,6 +98,11 @@ def landable(new_raw: str, old_text: str):
         return False, "", "载荷仍含操作指令或工单内部注 ⇒ 不整段替换"
     if not is_body_prose(new):
         return False, "", "载荷是给表格加列/加行/写表注那类指令，不是正文句 ⇒ 走插表/改列算子"
+    lost = sorted({x.replace(" ", "") for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", old_text)} -
+                  {x.replace(" ", "") for x in re.findall(r"[图表]\s*\d+(?:-\d+)?", new)})
+    if lost:
+        return False, "", (f"替换会丢掉 {lost} 的正文引用（原件里它是该图/表唯一的引用点时会变成孤图）"
+                           f"⇒ 先在新文本里补回图/表号再落")
     if len(new) < 0.6 * max(1, len(old_text)):
         return False, "", (f"载荷只有旧段落 {len(new) / max(1, len(old_text)):.0%}，"
                            f"是局部改写（旧 {len(old_text)} 字）⇒ 整段替换会吃内容")
@@ -255,6 +260,11 @@ def verify(copy_path):
         if rid in term_ids:
             term.append(("ROW", rid, "", 0))               # 术语行的核对在下面按残留数判，别按整段命中判
             continue
+        if rid == "E4":                                    # 成对块里的删句：判据是"旧句不在副本里了"
+            q = [norm(x) for x in re.findall(r"「(.+?)」", r["loc"]) if len(norm(x)) >= 10]
+            gone = q and not any(x and x in joined for x in q)
+            (ok if gone else miss).append((rid, "旧结论句已删除 ✓" if gone else "旧结论句仍在 ⇒ 成对块没做完"))
+            continue
         if rid in AWAITING:
             await_.append((rid, AWAITING[rid]))
             continue
@@ -316,6 +326,76 @@ def structural_diff(before, after):
     return repl, insdele, dele
 
 
+def e_block(doc, auto):
+    """5.7 效率节那一块的成对算子：E2 换数 → E3 在 E2 之后插段 → E4 删旧结论句。
+    **三者同进同退**：只删 E4 会让 5.7 失去结论句，只插 E3 会与新数并排留着旧四组数。"""
+    body = paras(doc)
+    body_norm = [norm(t) for t in body]
+    dump = [norm(l) for l in THESIS.read_text(encoding="utf-8", errors="replace").splitlines()]
+    dump_of = {}
+    for k, t in enumerate(dump):
+        if t:
+            dump_of.setdefault(t, set()).add(k + 1)
+    line_to_body = {}
+    for i, t in enumerate(body_norm):
+        for ln in dump_of.get(t, ()):
+            line_to_body.setdefault(ln, []).append(i)
+    by_id = {r["id"]: r for r in rows()}
+
+    def num_tokens(s):
+        return {t for t in re.findall(r"\d+\.\d+|\d+", s) if len(t) >= 3}
+
+    cand = []
+    r2 = by_id.get("E2")
+    if r2:
+        cited = {int(n) for n in re.findall(r":(\d{2,4})", r2["loc"])}
+        want = num_tokens(r2["loc"])
+        pool = sorted({b for ln in cited for b in line_to_body.get(ln, [])})
+        scored = [(len(want & num_tokens(body[i])), i) for i in pool]     # 旧数命中数
+        scored = sorted([(s, i) for s, i in scored if s >= 2], reverse=True)
+        if len(scored) == 1:
+            cand.append(("E2", scored[0][1], payload(r2["new"])))
+        elif len(scored) >= 2 and scored[0][0] > scored[1][0]:
+            # E2 的 :1193 与 :1195 是两个段（前者是四组旧数，后者是结论句所在）⇒ 取旧数命中更多的那一段，
+            # 另一段由 E4 删除，两块不重叠才不会把同一句既换又删
+            print(f"   [E2 择一] 命中数 {scored[:2]} ⇒ 取段 {scored[0][1]}（另一段归 E4 删）")
+            cand.append(("E2", scored[0][1], payload(r2["new"])))
+        elif scored:
+            print(f"   [E2 不唯一] 候选 {scored} ⇒ 整块不推")
+            return None
+    r3, r4 = by_id.get("E3"), by_id.get("E4")
+    if not (cand and r3 and r4):
+        return None
+    q4 = [q for q in re.findall(r"「(.+?)」", r4["loc"]) if norm(q) not in ("", "……")]
+    if not q4:
+        return None
+    frag = norm(max(q4, key=lambda x: len(norm(x))))
+    hits4 = [i for i, t in enumerate(body_norm) if frag[:40] and frag[:40] in t]
+    if len(hits4) != 1:
+        print(f"   [E4 不唯一] 旧结论句命中 {hits4} ⇒ 整块不推")
+        return None
+    new3 = payload(r3["new"])
+    if len(new3) < 80 or any(k in new3 for k in INSTR):
+        print("   [E3 载荷不合格] 太短或含工单内部注 ⇒ 整块不推")
+        return None
+    # 删段的硬闸：被删段里提到的每一个图/表号，删完之后正文里还必须至少还剩一处引用
+    doomed_text = body[hits4[0]]
+    orphans = []
+    for tag in sorted(set(re.findall(r"[图表]\s*\d+(?:-\d+)?", doomed_text))):
+        t = norm(tag)
+        # 题注段自己不算引用：只数"不以该号开头"的段落，删完才不会留下没人引用的孤图
+        others = sum(x.count(t) for i, x in enumerate(body_norm)
+                     if i != hits4[0] and not body[i].strip().startswith(tag.replace(" ", "")))
+        if others == 0:
+            orphans.append(tag)
+    if orphans:
+        print(f"   [E4 不能删] 被删段是 {orphans} 在正文里唯一的引用点 ⇒ 删完这些图/表就没人引用了。"
+              f"要么先补一句带图号的过渡句（措辞归作者/统括官），要么整块不推")
+        return None
+    return {"rewrite": cand, "insert_after": cand[0][1], "insert_text": new3, "delete": hits4[0],
+            "delete_text": body[hits4[0]]}
+
+
 def main() -> int:
     for s in (sys.stdout, sys.stderr):
         try:
@@ -346,6 +426,7 @@ def main() -> int:
     src_sha = hashlib.sha256(SRC.read_bytes()).hexdigest()
     auto, manual, await_ = classify(Document(str(SRC)))
     notes = note_inserts(Document(str(SRC)), {a[0] for a in auto})
+    eblk = e_block(Document(str(SRC)), auto)
     note_ids = {n[0] for n in notes}
     for r in rows():                                   # 表注类单独点名：载荷现成，只差一个正确的插入位置
         new = payload(r["new"])
@@ -353,12 +434,15 @@ def main() -> int:
             manual.append((r["id"], "表注文本已备好，但要落在**那张表之后**（表题在上、表在下，"
                                     "从表题段插会插到表格上面）⇒ 人工定位置，脚本不猜"))
     print(f"[plan] 可整段重写={len(auto)} 插表注={len(notes)} 术语算子={len(TERM_OPS)} "
-          f"成对删插={len(PAIR_OPS)} 待批={len(await_)} 人工={len(manual)}")
+          f"5.7 成对块={'E2+E3+E4 齐' if eblk else '不齐 ⇒ 整块不推'} 待批={len(await_)} 人工={len(manual)}")
     if args.plan:
         for rid, i, _ in auto:
             print(f"   [自动] {rid} → 段 {i}")
         for rid, i, _ in notes:
             print(f"   [插表注] {rid} → 段 {i} 之后")
+        if eblk:
+            print(f"   [5.7 成对块] E2 换数→段 {eblk['rewrite'][0][1]}；E3 插在其后；E4 删段 {eblk['delete']}"
+                  f"（被删原文：{eblk['delete_text'][:40]}…）")
         for rid, why in manual:
             if rid in note_ids:
                 continue                              # 已由插段算子接手，不重复挂"人工"标签
@@ -375,16 +459,37 @@ def main() -> int:
     n_term = fix_terms(doc)
     for rid, i, text in sorted(notes, key=lambda x: -x[1]):     # 倒序插，先面的锚点下标才不被位移
         insert_after(doc.paragraphs[i], text)
+    n_del = 0
+    if eblk:
+        # 锚点下标是在**原件**上算的；前面每次插表注都会让后面的下标 +1 ⇒ 先补位移再动手
+        shift = sum(1 for _, i, _ in notes if i < min(eblk["rewrite"][0][1], eblk["delete"]))
+        ei = eblk["rewrite"][0][1] + shift
+        erid, _, etext = eblk["rewrite"][0]
+        p2 = doc.paragraphs[ei]
+        p2.runs[0].text = etext
+        for r in p2.runs[1:]:
+            r.text = ""
+        insert_after(doc.paragraphs[ei], eblk["insert_text"])        # E3 紧跟 E2
+        d_idx = eblk["delete"] + shift + (1 if eblk["delete"] > eblk["rewrite"][0][1] else 0)
+        doomed = doc.paragraphs[d_idx]
+        doomed._element.getparent().remove(doomed._element)          # E4 删除，原文留证
+        n_del = 1
     doc.save(str(dst))
     b1 = paras(Document(str(dst)))
     repl, ins, dele = structural_diff([norm(t) for t in b0], [norm(t) for t in b1])
-    if ins != len(notes) or dele or repl < len(auto):
-        print(f"[INVALID] 结构核对不过：改写 {repl}（应≥{len(auto)}）、插入 {ins}（应={len(notes)}）、删除 {dele}（应 0）",
-              file=sys.stderr)
+    want_repl = len(auto) + (1 if eblk else 0)
+    want_ins = len(notes) + (1 if eblk else 0)
+    if ins != want_ins or dele != n_del or repl < want_repl:
+        print(f"[INVALID] 结构核对不过：改写 {repl}（应≥{want_repl}）、插入 {ins}（应={want_ins}）、"
+              f"删除 {dele}（应={n_del}）", file=sys.stderr)
         return 1
     if args.expect_changed is not None and repl != args.expect_changed:
         print(f"[INVALID] 被改段数 {repl} ≠ 期望 {args.expect_changed}", file=sys.stderr)
         return 1
+    if eblk:
+        drop = dst.parent / f"被删原文-{dst.stem}.txt"
+        drop.write_text(eblk["delete_text"] + "\n", encoding="utf-8")
+        print(f"[留证] E4 被删的原文写入 {drop}")
     print(f"[apply] 副本={dst} ({dst.stat().st_size:,} B) 段落 {len(b0)}→{len(b1)} "
           f"改写={repl} 插入={ins} 删除={dele} 术语命中={n_term}")
     print(f"[回读] 原件 sha256 未变={hashlib.sha256(SRC.read_bytes()).hexdigest() == src_sha}")
