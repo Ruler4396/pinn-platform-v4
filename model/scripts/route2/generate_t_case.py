@@ -12,7 +12,10 @@ tracked and re-hashable):
     <root>/data/<case>/field_dense.csv                  post-processed truth (finest level)
     <root>/data/<case>/mesh_independence.json          the <10% gate verdict
     <root>/data/<case>/s1_plan.json                    geometry, levels, quantities
-    <root>/data/<case>/sha256sums.json                 manifest + ENV_LOCK
+    <root>/data/<case>/env-probe.json                  solver/interpreter provenance, including the
+                                                       FreeFEM start-up wall second (volatile by design)
+    <root>/data/<case>/sha256sums.json                 content_sha256 over every artefact byte except
+                                                       itself and env-probe.json + files_digest
 
 Only stdlib is imported, so `--dry-run` renders every .edp and the whole plan on a
 machine without numpy/torch (this laptop).  Residual self-scoring on those grids is
@@ -1104,14 +1107,22 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
         })
         plan["mesh_independence"] = {"relative": gate, "absolute": abs_gate}
     _t3 = time.perf_counter()
+    # 定档丙: the start-up probe carries a wall-clock second, so it gets its own file and stays out of
+    # the hashed set.  This is the same information the old manifest carried under "env", relocated.
+    art.write_json(data_dir / "env-probe.json",
+                   {"case": case.to_metadata(), "env": art.env_lock(freefem_probe())})
+    # 定档乙: every byte the manifest will hash is final before the manifest is built, and the manifest
+    # is the last thing written.  The old order wrote the plan, hashed everything, then rewrote the plan
+    # -- so once 甲 put the plan into the list, the list carried a hash of bytes already replaced.
+    # (Getting this order wrong is what the determinism control caught: with the build above the plan
+    # write, the manifest hashed a stale s1_plan.json and the digest moved between two identical runs.)
     plan["timing_s"] = {k: round(v, 2) for k, v in timing.items()}
     plan["total_solve_wall_s"] = round(timing["solve_s"], 2)
     art.write_json(data_dir / "s1_plan.json", plan)
-    plan["manifest_files"] = len(_manifest(out_root, case, data_dir)["files"])
-    art.write_json(data_dir / "sha256sums.json", _manifest(out_root, case, data_dir))
-    timing["manifest_s"] += time.perf_counter() - _t3
-    plan["timing_s"] = {k: round(v, 2) for k, v in timing.items()}
-    art.write_json(data_dir / "s1_plan.json", plan)
+    man = _manifest(out_root, case, data_dir / "sha256sums.json", data_dir / "env-probe.json")
+    timing["manifest_s"] += time.perf_counter() - _t3     # env-probe + build; the write below is outside
+    art.write_json(data_dir / "sha256sums.json", man)
+    print(f"manifest n_files={man['n_files']} files_digest={man['files_digest'][:16]}")
     print("timing_s=" + ", ".join(f"{k}:{v}" for k, v in plan["timing_s"].items()))
     print("per-level FEM sample points (each costs 3 u/v/p lookups)="
           + ", ".join(f"{e['level']}:{e['n_fem_point_evaluations']['total']}"
@@ -1183,12 +1194,31 @@ def freefem_probe() -> dict:
     return dict(_FF_PROBE)
 
 
-def _manifest(out_root: Path, case: tg.TCase, skip_dir: Path) -> dict:
-    paths = [p for p in out_root.rglob("*") if p.is_file() and skip_dir not in p.parents]
-    env: dict = freefem_probe()
+def _manifest(out_root: Path, case: tg.TCase, manifest_path: Path,
+              env_probe_path: Path) -> dict:
+    """content_sha256 over every artefact byte, plus a canonical digest of that map.
+
+    Two files are excluded BY NAME, not by directory (定档甲): the manifest itself, which cannot hold
+    its own hash, and env-probe.json.  The previous version excluded the whole `data/<case>/` directory,
+    which is precisely why #39 found the verdict JSONs, the dense field and the plan missing from the
+    list that everyone assumed covered them.
+
+    env-probe.json is split out (定档丙) because freefem_probe() writes a wall-clock second into it, so
+    a manifest containing it differs between two identical runs -- and this manifest is the reproduction
+    anchor behind the public "truth is recomputable bit for bit" claim (#42).  The digest is computed
+    over sorted `path:sha` lines so a comparison is one string equality, not a diff of JSON layout.
+    """
+    skip = {manifest_path.resolve(), env_probe_path.resolve()}
+    paths = [p for p in out_root.rglob("*") if p.is_file() and p.resolve() not in skip]
+    files = {str(p).replace("\\", "/"): art.sha256_file(p) for p in sorted(paths)}
+    canonical = "\n".join(f"{key}:{value}" for key, value in sorted(files.items()))
     return {"case": case.to_metadata(),
-            "env": art.env_lock(env),
-            "files": {str(p).replace("\\", "/"): art.sha256_file(p) for p in sorted(paths)}}
+            "n_files": len(files),
+            "files": files,
+            "files_digest": art.sha256_text(canonical),
+            "digest_over": "sha256 of sorted 'path:content_sha256' lines joined by LF",
+            "excluded_by_name": [str(manifest_path).replace("\\", "/"),
+                                  str(env_probe_path).replace("\\", "/")]}
 
 
 def main() -> int:

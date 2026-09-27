@@ -34,6 +34,7 @@ import t_geometry as tg                                     # noqa: E402
 from t_geometry import (GEOMETRY_FEATURES, STEM, UP, DOWN, TCase, TGeometry,  # noqa: E402
                         border_counts, case_by_id, mesh_levels)
 
+import shutil                                      # noqa: E402
 import tempfile                                    # noqa: E402
 _IS_WINDOWS = tempfile.gettempdir().startswith(("C:", "D:"))
 # a hard-coded Windows default produced a junk file named with backslashes when the same
@@ -1245,6 +1246,14 @@ def runtime_path_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
     import generate_t_case as gc
 
     out_root = tmp / "s1_runtime_subset_h1_h2"      # subset name: never a full-run name
+    # This scratch tree survives between suite runs.  A leftover s1_plan.json from an older shape was
+    # being hashed as though this run had produced it -- which is precisely how the #39 write-order
+    # defect slipped past an otherwise green pipeline.  Start from empty, and assert that it is empty
+    # rather than trusting the rmtree (a gate that cannot fail here cannot catch the next one).
+    if out_root.exists():
+        shutil.rmtree(out_root)
+    ck.add("runtime.runtime_scratch_started_empty", not any(out_root.rglob("*")),
+           len(list(out_root.rglob("*"))), "no artefact may enter the manifest that this run did not write")
     levels = [lv for lv in mesh_levels(0.16) if lv["name"] in ("h1", "h2")]
     real_exec, real_run = gc.freefem_executable, gc.subprocess.run
     gc.freefem_executable = lambda: sys.executable
@@ -1326,18 +1335,76 @@ def runtime_path_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
             "excluded_xi": {b: v["excluded_xi"]
                             for b, v in q1.get("flux_per_branch", {}).items()}},
            "junction stations excluded from the gate, still reported per branch")
-    ck.add("runtime.artefacts_landed_where_the_manifest_hashes_them",
-           (out_root / "data" / geom.case.case_id / "field_dense.csv").is_file()
-           and (out_root / "data" / geom.case.case_id / "mesh_independence.json").is_file()
-           and plan.get("manifest_files", 0) >= 24,
-           plan.get("manifest_files"), ">=24 files hashed")
-    man = art.read_json(out_root / "data" / geom.case.case_id / "sha256sums.json")
-    ck.add("runtime.manifest_carries_the_freefem_startup_probe",
-           man.get("env", {}).get("freefem_version") == "4.9-fake"
-           and isinstance(man.get("env", {}).get("freefem_version_probe_wall_s"), float),
-           {k: man.get("env", {}).get(k) for k in ("freefem_version",
-                                                   "freefem_version_probe_wall_s")},
-           "the column that answers 'was the 497 s process start-up' is populated")
+
+    # ---- #39 定档（甲/乙/丙）: the manifest must be judged by WHICH files it names, not by how many.
+    #
+    # The predicate this replaces promised "artefacts landed where the manifest hashes them" and tested
+    # two `is_file()` calls plus `manifest_files >= 24`.  Twenty-four was reached while the verdict JSON,
+    # the dense field and the plan were all OUTSIDE the list, because the exclusion was a directory.
+    # A count cannot see that; a key set can.
+    data_dir = out_root / "data" / geom.case.case_id
+    man = art.read_json(data_dir / "sha256sums.json")
+    hashed = set(man.get("files", {}))
+    required = {str(data_dir / n).replace("\\", "/")
+                for n in ("field_dense.csv", "mesh_independence.json", "s1_plan.json")}
+    ck.add("runtime.manifest_keys_include_the_three_verdict_artefacts",
+           required <= hashed, {"missing": sorted(required - hashed), "n_files": man.get("n_files")},
+           "these three names are among the manifest keys -- no '>=N' anywhere")
+    # 必红 (mutation 甲): feed the OLD exclusion to the predicate itself, not to a scanner that can
+    # print a reassuring number.  The excluded-by-directory shape must drop exactly those three.
+    old_shape = {str(p).replace("\\", "/") for p in out_root.rglob("*")
+                 if p.is_file() and data_dir not in p.parents}
+    ck.add("runtime.MUST_RED_old_directory-exclusion_shape_fails_that_predicate",
+           (required - old_shape) == required and not (required & old_shape),
+           {"still_hashed_under_old_rule": sorted(required & old_shape),
+            "dropped_under_old_rule": len(required - old_shape)},
+           "if the exclusion ever goes back to a directory, this is the red that says why")
+
+    # 定档丙: the FreeFEM start-up probe writes a wall-clock second (freefem_probe()), so it now lands
+    # in env-probe.json and is excluded BY NAME from the hashed set.  Two identical runs then share one
+    # files_digest, which is what makes the manifest usable as a reproduction anchor -- the public
+    # "truth recomputes bit for bit" claim is exactly such a manifest.
+    probe = art.read_json(data_dir / "env-probe.json")
+    penv = probe.get("env", {})
+    env_key = str(data_dir / "env-probe.json").replace("\\", "/")
+    sha_env_first = art.sha256_file(data_dir / "env-probe.json")
+    ck.add("runtime.env_probe_still_populated_but_off_the_hashed_ledger",
+           penv.get("freefem_version") == "4.9-fake"
+           and isinstance(penv.get("freefem_version_probe_wall_s"), float)
+           and env_key not in hashed and "env" not in man,
+           {"freefem_version": penv.get("freefem_version"),
+            "probe_wall_s": penv.get("freefem_version_probe_wall_s"),
+            "env_key_in_files": env_key in hashed, "manifest_still_has_env_key": "env" in man},
+           "the column that answers 'was the 497 s process start-up' is populated, just not in files")
+    moved = dict(penv)
+    moved["freefem_version_probe_wall_s"] = 999.999          # pretend a second run, slower box
+    art.write_json(data_dir / "env-probe.json", {"case": probe.get("case"), "env": moved})
+    man2 = gc._manifest(out_root, geom.case, data_dir / "sha256sums.json",
+                        data_dir / "env-probe.json")
+    # Report WHICH entries moved, by file name -- "31 files" is not an answer to "why did it change?".
+    # The same three lists are what the instance leg has to print for the two-run acceptance.
+    k1, k2 = set(man["files"]), set(man2["files"])
+    moved_files = {"added": sorted(k2 - k1), "removed": sorted(k1 - k2),
+                   "content_changed": sorted(k for k in k1 & k2
+                                             if man["files"][k] != man2["files"][k])}
+    ck.add("runtime.files_digest_survives_a_moved_wall_clock",
+           man2["files_digest"] == man["files_digest"], moved_files,
+           "one string equality decides it -- no JSON-layout diff, no eyeballed count")
+
+    def _digest_over(files: dict) -> str:
+        return art.sha256_text("\n".join(f"{k}:{v}" for k, v in sorted(files.items())))
+
+    # 必红 (mutation 丙): undo the split -- put the volatile block back into the comparable block and
+    # the SAME two readings must now disagree.  This fixture is what bites "fixed it, fixed it wrong".
+    ck.add("runtime.MUST_RED_unsplitting_the_volatile_block_reddens_the_two_runs",
+           _digest_over({**man["files"], env_key: sha_env_first})
+           != _digest_over({**man2["files"], env_key: art.sha256_file(data_dir / "env-probe.json")}),
+           {"digest_with_env_back_in": [_digest_over({**man["files"], env_key: sha_env_first})[:12],
+                                        _digest_over({**man2["files"],
+                                                      env_key: art.sha256_file(
+                                                          data_dir / "env-probe.json")})[:12]],
+            "digest_as_shipped": man2["files_digest"][:12]},
+           "if anyone folds the probe back into files, run-to-run identity breaks right here")
 
 
 def _find_tracked(name: str, *relatives: Path) -> Path:
