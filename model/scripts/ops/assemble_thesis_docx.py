@@ -412,12 +412,24 @@ NEW_TABLES = {
                  ["出口压力损失权重 outlet_pressure_weight", "0.0", "同上"],
                  ["压降损失权重 pressure_drop_weight", "0.0", "同上"],
                  ["壁面损失权重 wall_weight", "0.0", "同上"]],
+        "sources": ["config.json `run_strict_sparse_experiments.sh` 批次；工单 F1 行",
+                    "同上（`outlet_pressure_weight`）", "同上（`pressure_drop_weight`）", "同上（`wall_weight`）"],
         "note": ("适用范围声明：表 4-4 与表 4-4b 分属两批训练，其权重不可互相代入；"
                  "表 4-4b 的四项为整批共同配置，不是双模型与单网络之间的差异项。"),
     },
     "表5-9": {
         "anchor": ("before-para", "5.8 PDE约束与双模型耦合作用分析"),
         "caption": "表5-9  PINN 与 CFD 的单次成本、训练入账与盈亏平衡工况数（混合口径）",
+        "sources_md": {           # 表 5-9 每一行的来源（行号取自当前工单/读数，写前先核件在不在）
+            "CFD 单工况": "docs/benchmarks/pinn_vs_cfd_speed_benchmark_20260420.md:14-17（旧主机 `iZ7xv…`，`metadata.cfd_runs=3`）",
+            "PINN 单工况推理": "同上 md:14-15（`metadata.pinn_runs=7`）",
+            "PINN 稀疏观测在线重建": "同上 md:15（同上）",
+            "PINN 一次训练": "docs/revision/T5矩阵配对读数-20260925.md 表下注 + `T5矩阵run坐标索引-20260926.psv` 的 wall_ms 列",
+            "盈亏平衡": "本表按 K 星=⌈B/(A−C)⌉ 现算（工单 §12 第 3 条规则）",
+            "K→∞ 渐近加速比": "benchmark JSON `comparison` 原值 6.042225/2.193853/30.723651/9.335324",
+            "臂 A": "docs/revision/SWEEP_DRYRUN.md:339 与 368（五粒中位与区间）",
+            "臂 B": "docs/revision/SWEEP_DRYRUN.md:339（区间 120.9–212.9 s ⇒ 只引区间）",
+            "评估单价": "`T5矩阵run坐标索引-20260926.psv` 的 eval 行（1.533 s）"},
         "from_markdown": "**表 5-9（",   # 必须钉到标题行：只写"表 5-9"会先命中 §0 里提到这四个字的那一行
         "note": ("本表 A、C 两列取自 2026-04-20 旧主机（`iZ7xv19l7qsogyq3hzyhydZ`）的一次计时，"
                  "B 列取自本轮 8 核实例的五种子实测中位 ⇒ A、C 与 B 不同机、不同次，为混合口径；"
@@ -433,6 +445,10 @@ NEW_TABLES = {
                  ["臂C POD+观测点最小二乘", "—（本次只跑收缩族）",
                   "C-val 0.828487；C-test-1 0.531695；C-test-2 0.611451", "单次读数",
                   "零训练；阶数由 99.97% 能量判据算出（r=1），非人工挑选；敏感性检验未做"]],
+        "sources": ["工单 B5/D2 行；`T5矩阵test口径读数-20260926.md:79` 与 §四B 配对表 :85-88",
+                    "同上 :78-79；臂A 机时 `SWEEP_DRYRUN.md:339`",
+                    "同上 :79；臂B 账本整列 NA ⇒ 只能取 analyze（§11.5）",
+                    "E0 一手产物 `dsw-2213486:…/pod_baseline_contraction_a0d1375.json`（2,948 B、`da0dba2fef66318c`）；本表三数取 09-26 同框那次，见工单 D2"],
         "note": ("① 全表 n=5，Wilcoxon 最小可达双侧 p=0.0625 ⇒ 只报符号与幅度，不写显著性；② 未做多重比较校正；"
                  "③ 臂C 为零训练、与三臂不同机时口径，其墙钟不可与本表 PINN 行直比；"
                  "④ 同一行并排的均值与配对差来自同一 obs_seed 子集；⑤ 本表只有 mean_of_cases 一个口径"
@@ -485,6 +501,17 @@ def insert_tables(copy_path):
             if not header:
                 print(f"   [跳过 {name}] 工单里找不到该 markdown 块")
                 continue
+        srcs = spec.get("sources") or []
+        if spec.get("sources_md"):
+            def pick(cell):
+                for k, v in spec["sources_md"].items():
+                    if k in cell:
+                        return v
+                return "需人工（该行来源未登记）"
+            srcs = [pick(r[0]) for r in rows]
+        if srcs:
+            header = header + ["来源件 + 行号"]
+            rows = [r + [s] for r, s in zip(rows, srcs)]
         width = len(header)
         rows = [r + [""] * (width - len(r)) for r in rows]
         kind, key = spec["anchor"]
@@ -676,6 +703,10 @@ def main() -> int:
     g.add_argument("--tables", type=pathlib.Path, help="在给定副本上插三张新表（表4-4b/5-9/5-10）")
     g.add_argument("--t57", type=pathlib.Path, help="在给定副本上改表 5-7：加「模型批次」列 + 追加 B-test-2 行（数字现取）")
     g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
+    g.add_argument("--all", action="store_true",
+                   help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（含来源列）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
+    ap.add_argument("--into", type=pathlib.Path, default=None,
+                    help="--apply 用：写进指定副本（--all 串链用），不给就新建一个时间戳文件")
     ap.add_argument("--expect-changed", type=int, default=None,
                     help="--apply 用：期望被改段落数，不接等即 INVALID（闸三）")
     args = ap.parse_args()
@@ -684,6 +715,28 @@ def main() -> int:
 
     if args.verify:
         return verify(args.verify)
+    if args.all:
+        import subprocess
+        st = SRC.stat()
+        print(f"[原件只读] {st.st_size:,} B mtime={datetime.datetime.fromtimestamp(st.st_mtime).isoformat(timespec='seconds')} "
+              f"sha256={hashlib.sha256(SRC.read_bytes()).hexdigest()[:12]}")
+        dst = OUT / f"装配副本-{datetime.datetime.now():%Y%m%dT%H%M%S}.docx"
+        shutil.copy2(SRC, dst)
+        here = str(pathlib.Path(__file__).resolve())
+        for step in (["--apply-into", str(dst)], ["--tables", str(dst)], ["--t57", str(dst)], ["--pair57", str(dst)]):
+            if step[0] == "--apply-into":
+                r = subprocess.run([sys.executable, here, "--apply", "--into", str(dst)],
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace")
+            else:
+                r = subprocess.run([sys.executable, here, *step],
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace")
+            print(f"--- {step[0]} rc={r.returncode} ---")
+            print((r.stdout or "").strip()[-600:] or (r.stderr or "").strip()[-400:])
+            if r.returncode:
+                print(f"[INVALID] 链在 {step[0]} 断掉 ⇒ 交付止步，本副本标为半品")
+                return r.returncode
+        print(f"[all] 候选正本 = {dst}")
+        return 0
     if args.t57:
         if not args.t57.exists():
             print(f"[INVALID] 副本不存在：{args.t57}", file=sys.stderr)
@@ -738,8 +791,9 @@ def main() -> int:
             print(f"   [待批] {rid}: {why}")
         return 0
 
-    dst = OUT / f"装配副本-{datetime.datetime.now():%Y%m%dT%H%M%S}.docx"
-    shutil.copy2(SRC, dst)
+    dst = args.into or (OUT / f"装配副本-{datetime.datetime.now():%Y%m%dT%H%M%S}.docx")
+    if not dst.exists():
+        shutil.copy2(SRC, dst)
     doc = Document(str(dst))
     b0 = paras(doc)
     apply_rewrite(doc, auto)
