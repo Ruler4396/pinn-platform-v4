@@ -546,6 +546,58 @@ def value_prov_report() -> int:
     return 0 if (must_pass and must_fail) else 1
 
 
+def value_prov_boundary():
+    """**核对边界（统括官 21:0x 第⑥件：做半可以，但边界要写死）** ⇒ ⇒ 返回
+    `(已核表清单, 未核表清单, 每档碰撞地板)`。**已核**＝该表**每一枚**读数都是"位数 d 满足 A 级地板 ≤5%"
+    且**原样命中结果件/训练历史**；只要有一枚 ≤4 位或只能靠登记件背书，整张表就落进**未核**。
+    这把尺只回答"能不能主张"，不回答"数对不对"——**建了闸 ≠ 全表已校**，所以两清单都必须印出来。"""
+    from docx import Document
+    p = candidate()
+    if p is None:
+        return None
+    idx, nf = artifact_values()
+    hist, nh = history_values()
+    import random
+    rnd = random.Random(20260927)
+    floor = {}
+    for d in range(2, 7):
+        probes = [f"{rnd.uniform(0.0, 1.0):.{d}f}" for _ in range(300)]
+        floor[d] = (sum(1 for q in probes if q in idx) / len(probes),
+                    sum(1 for q in probes if q in hist) / len(probes))
+    provable = {d for d in floor if floor[d][0] <= 0.05}
+    doc = Document(str(p))
+    tok = re.compile(r"\d+\.\d{2,}|\d\.\d+[eE][-+]?\d+")
+    per = {}
+    for ti, tb in enumerate(doc.tables):
+        cap = ""
+        at = list(doc.element.body).index(tb._tbl)
+        for k in range(at - 1, max(-1, at - 8), -1):
+            el = doc.element.body[k]
+            if el.tag.endswith("}p"):
+                s = "".join(x.text or "" for x in el.iter() if x.tag.endswith("}t")).strip()
+                if s:
+                    cap = s
+                    break
+        bad = []
+        n = 0
+        for ri, row in enumerate(tb.rows):
+            for ci, cell in enumerate(row.cells):
+                for m in tok.finditer(cell.text):
+                    s = m.group(0)
+                    if cell.text[m.end():m.end() + 1] in ("e", "E"):
+                        continue
+                    n += 1
+                    d = len(s.split(".")[1]) if "." in s and "e" not in s.lower() else 6
+                    hit = s in idx or (s in hist and d in provable)
+                    if not (hit and d in provable):
+                        bad.append((ri, ci, s, d))
+        per[ti] = (cap[:24], n, bad)
+    ok = [f"表序{ti}（{per[ti][0]}，{per[ti][1]} 枚全为 ≥5 位且原样命中）" for ti in per if per[ti][1] and not per[ti][2]]
+    no = [f"表序{ti}（{per[ti][0]}）：{len(per[ti][2])}/{per[ti][1]} 枚不可证" for ti in per if per[ti][2]]
+    empty = [f"表序{ti}（{per[ti][0]}）：表内无 ≥2 位小数读数" for ti in per if not per[ti][1]]
+    return ok, no, empty, floor, provable
+
+
 def cell_coords(doc=None):
     """只读：⇒ {行号: (表号, 旧格文本, [(全份表序, 行, 列), …])}。
     一把尺＝**整格文本归一后相等**（与 `--cells` 落字用的同一判据，不留第二份）。"""
@@ -2047,6 +2099,8 @@ def main() -> int:
     g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
+    g.add_argument("--prov-boundary", action="store_true",
+                    help="只读：把 39 张表分成「已可主张」与「不可主张（短位数／靠登记件背书）」两张清单")
     g.add_argument("--value-prov", action="store_true",
                     help="只读：论文表格里的每个数对一遍仓内结果件，报命中率与未命中坐标（含两发夹具）")
     g.add_argument("--cell-coords", action="store_true",
@@ -2063,6 +2117,24 @@ def main() -> int:
     import docx  # noqa: F401  ② 先确认库在，不在就别硬写
     from docx import Document
 
+    if getattr(args, "prov_boundary", None):
+        bb = value_prov_boundary()
+        if bb is None:
+            print("[未验] 候选正本指针缺失/失效 ⇒ 不出边界清单")
+            return 1
+        ok, no, empty, floor, provable = bb
+        print("[核对边界] A 级可证的位数档：" + "、".join(f"{d} 位（地板 {floor[d][0]:.0%}）" for d in sorted(provable))
+              + "｜不可证档：" + "、".join(f"{d} 位（地板 {floor[d][0]:.0%}）" for d in sorted(floor) if d not in provable))
+        print(f"    **已可主张 {len(ok)} 张**：")
+        for x in ok:
+            print("       ✓", x)
+        print(f"    **不可主张 {len(no)} 张（每枚 ≤4 位读数的字符串命中不足为证 ⇒ 要 per-cell 归属表）**：")
+        for x in no:
+            print("       ✗", x)
+        print(f"    无小数读数、不适用本尺 {len(empty)} 张：" + ("；".join(empty) or "无"))
+        print(f"    合计 {len(ok)} + {len(no)} + {len(empty)} = {len(ok) + len(no) + len(empty)} 张表"
+              f"（≠「全表已校」——**已校的是 {len(ok)} 张那一档**）")
+        return 0
     if getattr(args, "value_prov", None):
         return value_prov_report()
     if args.cell_coords:
