@@ -40,6 +40,7 @@ INSTR = ("删除", "统一替换为", "同步替换", "替换为", "行名", "�
 PAIR_OPS = ("E2", "E3", "E4")   # ③ 换数+插段+删句三者同进同退，见 e_block()
 # 表内一格换标签（工单里"换标签"类）：只允许"旧标签是新标签的子串"那种纯扩展，且整格唯一命中才做。
 CELL_OPS = {"A16": ("表5-1", "阶段内残差惩罚项", "阶段内残差惩罚项（启用）")}
+POINTER_ROWS = ("A18", "A19")     # 孤表指向句，凭据＝§12 第 13 条①（作者拍定"补句、不删表"）；句子只从工单载荷取
 # 混合格子的正文切片：有些行的「新文本」把正文句和写作指令写在同一格（D1 就是），整格落字会把
 # "两列都进表""（样本口径；格13 sd …）""前置核查（写作闸门）"这类话印进论文。
 # 白名单里**每条都必须逐字是该行新文本的子串**（下面断言），所以这条路不许造新句；被排除的句子留在工单里由作者自己粘。
@@ -736,13 +737,9 @@ FIG_IDS = {"图5-14": "fig514", "图5-16": "fig516", "图5-17": "fig517"}
 # 图5-14 的指向句（原件里它是"只有题注、正文零引用"的孤图）。授权口径与 TRANSITION_517 同一把：
 # 只把已有对象指过去，不带新数字、不带强度词、不写结论；句子本身仍要作者点头。
 FIG514_POINTER = "图 5-14 展示了 basic 与 geometry 两种输入特征集在收缩流道上的速度 Rel-L2 对照。"
-# 两张孤表（表3-4、表4-1）的指向句**只起草、不落字**：项目记忆里有一条"作者 14:1x 拍定选项①（补句、不删表）"，
-# 但它在盘上没有任何凭据（`git log revision/main` 与 `grep -r 指向性引用 docs/` 都取不到，且那枚时间戳晚于当回合真实钟点）。
-# 规则：署名用户的裁决必须先归因到件，证明不了就不入账 ⇒ 这里只把草稿交给对照表，等统括官把裁决落到工单条目再开落字。
-POINTER_DRAFT = {
-    "表3-4": "数据预处理各步的口径汇总于表 3-4。",
-    "表4-1": "实验各阶段与对应产物的关系汇总于表 4-1。",
-}
+# 两张孤表（表3-4、表4-1）的指向句走工单行 A18/A19（见 POINTER_ROWS）：9/27 13:5x 那条裁决起初只在项目记忆里、
+# 盘上无凭据 ⇒ 我只起草不落字并要求"落到工单条目"；统括官随后写入 §12 第 13 条①＋A18/A19 两行，本轮才落。
+# 留下的规矩：**署名用户的裁决必须先归因到件**，且句子只从工单载荷逐字取，脚本里不另存一份文本。
 
 
 
@@ -911,6 +908,46 @@ def add_fig514_pointer(doc):
     return f"图5-14 指向句已插在段{host}之后：{sent}"
 
 
+def add_row_pointers(doc):
+    """A18/A19：孤表的指向句。**句子逐字取自工单载荷**（这里不重复声明一份文本），落点＝该号题注**之前**、
+    正文段之后（作者拍定的三件见 §12 第 13 条①，删表分支已关闭）。号按整段相等选，防 表5-1 串到 表5-10。"""
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+    n = 0
+    for r in rows():
+        if r["id"] not in POINTER_ROWS:
+            continue
+        sent = payload(r["new"]).strip()
+        m = re.search(r"(表|图)\s*(\d+(?:-\d+)?[a-z]?)", r["loc"])
+        if not m or not sent:
+            print(f"   [指向句] {r['id']}：工单行里没解析出表号或载荷为空 ⇒ 不做")
+            continue
+        tid = m.group(1) + m.group(2)
+        for w in FORBID_IN_TRANSITION:
+            assert w not in sent, f"{r['id']} 的指向句混进强度词 {w}"
+        assert not re.search(r"\d", re.sub(re.escape(tid), "", sent.replace(" ", ""))), \
+            f"{r['id']} 的指向句带进新数字：{sent}"      # 先归一空格再剔号，否则"表 3-4"躲过剔除、被自己的闸拦下
+        ci = None
+        for i, p in enumerate(doc.paragraphs):
+            mm = re.match(r"^(表|图)(\d+(?:-\d+)?[a-z]?)", p.text.strip().replace(" ", ""))
+            if mm and mm.group(0) == tid and is_caption(p.text):
+                ci = i
+                break
+        if ci is None:
+            print(f"   [指向句] {r['id']}：副本里没有整段等于 {tid} 的题注 ⇒ 不做")
+            continue
+        if any(tid in p.text.replace(" ", "") and not is_caption(p.text) for p in doc.paragraphs):
+            print(f"   [指向句] {r['id']}：{tid} 已有正文引用 ⇒ 不重复插（幂等）")
+            continue
+        para = doc.paragraphs[ci]
+        el = para._p.makeelement(qn("w:p"), {})
+        para._p.addprevious(el)                       # 题注之前、正文段之后
+        Paragraph(el, para._parent).add_run(sent)
+        n += 1
+        print(f"   [指向句] {r['id']}：插在 {tid} 题注（原段{ci}）之前 ⇒ {sent}")
+    return n
+
+
 def figs(copy_path):
     data = fig_data()
     if not data:
@@ -925,10 +962,16 @@ def figs(copy_path):
     for fid, key in FIG_IDS.items():
         print("   [图]", replace_figure(doc, fid, made[key]))
     print("   [图]", add_fig514_pointer(doc))
-    for k, v in POINTER_DRAFT.items():
-        print(f"   [待批] {k} 的指向句只起草未落字（那条「作者拍定」在项目记忆里、盘上无凭据）：{v}")
+    np_ = add_row_pointers(doc)
+    if np_ != len(POINTER_ROWS):
+        print(f"[注] 孤表指向句本轮插了 {np_}/{len(POINTER_ROWS)}（其余为「该号已有正文引用」⇒ 幂等跳过，不是失败）")
     stale = [i for i, p in enumerate(doc.paragraphs)
              if any(x in p.text for x in ("0.5612", "11.7598"))]
+    stale_cells = [(ti, ri, ci) for ti, t in enumerate(doc.tables) for ri, r in enumerate(t.rows)
+                   for ci, c in enumerate(r.cells) if any(x in c.text for x in ("0.5612", "11.7598"))]
+    if stale_cells:
+        print(f"   [告警·表内旧数] 正文已换新数，但**表格单元里仍有** {stale_cells}（＝工单 D1b，判决＝改数）"
+              f"⇒ 扫描面已扩到表内：旧数只藏在表格里也会响")
     if stale:
         print(f"   [图][不一致告警] 图5-14 已换成 test 口径新数，但正文段 {stale} 仍印着旧数 0.5612/11.7598"
               f"（D1 行未落）⇒ 图文不一致只有「D1 落字」这一个封法，本副本不得当冻结版")
