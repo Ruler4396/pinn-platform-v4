@@ -91,12 +91,55 @@ fetch() { # path -> $WS/<path>, refused unless sha256 prefix matches WANT
   say "FETCH $(basename "$p") FAILED on both mirrors"; rm -f "$tmp"; return 1
 }
 
-solver_path() { # v4.9's binary is FreeFem++ (capital F); trying one lowercase name once produced a
-                # false "not installed" on a box that had it, so all four spellings are probed.
+FFHOME="${FFHOME:-$WS/ffrun}"
+# HARD CONSTRAINT (orchestrator, 9/27 14:2x): recovery lands ONLY in an instance-local directory plus
+# LD_LIBRARY_PATH.  No `cp -a` into /usr, no `ldconfig`, no extraction to `/` -- the previous instance
+# was replaced after exactly that kind of recovery, so if the archive cannot satisfy the loader path
+# this script reports the missing list and stops instead of touching system directories.
+FFBIN=""
+
+ff_libdirs() { # every directory under the unpacked prefix that holds a shared object
+  find "$FFHOME" -name '*.so*' -type f 2>/dev/null | sed 's|/[^/]*$||' | sort -u | tr '\n' ':'
+}
+
+export_fflib() { # prepend them to LD_LIBRARY_PATH for this process and its children
+  local d; d=$(ff_libdirs)
+  [ -n "$d" ] && export LD_LIBRARY_PATH="${d}${LD_LIBRARY_PATH:-}"
+  printf '%s' "$d"
+}
+
+solver_path() { # print an executable to use: PATH first, then the instance-local unpacked copy.
+                # v4.9's binary is FreeFem++ (capital F) -- probing one lowercase name once produced
+                # a false "not installed" on a box that had it, so all four spellings are tried.
   local c
   for c in FreeFem++ freefem++ FreeFem freefem; do
     command -v "$c" 2>/dev/null && return 0
   done
+  local cand
+  for cand in "$FFHOME/usr/bin/FreeFem++" "$FFHOME/usr/bin/freefem++" "$FFHOME/bin/FreeFem++"; do
+    [ -x "$cand" ] && { echo "$cand"; return 0; }
+  done
+  find "$FFHOME" -type f -name 'FreeFem++' 2>/dev/null | head -1
+}
+
+require_solver() { # re-resolve inside the child process that actually solves
+  local ff libd
+  if ff=$(solver_path); then
+    FFBIN="$ff"
+    case "$ff" in
+      "$FFHOME"*) libd=$(export_fflib); say "SOLVER unpacked copy $ff LD_LIBRARY_PATH=$libd" ;;
+      *)          say "SOLVER on PATH: $ff";;
+    esac
+    local miss; miss=$(ldd "$ff" 2>/dev/null | awk '/not found/{print $1}' | tr '\n' ' ')
+    if [ -n "$miss" ]; then
+      say "SOLVER REFUSE: unresolved libraries [$miss] -- reporting, NOT installing into /usr"
+      seg_end REFUSED "yes" "loader path for: $miss"
+      return 1
+    fi
+    return 0
+  fi
+  say "SOLVER REFUSE: nothing on PATH and nothing under $FFHOME -- run '$0 restore' then '$0 preflight'"
+  seg_end REFUSED "yes" "a solver resolvable without touching system directories"
   return 1
 }
 
@@ -148,7 +191,8 @@ do_preflight() {
   [ -n "${avail:-}" ] && [ "$avail" -lt 204800 ] && { say "PREFLIGHT REFUSE: < 200 MB free"; fail=1; }
 
   if ff=$(solver_path); then
-    say "PREFLIGHT solver: $ff"
+    FFBIN="$ff"; case "$ff" in "$FFHOME"*) export_fflib >/dev/null;; esac
+    say "PREFLIGHT solver: $FFBIN LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-unset}"
     miss=$(ldd "$ff" 2>/dev/null | awk '/not found/{print $1}' | tr '\n' ' ')
     if [ -n "$miss" ]; then
       say "PREFLIGHT REFUSE: solver present but unresolved libs: $miss -- an unloadable solver is exactly what an rc=127 / 'wall=1 ms' record looks like"
@@ -157,7 +201,7 @@ do_preflight() {
       say "PREFLIGHT solver ldd: all shared objects resolved"
     fi
   else
-    say "PREFLIGHT solver NOT on PATH (probed FreeFem++ / freefem++ / FreeFem / freefem)"
+    say "PREFLIGHT solver NOT found on PATH nor under $FFHOME (probed FreeFem++ / freefem++ / FreeFem / freefem)"
     if [ -f "$FFROOT" ]; then
       say "PREFLIGHT next step: '$0 restore' then '$0 preflight' again"
     else
@@ -186,15 +230,26 @@ do_preflight() {
 
 do_restore() {
   [ -f "$FFROOT" ] || { say "RESTORE REFUSE: no $FFROOT on this instance"; return 1; }
-  say "RESTORE unpacking $FFROOT to / (the archived dpkg+ldd set from the earlier trip)"
-  tar xzf "$FFROOT" -C / 2>/dev/null || say "RESTORE note: tar exited nonzero (root-owned paths); checking the binary anyway"
-  local ff
+  mkdir -p "$FFHOME" || { say "RESTORE REFUSE: cannot create $FFHOME"; return 1; }
+  say "RESTORE unpacking $FFROOT into $FFHOME (instance-local prefix only: no /usr writes, no ldconfig)"
+  tar xzf "$FFROOT" -C "$FFHOME" || say "RESTORE note: tar exited nonzero; checking what did land"
+  say "RESTORE landed dirs: $(find "$FFHOME" -maxdepth 3 -type d 2>/dev/null | head -8 | tr '\n' ' ')"
+  local libd ff miss
+  libd=$(export_fflib)
+  say "RESTORE LD_LIBRARY_PATH=${libd:-<empty>} (this shell and its children only)"
   if ff=$(solver_path); then
-    say "RESTORE ok: $ff unresolved_libs=[$(ldd "$ff" 2>/dev/null | awk '/not found/{print $1}' | tr '\n' ' ')]"
-    say "RESTORE run '$0 preflight' again -- a restored binary that cannot load its libs is not a solver"
+    miss=$(ldd "$ff" 2>/dev/null | awk '/not found/{print $1}' | tr '\n' ' ')
+    say "RESTORE candidate: $ff unresolved_libs=[$miss]"
+    if [ -n "$miss" ]; then
+      say "RESTORE INCOMPLETE: the archive does not carry those objects. Per the standing constraint this run will NOT copy them into /usr or run ldconfig -- the missing list is written to $OUTD/missing_libs.txt and escalated."
+      echo "$miss" > "$OUTD/missing_libs.txt"
+      return 2
+    fi
+    say "RESTORE ok -- rerun '$0 preflight' to re-mark the environment as ready"
     return 0
   fi
-  say "RESTORE FAILED: FreeFem++ still not resolvable"
+  say "RESTORE FAILED: no FreeFem++ under $FFHOME; archive's first entries:"
+  tar tzf "$FFROOT" 2>/dev/null | head -12 | sed 's/^/      /'
   return 1
 }
 
@@ -203,6 +258,7 @@ do_p1() {
   require_preflight || { seg_end REFUSED "yes" "a passing preflight for this pin"; return 1; }
   local lvl d rc rows line
   say "P1 start instance=$INSTANCE (R2-7 constraints 2+3: the ratio must be MEASURED, never old-reading divided by 1000)"
+  require_solver || return 1
   fetch model/scripts/gen_ns_re_edp.py || return 1
   fetch model/scripts/finalize_ns_truth.py || return 1
   fetch model/scripts/check_ns_re_to_stokes.py || return 1
@@ -218,7 +274,7 @@ do_p1() {
   for lvl in $NS_LEVELS; do
     d="$WS/model/cases/contraction_2d/cfd/C-base_ns_re$lvl"
     rc=0
-    ( cd "$d" && timeout 90 FreeFem++ -nw "C-base_ns_re$lvl.edp" ) >"$OUTD/p1_re$lvl.txt" 2>&1 || rc=$?
+    ( cd "$d" && timeout 90 "$FFBIN" -nw "C-base_ns_re$lvl.edp" ) >"$OUTD/p1_re$lvl.txt" 2>&1 || rc=$?
     rows=$(wc -l < "$d/C-base_ns_re${lvl}_raw.csv" 2>/dev/null || echo 0)
     say "P1 solve Re=$lvl rc=$rc raw_rows=$rows last_it=$(grep -c 'NS it=' "$OUTD/p1_re$lvl.txt")"
   done
@@ -253,6 +309,7 @@ do_p2() {
   require_preflight || { seg_end REFUSED "yes" "a passing preflight for this pin"; return 1; }
   local ph rc
   say "P2 start instance=$INSTANCE (K0b: syntax probe -> 12-digit staged emission -> reference scan)"
+  require_solver || return 1
   fetch model/scripts/ops/run_k0b_5236655.sh || return 1
   fetch model/scripts/route2/generate_t_case.py || return 1
   fetch model/scripts/route2/k0_truth_gate.py || return 1
@@ -279,6 +336,7 @@ do_p3() {
   require_preflight || { seg_end REFUSED "yes" "a passing preflight for this pin"; return 1; }
   local i s e w rc ok=0 nrows
   say "P3 start instance=$INSTANCE -- E5 CFD unit cost: a thesis-side cell measured on route-2 machine time"
+  require_solver || return 1
   fetch model/scripts/gen_ns_re_edp.py || return 1
   fetch model/cases/contraction_2d/cfd/C-base/C-base_stokes.edp || return 1
   fetch model/cases/contraction_2d/cfd/C-base/C-base_raw.csv || return 1
@@ -292,7 +350,7 @@ do_p3() {
   fi
   say "P3 guard3 first: one UNTIMED solve of that exact file must return rc=0 AND write the 2113-row truth"
   rc=0
-  ( cd "$OUTD" && timeout 300 FreeFem++ -nw e5_stokes.edp ) >"$OUTD/e5_probe.txt" 2>&1 || rc=$?
+  ( cd "$OUTD" && timeout 300 "$FFBIN" -nw e5_stokes.edp ) >"$OUTD/e5_probe.txt" 2>&1 || rc=$?
   nrows=$(wc -l < "$OUTD/probe_syntax_raw.csv" 2>/dev/null || echo 0)
   say "P3 probe rc=$rc rows_written=$nrows"
   if [ "$rc" != 0 ] || [ "$nrows" -lt 2000 ]; then
@@ -304,7 +362,7 @@ do_p3() {
   for i in $(seq 1 "$E5_ATTEMPTS"); do
     s=$(date +%s%N)
     rc=0
-    ( cd "$OUTD" && timeout 300 FreeFem++ -nw e5_stokes.edp ) >"$OUTD/e5_run$i.txt" 2>&1 || rc=$?
+    ( cd "$OUTD" && timeout 300 "$FFBIN" -nw e5_stokes.edp ) >"$OUTD/e5_run$i.txt" 2>&1 || rc=$?
     e=$(date +%s%N); w=$(( (e - s) / 1000000 ))
     printf '%s\t%s\t%s\n' "$i" "$rc" "$w" >> "$OUTD/e5_runs.tsv"
     say "P3 run $i rc=$rc wall_ms=$w"
@@ -355,7 +413,7 @@ case "$MODE" in
     say "launching $MODE as a child under timeout ${SEGMENT_S}s; progress in $OUTD/${MODE}.log"
     rc=0
     WS="$WS" OUTD="$OUTD" FULL_PIN="$FULL_PIN" FFROOT="$FFROOT" SEGMENT_S="$SEGMENT_S" \
-    NS_COUNT="$NS_COUNT" NS_LEVELS="$NS_LEVELS" E5_ATTEMPTS="$E5_ATTEMPTS" E5_MIN_OK="$E5_MIN_OK" TARGET="$MODE" \
+    NS_COUNT="$NS_COUNT" FFHOME="$FFHOME" NS_LEVELS="$NS_LEVELS" E5_ATTEMPTS="$E5_ATTEMPTS" E5_MIN_OK="$E5_MIN_OK" TARGET="$MODE" \
       timeout "$SEGMENT_S" bash "$0" "${MODE}_body" >"$OUTD/${MODE}.log" 2>&1 || rc=$?
     tail -26 "$OUTD/${MODE}.log" | sed 's/^/    > /'
     [ "$rc" = 124 ] && say "$MODE was cut by the segment cap (${SEGMENT_S}s) -- report it as PARTIAL, not as success or failure"

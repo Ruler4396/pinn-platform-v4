@@ -96,14 +96,32 @@ expect_red() {         # a command that MUST fail: passing is the red case
   log "CONTROL $name refused as required (rc=$rc): $(grep -m1 -iE 'refus|refus|< 12|SystemExit' "$out" | cut -c1-96)"
 }
 
+# HARD CONSTRAINT (orchestrator, 9/27 14:2x): no extraction into `/`, no `cp -a` into /usr, no
+# `ldconfig` -- the previous instance was replaced after exactly that recovery.  The solver must
+# come from PATH already, or from run_coldtrip_one.sh's instance-local prefix via FFBIN.
+FFHOME="${FFHOME:-$WS/ffrun}"
+FFBIN="${FFBIN:-}"
 restore_ff() {
-  if ! command -v FreeFem++ >/dev/null 2>&1; then
-    [ -f "$FFROOT" ] || { log "ABORT: FreeFem++ absent and no $FFROOT -- the container disk is not persistent, re-install first"; exit 1; }
-    tar xzf "$FFROOT" -C / 2>/dev/null || true
-    ldconfig 2>/dev/null || true
+  if [ -n "$FFBIN" ] && [ -x "$FFBIN" ]; then
+    log "FreeFem++ supplied by the caller: $FFBIN (LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-unset})"
+    return 0
   fi
-  command -v FreeFem++ >/dev/null 2>&1 || { log "ABORT: FreeFem++ still not on PATH"; exit 1; }
-  log "FreeFem++ resolved: $(command -v FreeFem++)"
+  if command -v FreeFem++ >/dev/null 2>&1; then
+    FFBIN=$(command -v FreeFem++); log "FreeFem++ on PATH: $FFBIN"; return 0
+  fi
+  local cand
+  for cand in "$FFHOME/usr/bin/FreeFem++" "$FFHOME/bin/FreeFem++"; do
+    if [ -x "$cand" ]; then
+      FFBIN="$cand"
+      local d; d=$(find "$FFHOME" -name '*.so*' -type f 2>/dev/null | sed 's|/[^/]*$||' | sort -u | tr '
+' ':')
+      export LD_LIBRARY_PATH="${d}${LD_LIBRARY_PATH:-}"
+      log "FreeFem++ from the instance-local prefix: $FFBIN (LD_LIBRARY_PATH exported for this run only)"
+      return 0
+    fi
+  done
+  log "ABORT: no FreeFem++ on PATH and none under $FFHOME. This driver will NOT unpack into / or run ldconfig (the recovery that cost the last instance). Run run_coldtrip_one.sh preflight/restore first."
+  exit 1
 }
 
 case "$PHASE" in
@@ -120,7 +138,7 @@ case "$PHASE" in
     [ -f "$PROBE" ] || { log "ABORT: probe $PROBE missing"; exit 1; }
     # `floor` has only ever been PARSED on v4.9, never executed. The whole staged reference rests
     # on it, so this 1.5 s probe is a precondition, not a courtesy.
-    step probe_floor fatal 90 "cd '$(dirname "$PROBE")' && FreeFem++ -nw '$(basename "$PROBE")'"
+    step probe_floor fatal 90 "cd '$(dirname "$PROBE")' && "$FFBIN" -nw '$(basename "$PROBE")'"
     grep -q "PROBE OK" "$LOGD/probe_floor.txt" || { log "ABORT: no PROBE OK -- do not emit a staged truth on an unproven floor"; exit 1; }
     log "probe: floor executed on v4.9 (see $LOGD/probe_floor.txt)"
     step solve fatal 150 "cd '$R2' && python3 generate_t_case.py --case '$CASE' --levels '$LEVELS_SMOKE' --out-root '$LOGD/smoke'"
