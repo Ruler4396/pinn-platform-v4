@@ -560,6 +560,47 @@ def value_prov_report() -> int:
     return 0 if (must_pass and must_fail) else 1
 
 
+def status_line() -> int:
+    """**交付用的那一段指纹，由工具印、不由我手打**（21:5x 自纠：我在投递消息里凭记忆写了两个号——
+    一枚不存在的对照表名与一枚旧装配器 sha——被自己复查抓到 ⇒ 这不是粗心能治的，只能让号只有一个来源）。
+    打印：指针四行（并现算两枚件的 sha 验相符）、本包写面各件 bytes/sha、tip 与两台远端、两系列顶层枚数。"""
+    import subprocess
+    def g(*a):
+        r = subprocess.run(["git"] + list(a), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", cwd=str(REPO))
+        return (r.stdout or r.stderr).strip()
+    lines = [x.strip() for x in (OUT / "候选正本.txt").read_text(encoding="utf-8").splitlines() if x.strip()]         if (OUT / "候选正本.txt").exists() else []
+    print("[指针·现算]")
+    if len(lines) >= 4:
+        for i, role in ((0, "候选正本"), (2, "当前对照表")):
+            f = OUT / lines[i]
+            ok = f.exists() and hashlib.sha256(f.read_bytes()).hexdigest().startswith(lines[i + 1])
+            print(f"    第{1 if i == 0 else 3}、{2 if i == 0 else 4}行 ＝ {role} {lines[i]}（{lines[i+1]}）"
+                  f"⇒ 件存在且 sha 相符 {'✓' if ok else '**✗ 指针与盘上不符**'}｜{f.stat().st_size if f.exists() else 0:,} B")
+    else:
+        print(f"    **指针不足四行（现 {len(lines)} 行）⇒ 对照表那一半没登记，别投递**")
+    for f in (REPO / "docs/revision").glob("*.md"):
+        if f.name.startswith(("正文改写工单", "回执-格3")):
+            bb = f.read_bytes()
+            print(f"[件] {f.name} {len(bb):,} B / sha256 {hashlib.sha256(bb).hexdigest()[:12]}")
+    for rel in ("model/scripts/ops/assemble_thesis_docx.py",):
+        bb = (REPO / rel).read_bytes()
+        print(f"[件] {pathlib.PurePosixPath(rel).name} {len(bb):,} B / sha256 {hashlib.sha256(bb).hexdigest()[:12]}"
+              f" ｜blob(套autocrlf) {g('hash-object', rel)[:12]}")
+    ml = OUT / "make_ledger.py"
+    if ml.exists():
+        bb = ml.read_bytes()
+        print(f"[件] make_ledger.py {len(bb):,} B / sha256 {hashlib.sha256(bb).hexdigest()[:12]}（仓外件，无 blob 号）")
+    print(f"[git] HEAD {g('rev-parse', '--short', 'HEAD')} ｜ origin {g('rev-parse', '--short', 'origin/main')}"
+          f" ｜ revision {g('rev-parse', '--short', 'revision/main')} ｜ 工作树脏行数 {len(g('status', '--porcelain').splitlines())}")
+    print(f"[顶层枚数] 副本 {len(list(OUT.glob('装配副本-*.docx')))} ｜ 对照表 {len(list(OUT.glob('装配对照表-*.md')))}"
+          f" ｜ superseded {len(list((OUT / 'superseded').iterdir())) if (OUT / 'superseded').is_dir() else 0} 条目")
+    src_sha = hashlib.sha256(SRC.read_bytes()).hexdigest()[:12]
+    print(f"[原件只读] {SRC.name} {SRC.stat().st_size:,} B / {src_sha} / mtime "
+          f"{datetime.datetime.fromtimestamp(SRC.stat().st_mtime).isoformat(timespec='seconds')}")
+    return 0
+
+
 def md_gate(target: str) -> int:
     """**把表格闸叫到自己这层来跑，并且先把路径变成绝对路径**（统括官与我对同一句
     `--paths ../` 拿到过 524 与 552 两个 files 数 ⇒ 根因嫌疑就是这个**相对路径**：它随 cwd 变。
@@ -2158,6 +2199,8 @@ def main() -> int:
     g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
+    g.add_argument("--status", action="store_true",
+                    help="只读：把投递该带的指纹块打出来（号只有一个来源＝这条命令的输出，不许手打）")
     g.add_argument("--md-gate", metavar="路径", help="把表格闸跑在这个**绝对化后的根**上并打印根号（消灭『--paths ../ 随 cwd 变』那一类不可比）")
     g.add_argument("--prov-boundary", action="store_true",
                     help="只读：把 39 张表分成「已可主张」与「不可主张（短位数／靠登记件背书）」两张清单")
@@ -2177,6 +2220,8 @@ def main() -> int:
     import docx  # noqa: F401  ② 先确认库在，不在就别硬写
     from docx import Document
 
+    if getattr(args, "status", None):
+        return status_line()
     if getattr(args, "md_gate", None):
         return md_gate(args.md_gate)
     if getattr(args, "prov_boundary", None):
