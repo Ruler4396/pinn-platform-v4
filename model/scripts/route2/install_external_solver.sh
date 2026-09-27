@@ -21,17 +21,32 @@ PREFIX="${PREFIX:-/mnt/workspace/pinn-repro-2026/ext-fenics}"
 # box ~48 KB/s and libmamba gave up with "Download error (28) Timeout was reached" (that is what
 # killed the 统括官's own attempt, `xchk/mf2.log`, and mine too at first), while the Tsinghua mirror of
 # the same channel does ~13.9 MB/s.  Both CONDA_CHANNEL_ALIAS and a custom_channels .condarc failed to
-# move libmamba -- only an explicit URL in `-c` did -- so the URL has to be reachable from here.
+# move libmamba -- only an explicit URL in `-c` did, and that turned out to be PARTIAL: see CH_FLAGS
+# below, the built-in entry stayed in the transaction and the attempt still hung on the slow host.
 # A mirror OF conda-forge is still conda-forge: same packages, same hashes, different host.
 CF_CHANNEL="${CF_CHANNEL:-conda-forge}"
+# Measured on dsw-2214871 at 00:56:53, from /proc/79238 of the attempt that ran with the mirror URL in
+# `-c`: four sockets, THREE of them CLOSE-WAIT to 104.19.145.37:443 / 104.19.144.37:443 -- Cloudflare,
+# i.e. conda.anaconda.org -- and the process then held 0 CPU minutes for 7 straight minutes
+# (ps TIME frozen at 00:05:45 across 00:45, 00:49, 00:51, 00:53).  `-c` ADDS a channel; the built-in
+# conda-forge entry stays, so libmamba still opened the slow host and died waiting on a half-closed
+# connection.  `--override-channels` is not another alias (those two were measured to do nothing): it
+# drops every channel but the one named, so the only host this transaction can talk to is CF_CHANNEL.
+CH_FLAGS=(--override-channels -c "$CF_CHANNEL")
 ARCHIVE="${ARCHIVE:-/mnt/workspace/pinn-repro-2026/extsolver.tgz}"
 CAP_MIN="${CAP_MIN:-60}"                       # pre-registered cap: installation wall clock
 START_EPOCH="$(date +%s)"
 RUN="${RUN:-0}"
-LOG="${LOG:-extsolver_install_$(date +%Y%m%dT%H%M%S).log}"
+# Logs are NOT left in the working directory: §四X put every script-written file under
+# /mnt/workspace/_ops/<line>/<date>/, and a bare relative LOG meant this file landed wherever the
+# caller happened to stand.  The driver overrides this with the run's own OUT directory.
+LOG="${LOG:-/mnt/workspace/_ops/route2/20260927/extsolver_install_$(date +%Y%m%dT%H%M%S).log}"
 
 log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*"; }
 budget_left_min() { echo $(( (CAP_MIN * 60 - ($(date +%s) - START_EPOCH)) / 60 )); }
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || LOG="./$(basename "$LOG")"
+log "log at $LOG"
+[ -n "${CONDA_PKGS_DIRS:-}" ] && log "package cache goes to CONDA_PKGS_DIRS=$CONDA_PKGS_DIRS (NAS small-file I/O is what made the link phase crawl)"
 
 # Every command goes through here, so the dry run is the same script as the real one rather
 # than a parallel copy that can drift.
@@ -70,14 +85,18 @@ if [ "$RUN" = "1" ]; then mkdir -p "$PREFIX" || mkdir_ok=0; fi
 FENICS_OK=0
 if command -v mamba >/dev/null 2>&1 || command -v conda >/dev/null 2>&1; then
   PM="$(command -v mamba || command -v conda)"
-  do_ "$PM" create -y -p "$PREFIX" -c "$CF_CHANNEL" python=3.11 fenics-dolfinx=0.9 petsc4py \
+  do_ "$PM" create -y -p "$PREFIX" "${CH_FLAGS[@]}" python=3.11 fenics-dolfinx=0.9 petsc4py \
         numpy h5py meshio gmsh && FENICS_OK=1
-  log "channel used for attempt 1: $CF_CHANNEL  (what actually served the bytes is read from pkgs/urls.txt, not from here)"
+  log "channel used for attempt 1: ${CF_CHANNEL} (override-channels on; what actually served the bytes is read from pkgs/urls.txt, not from here)"
   if [ "$FENICS_OK" = "0" ]; then
-    # ONE retry, different lever: drop the pin, keep the channel. A second retry is out of budget.
-    log "fenics attempt 1 failed; ONE retry without version pins (budget $(budget_left_min) min left)"
-    do_ "$PM" create -y -p "$PREFIX" -c "$CF_CHANNEL" python=3.11 fenics-dolfinx \
-          numpy h5py meshio gmsh && FENICS_OK=1
+    # ONE retry, same spec.  Dropping the `=0.9` pin here used to be the "different lever": against the
+    # pre-declared failure branches that is not a lever but a downgrade -- an unpinned solve can land
+    # 0.10/0.11, whose API this driver does not target, and the run would then be green on an
+    # implementation whose weak form we never transcribed.  The retry therefore relaxes NOTHING except
+    # the attempt count; pass CF_RETRY_CHANNEL to point it at a sibling mirror of the same family.
+    log "fenics attempt 1 failed; ONE retry, same spec, pin kept (budget $(budget_left_min) min left)"
+    do_ "$PM" create -y -p "$PREFIX" --override-channels -c "${CF_RETRY_CHANNEL:-$CF_CHANNEL}" \
+          python=3.11 fenics-dolfinx=0.9 petsc4py numpy h5py meshio gmsh && FENICS_OK=1
   fi
 else
   log "no conda/mamba on PATH -- skipping the conda route (report, do not hand-install)"

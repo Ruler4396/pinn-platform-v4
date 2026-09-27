@@ -88,6 +88,21 @@ use_env_python() {
   [ -x "$ENVPY" ] || die "no env python at $ENVPY -- the install leg has not produced it yet (do not read the next error as a dolfinx or API failure)"
 }
 
+# Pre-declared branch 1, put on the LEGS rather than only on the install record: solve_second_impl.py is
+# a line-by-line transcription of the .edp into the 0.9 API, so a 0.10 or 0.3 interpreter is not a second
+# implementation of the same problem -- it is a different form, and a green run on it would be the exact
+# "绿在一个换过公式的实现上" failure this file already forbids.  Reading the version costs one import and
+# produces the log line, so the check is measured on every leg, not remembered from install.
+require_dolfinx_09() {
+  local v
+  v="$("$ENVPY" -c 'import dolfinx; print(dolfinx.__version__)' 2>/dev/null)" \
+    || die "dolfinx not importable from $ENVPY -- the env is not built; do not read this as an API failure"
+  case "$v" in
+    0.9.*) printf '%s\n' "$v" ;;
+    *) die "dolfinx $v is NOT a 0.9 build => STOP per pre-registration branch 1: report 'second implementation not obtained'; do not run the driver, do not rewrite the form for this release, do not self-compare FreeFEM against FreeFEM" ;;
+  esac
+}
+
 # --- channel bootstrap: Miniforge, pinned by URL + published sha256 + byte size -------------------
 # Why this exists: install_external_solver.sh stops (correctly) when no conda/mamba is on PATH, and
 # §四M measured from this instance that micromamba off micro.mamba.pm crawls (~120 KB/min) while GitHub
@@ -207,24 +222,39 @@ install_body() {
   # correct), so the dependency is named here with its remedy rather than letting the run fall through
   # to the pre-registration's INDETERMINATE row for a reason that is neither the judgement nor the network.
   [ -x "$MF_HOME/bin/conda" ] || die "no conda at $MF_HOME/bin/conda -- run '$0 bootstrap' first (pinned Miniforge tag $MF_TAG)"
-  log "delegating to install_external_solver.sh (it owns the conda command, the two-attempt stop-loss,"
-  log "the ${SEGMENT_S}s-then-report cap and the tar+sha256+restore line; this script does not re-declare them)"
+  local ilog irc
+  # Progress has to be on disk WHILE it runs.  Piping the delegate through `tail -25` held every line
+  # until the child exited, so an install that takes tens of minutes reported nothing at all for that
+  # whole time -- which is the opposite of "边跑边落 progress" and made the only readable signal "is the
+  # file still growing".  Raw output goes to its own file now; the screen still gets the last 25 lines.
+  ilog="$OUT/install_raw.log"
+  log "delegating; the installer's own bytes stream to $ilog (read that file during the run, not this screen)"
+  [ -n "${CONDA_PKGS_DIRS:-}" ] && export CONDA_PKGS_DIRS
   RUN="${RUN:-1}" CAP_MIN="${CAP_MIN:-60}" PREFIX="$PREFIX" CF_CHANNEL="${CF_CHANNEL:-conda-forge}" \
-    PATH="$MF_HOME/bin:$PATH" \
-    bash "$R2/install_external_solver.sh" 2>&1 | tail -25 || die "installer rc=$? -- report it; do not fall back to the laptop"
+    LOG="$OUT/install_solver.log" PATH="$MF_HOME/bin:$PATH" \
+    bash "$R2/install_external_solver.sh" > "$ilog" 2>&1
+  irc=$?
+  tail -25 "$ilog"
+  [ "$irc" -eq 0 ] || die "installer rc=$irc -- its verbatim tail is above and all of it is in $ilog; report that, do not fall back to the laptop"
   use_env_python
   local pv
   pv=$("$ENVPY" -c "import dolfinx, sys; print(dolfinx.__version__ + ' py' + sys.version.split()[0])") \
     || die "dolfinx not importable from $PREFIX after the installer said it ran"
+  # The pre-declared first branch after the env is built: 0.9.x runs, anything else stops the chain.
+  # Without this the file only RECORDS the version, and a 0.10 or 0.3 solve would be read as a
+  # cross-implementation check -- the weak form in solve_second_impl.py is a line-by-line transcription
+  # of the .edp for the 0.9 API, so any other release is a different implementation of a different form.
+  require_dolfinx_09
   # §四M asked for the version AND the channel, so both go on disk.  The channel is MEASURED: mamba
   # writes every URL it actually fetched into pkgs/urls.txt.  Requesting a mirror is not the same fact
   # as being served by it -- this box ignored CONDARC and CONDA_CHANNEL_ALIAS alike and pulled every
   # byte from conda.anaconda.org at ~48 KB/s (mirror: 13.9 MB/s), so restating the request would be
   # the hard-coded claim this file already carried once.
   local hosts
-  hosts=$("$ENVPY" - "$PREFIX" "$MF_HOME" <<'PY'
+  hosts=$("$ENVPY" - "$PREFIX" "$MF_HOME" "${CONDA_PKGS_DIRS:-}" <<'PY'
 import collections, os, sys
-for cand in (os.path.join(sys.argv[1], "pkgs", "urls.txt"), os.path.join(sys.argv[2], "pkgs", "urls.txt")):
+cands = [p for p in (sys.argv[3], os.path.join(sys.argv[1], "pkgs"), os.path.join(sys.argv[2], "pkgs")) if p]
+for cand in (os.path.join(c, "urls.txt") for c in cands):
     if os.path.exists(cand):
         ls = [l.strip() for l in open(cand, errors="replace") if l.strip()]
         cnt = collections.Counter(l.split("//")[1].split("/")[0] for l in ls if "//" in l)
@@ -246,7 +276,7 @@ PY
 smoke_body() {
   require_venue
   read_pointer
-  use_env_python; local py="$ENVPY"
+  use_env_python; require_dolfinx_09; local py="$ENVPY"
   OUT="$OUT/smoke"; mkdir -p "$OUT" || die "cannot create $OUT"
   log "smoke = the REAL entry point on a 2x2 mesh (not a copy of its API calls)"
   timeout "$SEGMENT_S" "$py" "$R2/solve_second_impl.py" --nx 2 --ny 2 --out "$OUT" 2>&1 | tail -12 \
@@ -260,7 +290,7 @@ smoke_body() {
 run_body() {
   require_venue
   read_pointer
-  use_env_python; local py="$ENVPY"
+  use_env_python; require_dolfinx_09; local py="$ENVPY"
   OUT="$OUT/base"; mkdir -p "$OUT"
   [ -f "$R2/solve_second_impl.py" ] || die "solve_second_impl.py is not in this checkout -- no solve attempted"
   log "base level = the .edp's own border counts (nx=180 ny=40, .edp:53)"
@@ -277,7 +307,7 @@ run_body() {
 refine_body() {
   require_venue
   read_pointer
-  use_env_python; local py="$ENVPY"
+  use_env_python; require_dolfinx_09; local py="$ENVPY"
   [ -f "$OUT/base/second_impl_nodes.csv" ] || die "no base level at $OUT/base -- run the base leg first"
   OUT="$OUT/refine"; mkdir -p "$OUT"
   log "doubled level = every buildmesh side doubled (.edp:53 180->360, 40->80)"
