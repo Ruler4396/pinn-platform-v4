@@ -204,18 +204,33 @@ def selfcheck_table_shapes(copy_path=None):
     return 1 if bad else 0
 
 
-def count_needle(needle: str) -> int:
+def count_needle(needle: str, quiet: bool = False):
     r"""**三数同框**（统括官 18:5x 把这条族规矩升级）：一个"某串出现几次"的断言一次报三个数，
     并写死哪个数拿来判不一致。作用域＝`rows()` 的 A-J 数据行——**用工具自己的解析，不再另写一条 grep**：
-    §10 原文里那条 `'^\| [A-J]'` 在 GNU BRE 下 `\|` 是"或"，实测匹配了**全部 328 行**，
-    所谓"作用域"从来就没生效过（裸跑与"作用域"同样得 7，谁照它读都会以为判二失败了）。"""
-    txt = WORK.read_text(encoding="utf-8")
+    §10 原文里那条 `'^\| [A-J]'` 在 GNU BRE 下 `\|` 是"或"，**匹配的是整本**（帧号必带：现读工单总行 413、以 `| ` 开头 157、A-J 数据行 56；
+    统括官那帧 332；本注释旧版写的 328 是更早一帧——**“整本有多少行”这类数不带帧，就是下一次拼错的种子**），
+    所谓"作用域"从来就没生效过（裸跑与"作用域"同样得 7，谁照它读都会以为判二失败了）。
+    `quiet=True` 时只返回三数不打字——**子检查要喂的是这个函数本身**，不是重抄一遍正则。"""
+    in_rows, outside, raw = needle_counts(needle)
+    if not quiet:
+        print(f"[三数同框] needle={needle!r}：数据行内 = **{in_rows}** ｜条文自身（非数据行）= {outside} ｜全文件裸跑 = {raw}")
+        print("    判不一致**只用「数据行内」这个数**；「条文自身」那一档随“谁在断言行里多写一句”漂，"
+              "裸跑值 = 两者之和，拿它判必假红。")
+    return in_rows, outside, raw
+
+
+def needle_counts(needle: str, text: str | None = None):
+    r"""作用域**只这一处**：`^\|\s*[A-J]\d+[a-z]?\s*\|`＝工单数据行的形状（与 `rows()` 同一判据）。
+    返回**三数**（数据行内，非数据行，全文件）。**needle 一律 `re.escape`**——不转义时 `.` 是通配符，
+    实测同一枚 `0.539923` 会被数成 14/14/14，那把“尺”就什么都命中。
+    （参数原名 `txt` 时函数体里还留着一句 `txt = WORK.read_text(...)`，**默认值永远取不到、实参形同虚设**——
+    夹具喂不进去＝只能测默认路径，这种“能测但测不到注入”的形状要当场拆掉。）"""
+    txt = WORK.read_text(encoding="utf-8") if text is None else text
     pat = re.compile(r"^\|\s*[A-J]\d+[a-z]?\s*\|")
-    in_rows = sum(len(re.findall(re.escape(needle), ln)) for ln in txt.splitlines() if pat.match(ln))
+    lines = txt.splitlines()
+    in_rows = sum(len(re.findall(re.escape(needle), ln)) for ln in lines if pat.match(ln))
     raw = len(re.findall(re.escape(needle), txt))
-    print(f"[三数同框] needle={needle!r}：数据行内 = **{in_rows}** ｜条文自身（非数据行）= {raw - in_rows} ｜全文件裸跑 = {raw}")
-    print(f"    判不一致**只用「数据行内」这个数**；「条文自身」那一档随“谁在断言行里多写一句”漂，裸跑值 = 两者之和，拿它判必假红。")
-    return 0
+    return in_rows, raw - in_rows, raw
 
 
 IMPERATIVE = ("请", "不得", "必须", "不许", "禁止", "应当", "要")
@@ -2147,14 +2162,78 @@ def selfcheck_pointer():
     return 0 if not bad else 1
 
 
+def selfcheck_counts() -> int:
+    r"""第十六条·必红子检查（统括官 9/28 00:1x：换了尺就得带上新尺的必红）——**「三数同框」的作用域真在起作用吗**。
+    四发，**两枚 needle 都由现跑挑出来**（挑不到就报"未验"并退 1，不硬印、也不写死字面）：
+    ① **只在条文出现**的串 ⇒ 数据行内必须 = 0、条文自身 > 0；
+    ② **只在数据行出现**的号 ⇒ 数据行内必须 ≥ 1、条文自身必须 = 0；
+    ③ 恒等式：数据行内 ＋ 条文自身 = 全文件裸跑（两发各校）；
+    ④ **变异钩**：把作用域退化成 §10 那条旧写法（BRE 下 `\|` 是"或" ⇒ 匹配所有表行）⇒ 退化后必须与真尺不同；
+       两档相同就说明我们自己的作用域也没生效（他那句"只能靠人不自红"的实物版）。"""
+    txt = WORK.read_text(encoding="utf-8")
+    ROW = re.compile(r"^\|\s*[A-J]\d+[a-z]?\s*\|")
+    lines = txt.splitlines()
+    prose = [ln for ln in lines if not ROW.match(ln)]
+    rows = [ln for ln in lines if ROW.match(ln)]
+    # 旧 §10 那条 `^\| [A-J]` 在 GNU BRE 下的实际作用域：**所有以 "| " 开头的行**（表头、分隔行、非 A-J 的回复表行都算）
+    rows_bre = [ln for ln in lines if ln.startswith("| ")]
+    other_tbl = [ln for ln in rows_bre if not ROW.match(ln)]          # 表行之中、但不在 A-J 数据行作用域内的那部分
+    # ④的 needle：**只在"其他表行"出现**的号——真尺该数到 0，退化尺（旧 BRE）必须数到 >0；两把尺答一样＝对照是空的
+    toks4 = [m.group(0) for ln in other_tbl for m in re.finditer(r"\d\.\d{3,}", ln)]
+
+    def counts(needle, pool):
+        return sum(len(re.findall(re.escape(needle), ln)) for ln in pool)
+
+    counts_at = counts
+    n4 = next((c for c in dict.fromkeys(toks4) if counts_at(c, other_tbl) > 0 and counts_at(c, rows) == 0), None)
+
+    # ①挑一枚"只在条文"的串：候选都是登记件里常见的散文词，**逐个测两档**，第一枚满足 (0, >0) 的才被采用
+    cands = ["冻结收口", "已落待抄", "判决理由排序更正", "作用域", "统括官 9/27 裁决", "三数同框", "条同一件事"]
+    n1 = next((c for c in cands if counts(c, rows) == 0 and counts(c, prose) > 0), None)
+    # ②挑一枚"只在数据行"的号：从真实数据行里刮 4 位以上的小数，逐个测，取第一枚 (≥1, 0)
+    toks = [m.group(0) for ln in rows for m in re.finditer(r"\d\.\d{3,}", ln)]
+    n2 = next((c for c in dict.fromkeys(toks) if counts(c, rows) >= 1 and counts(c, prose) == 0), None)
+    bad = []
+    for needle, kind in ((n1, "条文独有"), (n2, "数据行独有")):
+        if needle is None:
+            print(f"[闸·三数同框] **未验**：挑不出「{kind}」那一枚 needle ⇒ 这一发没测到（不硬印，也不换判据凑）")
+            bad.append(kind)
+            continue
+        a, q, raw = needle_counts(needle, txt)
+        c1 = (a == 0 and q > 0) if kind == "条文独有" else (a >= 1 and q == 0)
+        c3 = (a + q == raw)
+        print(f"[闸·三数同框] needle={needle!r}（{kind}，现跑挑出）⇒ 数据行内 = {a} ｜条文自身 = {q} ｜裸跑 = {raw}")
+        print(f"    ①{'数据行内应 0 且条文 > 0' if kind == '条文独有' else '数据行内应 ≥1 且条文 = 0'} ⇒ {c1}"
+              f" ｜③ 两半相加＝裸跑 ⇒ {c3}")
+        if not c1:
+            bad.append(f"{kind}:作用域档判错")
+        if not c3:
+            bad.append(f"{kind}:三数不守恒")
+    # ④ 变异钩单列：真尺数不到（不在 A-J 作用域内）、放宽成"所有表行"后一定数得到；两把尺同答＝这一发是空的
+    if n4 is None:
+        print("[闸·三数同框] **未验**：挑不出「只在非 A-J 表行」的号 ⇒ 第④发没测到（不硬印）")
+        bad.append("变异钩无 needle")
+    else:
+        a4 = counts(n4, rows)
+        b4 = counts(n4, rows_bre)
+        print(f"[闸·三数同框·④变异钩] needle={n4!r}（只在非 A-J 的表行）⇒ 真尺（A-J 作用域）= {a4}（应 0）"
+              f" ｜放宽尺（所有 `| ` 表行）= {b4}（应 > 0）｜两把尺不同答 = {a4 != b4}"
+              f" ｜注：§10 原文那条在 GNU BRE 下 `\\|`＝“或”⇒匹配的是整本，比这里更宽，两码别混称")
+        if not (a4 == 0 and b4 > 0):
+            bad.append("④变异钩没咬（永绿或挑错）")
+    print(f"[闸·三数同框] " + ("四发全对 ✓（needle 一律 re.escape、作用域只声明在 `needle_counts()` 一处）"
+                            if not bad else "**失效：" + "；".join(bad) + "**"))
+    return 1 if bad else 0
+
+
 def selfcheck_all(copy_path=None):
-    """十五条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
+    """十六条子检查一次跑完；只声明一处，`--selfcheck/--verify/--all` 三处入口共用。"""
     return (selfcheck_caption() or selfcheck_guards() or selfcheck_fold()
             or selfcheck_console() or selfcheck_rows() or selfcheck_ids(copy_path)
             or selfcheck_stale() or selfcheck_terms_scope() or selfcheck_rowids()
             or selfcheck_normid() or selfcheck_table_shapes(copy_path)
             or selfcheck_directives() or selfcheck_undeclared() or selfcheck_pointer()
-            or selfcheck_caliber())
+            or selfcheck_caliber() or selfcheck_counts())
 
 
 CALIBER_ROWS = {"D1b": ("mean-of-cases", "T5矩阵test口径读数", ("0.5684348", "0.0471148"))}
@@ -2268,7 +2347,7 @@ def main() -> int:
     g.add_argument("--cell-coords", action="store_true",
                     help="只读：把『改一格文字』那类工单行（CELL_TEXT_ROWS）解析成全份（表序,行,列）坐标，命中≠1 即退 1")
     g.add_argument("--count-needle", metavar="串", help="三数同框：数据行内／条文自身／全文件裸跑")
-    g.add_argument("--selfcheck", action="store_true", help="跑十五条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条／未声明行不得变／取件自拒／换口径必带声明）")
+    g.add_argument("--selfcheck", action="store_true", help="跑十六条子检查（题注／豁免／折叠／代码页／行数／号整段相等／旧值域／旧词域／后缀行号／号归一／新表形状／§12 指令扫整条／未声明行不得变／取件自拒／换口径必带声明）")
     g.add_argument("--all", action="store_true",
                    help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（**不含来源列**，15:0x 裁定：来源由对照表承载）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
     ap.add_argument("--into", type=pathlib.Path, default=None,
@@ -2276,6 +2355,10 @@ def main() -> int:
     ap.add_argument("--expect-changed", type=int, default=None,
                     help="--apply 用：期望被改段落数，不接等即 INVALID（闸三）")
     args = ap.parse_args()
+    # **只读数、不碰 docx 的模式先分流**（统括官 9/28 00:1x：他在没装 python-docx 的解释器里跑 `--count-needle`
+    # 直接崩在库缺失上 ⇒ 一个只读文本的正则凭什么要写作库？这条挪动本身就是那发"要一条必红"的前半。）
+    if getattr(args, "count_needle", None):
+        return count_needle(args.count_needle)
     import docx  # noqa: F401  ② 先确认库在，不在就别硬写
     from docx import Document
 
@@ -2305,8 +2388,6 @@ def main() -> int:
         return value_prov_report()
     if args.cell_coords:
         return cell_coords_report()
-    if getattr(args, "count_needle", None):
-        return count_needle(args.count_needle)
     if args.selfcheck:
         return selfcheck_all()
     if args.verify:
