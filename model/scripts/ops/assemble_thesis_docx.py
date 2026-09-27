@@ -602,14 +602,26 @@ def status_line() -> int:
                   f"⇒ 件存在且 sha 相符 {'✓' if ok else '**✗ 指针与盘上不符**'}｜{f.stat().st_size if f.exists() else 0:,} B")
     else:
         print(f"    **指针不足四行（现 {len(lines)} 行）⇒ 对照表那一半没登记，别投递**")
+    def fp(rel, p):
+        """**两把尺并排印**（统括官 9/28 01:4x：§12 第 12 条要的是 `content_sha256(blob)`，
+        而我此前只印工作树那把——它跟着 `core.autocrlf` 变，两台设置不同时"同 sha"会发假警）。
+        blob 取不到（未入库/仓外件）就明说取不到，不拿工作树那把冒充两把都有。"""
+        wt = hashlib.sha256(p.read_bytes()).hexdigest()[:12]
+        raw = subprocess.run(["git", "-C", str(REPO), "cat-file", "blob", f"HEAD:{rel}"],
+                             capture_output=True).stdout
+        return wt, (hashlib.sha256(raw).hexdigest()[:12] if raw else "取不到 blob")
     for f in (REPO / "docs/revision").glob("*.md"):
         if f.name.startswith(("正文改写工单", "回执-格3")):
             bb = f.read_bytes()
-            print(f"[件] {f.name} {len(bb):,} B / sha256 {hashlib.sha256(bb).hexdigest()[:12]}")
+            wt, cs = fp(f.relative_to(REPO).as_posix(), f)
+            print(f"[件] {f.name} {len(bb):,} B / sha256(工作树) {wt} ｜content_sha256(blob) {cs}")
     for rel in ("model/scripts/ops/assemble_thesis_docx.py",):
-        bb = (REPO / rel).read_bytes()
-        print(f"[件] {pathlib.PurePosixPath(rel).name} {len(bb):,} B / sha256 {hashlib.sha256(bb).hexdigest()[:12]}"
-              f" ｜blob(套autocrlf) {g('hash-object', rel)[:12]}")
+        p = REPO / rel
+        bb = p.read_bytes()
+        wt, cs = fp(rel, p)
+        print(f"[件] {pathlib.PurePosixPath(rel).name} {len(bb):,} B / sha256(工作树) {wt}"
+              f" ｜content_sha256(blob) {cs} ｜blob(套autocrlf) {g('hash-object', rel)[:12]}"
+              f" ｜工作树字节与 blob {'不同（autocrlf 在动行尾）' if wt != cs else '相同'}")
     ml = OUT / "make_ledger.py"
     if ml.exists():
         bb = ml.read_bytes()
