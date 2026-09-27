@@ -6,7 +6,7 @@
     python3 model/scripts/e5_cfd_price.py --repeats 7
 本机自测（没有 FreeFem++ 也能验装置本身）：
     python3 model/scripts/e5_cfd_price.py --self-test
-退出码：0=全成功；1=有用例 rc!=0 或产物自证不符（数据不可信）；3=求解器不可用（装置问题，不是读数问题）。
+退出码：0=全成功；1=有 rc!=0 样本、或入统计的成功次数 < --min-ok（⇒ **拒写产物**）、或产物自证不符；3=求解器不可用/探测不通过（装置问题，不是读数问题——9/27 实例上 rc=127 曾被记成 ~1 ms 并入统计，静默把单价算小，现已三处拦死）。
 """
 from __future__ import annotations
 
@@ -125,9 +125,34 @@ def prepare(edp: Path, work: Path, case: str, rewrite_root: Path) -> Path:
     return dst
 
 
+def probe_solver(argv_prefix: list[str], work: Path, timeout_s: float, prog: str) -> None:
+    """计时之前先证明求解器**起得来**：跑一行 .edp。起不来 ⇒ 整体退出 3（装置问题），
+    而不是让 42 次调用各记一个 ~1 ms 的 rc=127 读数、把单价静默算小（9/27 实例上真发生过）。"""
+    probe = work / "probe_ok.edp"
+    probe.write_text('cout << "E5PROBE\\n";\n', encoding="utf-8")
+    try:
+        proc = subprocess.run([*argv_prefix, "-nw", str(probe)], capture_output=True, timeout=timeout_s)
+    except FileNotFoundError:
+        raise SystemExit(f"[FAIL] 求解器不可执行：`{prog or argv_prefix[0]}` 找不到 ⇒ 不计时、不写产物。"
+                         f"注意真实二进制只有大写 F（`command -v freefem++` 会假报未装）")
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"[FAIL] 求解器探测超时 ⇒ 装置问题，不产出单价")
+    out = (proc.stdout or b"").decode("utf-8", "replace")
+    if proc.returncode != 0 or "E5PROBE" not in out:
+        raise SystemExit(
+            "[FAIL] 求解器探测不通过：rc=%s，stdout 里没有 E5PROBE ⇒ 不计时、不写产物。\n"
+            "  stderr 尾部：%s\n"
+            "  已知成因（9/27 实例实测）：冷启动容器里 `tar xzf ffroot.tgz -C /` 只回二进制，"
+            "还缺 libumfpack.so.5 / libcholmod.so.3 / libarpack.so.2 / libhdf5_serial.so.103 "
+            "四个 so ⇒ rc=127。补法：apt-get install -y libsuitesparse-dev（前两个）"
+            "+ 从 NAS 的 ffstage/lib/x86_64-linux-gnu/ 拷（后两个）。" %
+            (proc.returncode, (proc.stderr or b"").decode("utf-8", "replace")[-200:]))
+    print("[probe] 求解器可执行性通过（E5PROBE 回显命中）⇒ 开始计时")
+
+
 def time_case(case: str, runner: Path, argv_prefix: list[str], repeats: int, timeout_s: float,
-            prog: str = "") -> dict:
-    samples: list[float] = []
+            prog: str = "", min_ok: int = 5) -> dict:
+    samples: list[float] = []          # 只收 rc==0 的读数：失败调用的墙钟不是"单价"，收进来会静默把单价算小
     rcs: list[int] = []
     for k in range(1, repeats + 1):
         t0 = time.perf_counter()
@@ -141,19 +166,31 @@ def time_case(case: str, runner: Path, argv_prefix: list[str], repeats: int, tim
         except subprocess.TimeoutExpired:
             rc, proc = 124, None
         dt = time.perf_counter() - t0
-        samples.append(dt)
         rcs.append(rc)
-        print(f"  {case}  run {k}/{repeats}  wall={dt * 1000:.0f} ms  rc={rc}")
-        if rc != 0:
+        if rc == 0:
+            samples.append(dt)
+            print(f"  {case}  run {k}/{repeats}  wall={dt * 1000:.0f} ms  rc={rc}  → 入统计")
+        else:
+            print(f"  {case}  run {k}/{repeats}  wall={dt * 1000:.0f} ms  rc={rc}  → **剔除，不入统计**")
             tail = (proc.stderr.decode("utf-8", "replace") if proc is not None else "<超时，无 stderr>")[-300:]
             print(f"    [stderr 尾部] {tail.strip()}", file=sys.stderr)
+    n_ok, n_bad = len(samples), len(rcs) - len(samples)
+    if n_ok == 0:
+        return {"case": case, "family": family_of(case), "repeats": repeats, "rc_all": rcs,
+                "n_ok": 0, "n_excluded": n_bad, "min_ok": min_ok, "all_zero_rc": False,
+                "citable": False, "samples_ms": [], "min_ms": None, "median_ms": None,
+                "max_ms": None, "median_s": None}
     ok = all(r == 0 for r in rcs)
     return {
         "case": case,
         "family": family_of(case),
         "repeats": repeats,
         "rc_all": rcs,
+        "n_ok": n_ok,
+        "n_excluded": n_bad,
+        "min_ok": min_ok,
         "all_zero_rc": ok,
+        "citable": n_ok >= min_ok,
         "samples_ms": [round(s * 1000, 1) for s in samples],
         "min_ms": round(min(samples) * 1000, 1),
         "median_ms": round(statistics.median(samples) * 1000, 1),
@@ -189,8 +226,62 @@ def self_test() -> int:
         # 必定红：桩返回 rc=8 ⇒ all_zero_rc 必须为 False（否则"成功"是装出来的）
         bad_res = time_case("C-fail", root / "z.edp", [sys.executable, str(bad)], 2, 30.0)
         assert bad_res["all_zero_rc"] is False and set(bad_res["rc_all"]) == {8}, bad_res
+        assert bad_res["n_ok"] == 0 and bad_res["citable"] is False and bad_res["median_s"] is None, bad_res
         print(f"  [OK] 失败正对照：求解器 rc=8 的样本使 all_zero_rc=False（rc_all={bad_res['rc_all']}）"
-              f" ⇒ 主循环会走 INVALID 分支，不会把失败读成单价")
+              f" ⇒ 全失败时 n_ok=0、citable=False、median_s=None（旧版在这里会拿 2 条失败读数算出假的百毫秒级单价）")
+        # ⑧ 9/27 实例真踩过的形状：rc=127（求解器起不来）的读数不得进统计
+        miss = root / "stub_127"
+        miss.write_text("#!/usr/bin/env python3\nimport sys\nprint('no libumfpack', file=sys.stderr)\nsys.exit(127)\n",
+                        encoding="utf-8")
+        r127 = time_case("C-127", root / "y.edp", [sys.executable, str(miss)], 7, 30.0)
+        assert r127["n_ok"] == 0 and r127["n_excluded"] == 7 and r127["samples_ms"] == [], r127
+        assert r127["citable"] is False, r127
+        print("  [OK] rc=127 正对照：7 次调用全被剔除（samples_ms 为空、citable=False）"
+              " ⇒ 旧版会把 42 次 rc=127 记成 ~1 ms 并入统计，静默把单价算小")
+        # ⑨ 剔除后不足最低次数 ⇒ citable 必须为 False（这是"拒写产物"的判据）
+        mix = root / "stub_mix"
+        mix.write_text("#!/usr/bin/env python3\nimport sys, time\n"
+                       "n = int(open(sys.argv[-1]).read().strip() or 0)\n"
+                       "open(sys.argv[-1], 'w').write(str(n + 1))\n"
+                       "time.sleep(0.02)\n"
+                       "sys.exit(0 if n < 4 else 9)\n", encoding="utf-8")
+        # ⑨ 剔除后不足最低次数 ⇒ citable 必须为 False（这是"拒写产物"的判据）
+        def make_mix(path: Path, limit: int) -> Path:
+            path.write_text("#!/usr/bin/env python3\nimport sys, time\n"
+                            "n = int(open(sys.argv[-1]).read().strip() or 0)\n"
+                            "open(sys.argv[-1], 'w').write(str(n + 1))\n"
+                            "time.sleep(0.02)\n"
+                            "sys.exit(0 if n < %d else 9)\n" % limit, encoding="utf-8")
+            return path
+
+        cnt = root / "counter"
+        cnt.write_text("0", encoding="utf-8")
+        mixed = time_case("C-mix", cnt, [sys.executable, make_mix(root / "stub_mix4", 4)], 7, 30.0, min_ok=5)
+        assert mixed["n_ok"] == 4 and mixed["n_excluded"] == 3 and mixed["citable"] is False, mixed
+        cnt.write_text("0", encoding="utf-8")
+        ok6 = time_case("C-mix6", cnt, [sys.executable, make_mix(root / "stub_mix6", 6)], 7, 30.0, min_ok=5)
+        assert ok6["n_ok"] == 6 and ok6["n_excluded"] == 1 and ok6["citable"] is True, ok6
+        print(f"  [OK] 门槛正对照：4/7 成功 ⇒ citable=False；6/7 成功 ⇒ citable=True 且 n_excluded=1"
+              f"（剔除条数随产物一起落盘，读者看得见）")
+        # ⑩ 求解器探测：二进制不存在 ⇒ SystemExit，而不是开一圈 1 ms
+        try:
+            probe_solver([str(root / "no_such_bin")], root, 10.0, prog="no_such_bin")
+        except SystemExit as exc:
+            assert "找不到" in str(exc), str(exc)
+            print("  [OK] 探测正对照：二进制不存在时直接退出，不进计时循环")
+        else:
+            raise AssertionError("求解器不存在却没被探测拦住 ⇒ 探测是摆设")
+        # ⑪ 探测存在但起不来（rc!=0）⇒ 同样必须拦住，并带出缺 so 的提示
+        brk = root / "stub_broken"
+        brk.write_text("#!/usr/bin/env python3\nimport sys\nprint('error while loading shared libraries: "
+                       "libumfpack.so.5', file=sys.stderr)\nsys.exit(127)\n", encoding="utf-8")
+        try:
+            probe_solver([sys.executable, str(brk)], root, 10.0, prog="FreeFem++")
+        except SystemExit as exc:
+            assert "libumfpack" in str(exc) and "ffstage/lib" in str(exc), str(exc)
+            print("  [OK] 探测正对照：rc=127 时起不来就被判装置问题，且把缺 so 的补法一起报出来")
+        else:
+            raise AssertionError("求解器起不来却没被探测拦住")
         # ⑤ 真件演练（零求解）：对仓库里真实 .edp 跑 prepare()，父目录必须可落文件
         # 统括官 §五 的反对照要求是"五个工况全过"，不是抽两个 ⇒ 直接吃 DEFAULT_CASES
         for real_case in [c.strip() for c in DEFAULT_CASES.split(",")]:
@@ -222,7 +313,8 @@ def self_test() -> int:
             print("  [OK] 仓内落点被拒且未建任何目录")
         else:
             raise AssertionError("仓内落点没被拒")
-    print("总体：E5 装置的计时/聚合/自证/失败识别/真件改写/缺层必红/仓内必拒 七项全符合（含\u201c改写后不得残留绝对路径\u201d）")
+    print("总体：E5 装置 11 项控制全符合——计时 / 聚合 / 产物自证 / 失败识别 / 全失败不产出单价 / rc=127 剔除 /"
+          " 4 比 7 拒写与 6 比 7 放行 / 探测缺二进制必退 / 探测 rc!=0 必退并报缺 so / 真件改写 / 缺层必红 / 仓内必拒")
     return 0
 
 
@@ -239,6 +331,8 @@ def main() -> int:
     ap.add_argument("--timeout-s", type=float, default=600.0)
     ap.add_argument("--out", default=str(REPO / "docs" / "benchmarks" / "e5_cfd_price.json"))
     ap.add_argument("--work-dir", default="", help="改写后的 .edp 与产物 CSV 的落点；默认系统临时目录（仓外）")
+    ap.add_argument("--min-ok", type=int, default=5,
+                    help="每工况至少这么多次 rc==0 才允许写产物（默认 5/7）；不够则拒写并退 1")
     ap.add_argument("--self-test", action="store_true", dest="selftest")
     args = ap.parse_args()
 
@@ -249,6 +343,7 @@ def main() -> int:
         print(f"[WARN] repeats={args.repeats} < 7 ⇒ 中位数不稳定，本产物只能当下限用，表 5-9 不许删\u201c混合口径\u201d限定句")
     work = Path(args.work_dir) if args.work_dir else Path(tempfile.mkdtemp(prefix="e5_cfd_"))
     work.mkdir(parents=True, exist_ok=True)
+    probe_solver([args.bin], work, min(60.0, args.timeout_s), prog=args.bin)      # 起不来就整体退 3，别记 1 ms
     rewrite_root = work / "gen"
     cases = [c.strip() for c in re.split(r"[,\s]+", args.cases) if c.strip()]
     rows: list[dict] = []
@@ -256,15 +351,23 @@ def main() -> int:
     for case in cases:
         edp = find_edp(case)
         runner = prepare(edp, work, case, rewrite_root)
-        r = time_case(case, runner, [args.bin], args.repeats, args.timeout_s, prog=args.bin)
+        r = time_case(case, runner, [args.bin], args.repeats, args.timeout_s, prog=args.bin,
+                      min_ok=args.min_ok)
         r["edp_src"] = str(edp.relative_to(REPO))
         rows.append(r)
         if not r["all_zero_rc"]:
             failed.append(case)
 
+    uncitable = [r["case"] for r in rows if not r["citable"]]
+    if uncitable:
+        print(f"[INVALID] 有 {len(uncitable)} 个工况入统计的成功读数不足 {args.min_ok} 次：{uncitable}"
+              f" ⇒ **拒写产物**（不产出可引用 JSON）。逐次 rc 与剔除条数见上；"
+              f"先修装置（缺 so／路径不可写）再重跑，那一次才叫同机同次。", file=sys.stderr)
+        return 1
+
     fam: dict[str, dict] = {}
     for row in rows:
-        fam.setdefault(row["family"], []).extend([row["median_s"]] * 1)
+        fam.setdefault(row["family"], []).append(row["median_s"])
     summary = {k: {"cases": len(v), "median_of_medians_s": round(statistics.median(v), 4),
                    "min_s": round(min(v), 4), "max_s": round(max(v), 4)} for k, v in fam.items()}
 
@@ -272,11 +375,13 @@ def main() -> int:
         "purpose": "表 5-9 的 A 列（CFD 单工况耗时）——与 B/C 同机同次",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "hostname": socket.gethostname(), "platform": platform.platform(),
-        "solver": args.bin, "repeats_per_case": args.repeats,
+        "solver": args.bin, "repeats_per_case": args.repeats, "min_ok_runs": args.min_ok,
         "cases": rows, "family_summary": summary,
         "caveats": [
             "计时含进程启动与 IO；口径 = `FreeFem++ -nw <改路径后的 .edp>` 单次全过程",
             "入库 .edp 的绝对写路径已按正则改写后才计时（原样跑必 rc=8）",
+            "**只有 rc==0 的调用进统计**；失败调用的墙钟（常常是 ~1 ms 的 rc=127）会把单价静默算小 ⇒ 已排除，"
+            "每工况的 n_ok/n_excluded 随产物一起落盘",
             "本产物落仓内 ⇒ 表 5-9 的\u201c混合口径\u201d限定句可在两族都补齐后删除；只补一族则必须保留",
         ],
     }
@@ -289,7 +394,8 @@ def main() -> int:
     print("\n[E5] 同机 CFD 单价（程序自算，逐次读数见上）")
     for row in rows:
         print(f"  {row['case']:12s} {row['family']:12s} median={row['median_s']:.4f}s  "
-              f"区间 {row['min_s']/1000:.4f}–{row['max_s']/1000:.4f}s  rc_all={row['rc_all']}")
+              f"区间 {row['min_ms'] / 1000:.4f}–{row['max_ms'] / 1000:.4f}s  "
+              f"n_ok={row['n_ok']}/{row['repeats']}（剔除 {row['n_excluded']}）  rc_all={row['rc_all']}")
     for k, v in summary.items():
         print(f"  [族] {k:12s} 工况数={v['cases']}  中位数之中位数={v['median_of_medians_s']:.4f}s  "
               f"区间 {v['min_s']:.4f}–{v['max_s']:.4f}s")
