@@ -693,6 +693,219 @@ def selfcheck_caption():
     return 1 if bad else 0
 
 
+# ==================== 图 5-14 / 5-16 / 5-17：数从仓内正本现取，重画后替换副本内图片 ====================
+# 为什么必须重画：这三张图里印着的是被 §10 禁掉的旧数（0.561/11.760 与 0.111/0.242/0.481、4.34/1.98/30.44/9.01），
+# 正文换数之后图与文不一致 ⇒ 只改文字等于交付一份自相矛盾的稿子。
+BENCH = REPO / "docs" / "benchmarks" / "pinn_vs_cfd_speed_benchmark_20260420.json"
+T5MD = REPO / "docs" / "revision" / "T5矩阵test口径读数-20260926.md"
+FIG_IDS = {"图5-14": "fig514", "图5-16": "fig516", "图5-17": "fig517"}
+# 图5-14 的指向句（原件里它是"只有题注、正文零引用"的孤图）。授权口径与 TRANSITION_517 同一把：
+# 只把已有对象指过去，不带新数字、不带强度词、不写结论；句子本身仍要作者点头。
+FIG514_POINTER = "图 5-14 展示了 basic 与 geometry 两种输入特征集在收缩流道上的速度 Rel-L2 对照。"
+
+
+def fig_data():
+    """三张图的数一律现取：图5-14 = test 口径正本里 t5c13/t5c14 两行；图5-16/5-17 = 同一枚计时 JSON
+    的中位数与它自带的 comparison 字段（倍数不自己相除，免得又造一把尺）。"""
+    import json
+    if not BENCH.exists() or not T5MD.exists():
+        print(f"[图] 正本缺件：BENCH={BENCH.exists()} T5MD={T5MD.exists()} ⇒ 不重画")
+        return None
+    ab = {}
+    for ln in T5MD.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"\|\s*(t5c1[34])\s*\|(.+?)\|\s*(\d+)\s*\|\s*\*\*([\d.]+)\s*±\s*([\d.]+)\*\*", ln)
+        if m:
+            ab[m.group(1)] = {"label": m.group(2).strip(), "n": int(m.group(3)),
+                              "mean": float(m.group(4)), "sd": float(m.group(5))}
+    if len(ab) != 2:
+        print(f"[图] 从 {T5MD.name} 现取 t5c13/t5c14 只拿到 {len(ab)} 行 ⇒ 图5-14 不重画（不硬编数字）")
+        return None
+    b = json.loads(BENCH.read_text(encoding="utf-8"))
+    return {"ab": ab, "med": {k: v["median_s"] for k, v in b["benchmarks"].items()},
+            "runs": {k: v.get("runs") for k, v in b["benchmarks"].items()},
+            "sp": b["comparison"], "meta": b["metadata"],
+            "src": {k: (f"{T5MD.name} 第二节 t5c13/t5c14" if k == "fig514"
+                        else f"{BENCH.name}（benchmarks[*].median_s / comparison）") for k in FIG_IDS.values()}}
+
+
+def render_figures(data, out_dir):
+    """画三张 PNG 到仓外 out_dir；像素尺寸对齐原件（1277×781 / 1364×807 / 1373×843），换图后版式不跳。"""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+    made = {}
+
+    def save(fig, key, name):
+        p = out_dir / name
+        fig.savefig(str(p), dpi=100)
+        plt.close(fig)
+        made[key] = p
+        print(f"   [画] {name} {p.stat().st_size:,} B")
+
+    def footnote(fig, ax, text):
+        """注放在坐标区下方（图内会压到柱子），并给底部留位。"""
+        assert "⇒" not in text and "×" not in text, "中文字体没有这两个字形，图上会出豆腐块 ⇒ 换文字表达"
+        fig.subplots_adjust(left=.10, right=.97, top=.90, bottom=.20)
+        fig.text(.01, .02, text, fontsize=9, color="#555")
+
+    a = data["ab"]
+    fig, ax = plt.subplots(figsize=(12.77, 7.81))
+    names = [a["t5c13"]["label"], a["t5c14"]["label"]]
+    vals = [a["t5c13"]["mean"], a["t5c14"]["mean"]]
+    errs = [a["t5c13"]["sd"], a["t5c14"]["sd"]]
+    ax.bar(names, vals, yerr=errs, capsize=8, width=.45, color=["#F0A020", "#17726A"])
+    for i, (v, e) in enumerate(zip(vals, errs)):
+        ax.text(i, v * 1.35, f"{v:.6f}±{e:.6f}", ha="center", fontsize=11)
+    ax.set_yscale("log")
+    ax.set_ylim(top=vals[0] * 4)
+    ax.set_ylabel("速度 Rel-L2（test / mean-of-cases）")
+    ax.set_title(f"收缩流道几何增强编码消融（各 {a['t5c13']['n']} 种子，mean±sd，ddof=1；比值 {vals[0] / vals[1]:.1f}）")
+    footnote(fig, ax, "压力面板已撤：仓内正本没有与本次消融同源的配对压力数"
+                      "（旧图 11.7598/0.1516 出自同时改特征集与壁面模式的两次运行，不能单独归因于几何增强编码）")
+    save(fig, "fig514", "重画图5-14.png")
+
+    m, r = data["med"], data["runs"]
+    fig, ax = plt.subplots(figsize=(13.64, 8.07))
+    groups = ["收缩流道", "弯曲流道"]
+    series = [("PINN完整推理", ["contraction_full_inference", "bend_full_inference"], "#4C72B0"),
+              ("PINN稀疏重建", ["contraction_sparse_reconstruction", "bend_sparse_reconstruction"], "#72B2AC"),
+              ("CFD求解", ["contraction_cfd", "bend_cfd"], "#B8A9A4")]
+    w = .26
+    for j, (lab, keys, col) in enumerate(series):
+        xs = [i + (j - 1) * w for i in range(2)]
+        vv = [m[k] for k in keys]
+        ax.bar(xs, vv, width=w, label=lab, color=col)
+        for x, v, k in zip(xs, vv, keys):
+            ax.text(x, v * 1.09, f"{v:.3f}s (n={r[k]})", ha="center", fontsize=10)
+    ax.set_xticks(range(2))
+    ax.set_xticklabels(groups)
+    ax.set_yscale("log")
+    ax.set_ylim(top=max(m.values()) * 3)
+    ax.set_ylabel("中位耗时（秒，对数坐标）")
+    ax.set_title("同一环境下 PINN 与 CFD 中位耗时对比")
+    ax.legend(loc="upper left")
+    footnote(fig, ax, f"来源 {data['meta']['created_at'][:10]} 主机 {data['meta']['hostname']}：PINN n=7、CFD n=3 中位数；"
+                      "CFD 列为该旧主机值（同机单价 E5 未做），本图是混合口径，不得写成同机同次")
+    save(fig, "fig516", "重画图5-16.png")
+
+    sp = data["sp"]
+    labels = ["收缩完整推理", "收缩稀疏重建", "弯曲完整推理", "弯曲稀疏重建"]
+    keys = ["contraction_full_vs_cfd_speedup", "contraction_sparse_vs_cfd_speedup",
+            "bend_full_vs_cfd_speedup", "bend_sparse_vs_cfd_speedup"]
+    fig, ax = plt.subplots(figsize=(13.73, 8.43))
+    vals = [sp[k] for k in keys]
+    cols = ["#4C72B0", "#72B2AC", "#4C72B0", "#72B2AC"]
+    ax.barh(range(4)[::-1], vals, color=cols, height=.55)
+    for y, v in zip(range(4)[::-1], vals):
+        ax.text(v + max(vals) * .015, y, f"{v:.2f}x", va="center", fontsize=12)
+    ax.set_yticks(range(4)[::-1])
+    ax.set_yticklabels(labels)
+    ax.set_xlabel("CFD / PINN 加速倍数")
+    ax.set_title("相对加速倍数（由上一节同一枚计时产物的 comparison 字段现取）")
+    ax.set_xlim(0, max(vals) * 1.18)
+    ax.grid(axis="x", linestyle=":", alpha=.6)
+    footnote(fig, ax, "四个倍数取自上一节同一枚计时产物的 comparison 字段（与图 5-16 同源，不另算一遍）；"
+                      "该件为旧主机混合口径，倍数只用于说明量级差别")
+    save(fig, "fig517", "重画图5-17.png")
+    return made
+
+
+def replace_figure(doc, fig_id, png_path):
+    """按题注严判定位（题注前 3 段内找图），**原地覆盖那张图的字节**：
+    显示尺寸、图片段、关系表全不动 ⇒ 包内不会留下没人引用的旧 PNG（先前用 add_picture 换图，副本反而胖了 130 KB）。"""
+    from docx.oxml.ns import qn
+    paras = doc.paragraphs
+    ci = next((i for i, p in enumerate(paras) if is_caption(p.text) and p.text.strip().startswith(fig_id)), None)
+    if ci is None:
+        return f"{fig_id} 题注没找到 ⇒ 未替换"
+    pi = next((i for i in range(ci - 1, max(-1, ci - 4), -1) if paras[i]._p.findall(".//" + qn("a:blip"))), None)
+    if pi is None:
+        return f"{fig_id} 题注（段{ci}）前 3 段内没有图 ⇒ 未替换（不猜位置）"
+    para = paras[pi]
+    ext = para._p.findall(".//" + qn("wp:extent"))[0]
+    cx, cy = int(ext.get("cx")), int(ext.get("cy"))
+    part = para.part.rels[para._p.findall(".//" + qn("a:blip"))[0].get(qn("r:embed"))].target_part
+    old_bytes = len(part.blob)
+    new = png_path.read_bytes()
+    part._blob = new                                    # python-docx 1.2 的 Part.blob 读的是 _blob；写成别的名字就是静默无效（回读会当场抓到）
+    assert part.blob == new, f"{fig_id} 写入后立刻读回不一致 ⇒ 属性名或库版本变了，别继续"
+    return (f"{fig_id}：段{pi} 原地换图（{str(part.partname)}），旧 {old_bytes:,} B → 新 {len(new):,} B；"
+            f"显示尺寸 EMU 不变（{cx}×{cy}）")
+
+
+def add_fig514_pointer(doc):
+    """图5-14 在原件里是"只有题注、正文零引用"的孤图（9/27 census 现算）。这里只补**指向句**：
+    同一个已核对象换个图号指过去，不带数字、不带强度词、不写结论——与 5.7 过渡句同一把授权。"""
+    from docx.oxml.ns import qn
+    txts = [p.text for p in doc.paragraphs]
+    cited = sum(1 for t in txts if "图5-14" in t.replace(" ", "") and not is_caption(t))
+    if cited:
+        return f"图5-14 正文引用已有 {cited} 处 ⇒ 不补（幂等）"
+    host = next((i for i, t in enumerate(txts) if "0.539923" in t and "0.148723" in t), None)
+    if host is None:
+        # D1 至今是「需人工」行（新文本里混着写作闸门与"两列都进表"这类指令，landable() 拒收），
+        # 所以锚点退回题注定位：图5-14 题注 → 前一段是图片段 → 再前一段就是该节正文。
+        ci = next((i for i, t in enumerate(txts) if is_caption(t) and t.strip().startswith("图5-14")), None)
+        if ci is None or ci - 2 < 0:
+            return "既没找到 D1 落字段、也没找到 图5-14 题注 ⇒ 不补句，不猜位置"
+        cand = ci - 2                                   # 题注前两段：一般就是引出这张图的那句正文
+        if len(txts[cand].strip()) < 40 or txts[cand].strip().startswith(("5.", "第")):
+            return f"题注前第 2 段（段{cand}）不像正文 ⇒ 不补句，交人工放位置"
+        host = cand
+    sent = FIG514_POINTER
+    for w in FORBID_IN_TRANSITION:
+        assert w not in sent, f"指向句混进强度词 {w}"
+    # 数字闸：先剔掉图号本身与指标名，剩下的任何数字都算"新数字"
+    residue = re.sub(r"图\s*5-14|Rel-L2", "", sent)
+    assert not re.search(r"\d", residue), f"指向句带进新数字：{residue}"
+    assert "倍" not in residue and "%" not in residue, "指向句不许出现倍数或百分比"
+    para = doc.paragraphs[host]
+    tail = para._p.makeelement(qn("w:p"), {})            # 新建空段插在本段之后
+    para._p.addnext(tail)
+    from docx.text.paragraph import Paragraph
+    Paragraph(tail, para._parent).add_run(sent)
+    return f"图5-14 指向句已插在段{host}之后：{sent}"
+
+
+def figs(copy_path):
+    data = fig_data()
+    if not data:
+        return 0
+    try:
+        made = render_figures(data, OUT)
+    except ImportError as e:
+        print(f"[图] 画图库不在（{e}）⇒ 本轮跳过重画，不动副本")
+        return 0
+    from docx import Document
+    doc = Document(str(copy_path))
+    for fid, key in FIG_IDS.items():
+        print("   [图]", replace_figure(doc, fid, made[key]))
+    print("   [图]", add_fig514_pointer(doc))
+    stale = [i for i, p in enumerate(doc.paragraphs)
+             if any(x in p.text for x in ("0.5612", "11.7598"))]
+    if stale:
+        print(f"   [图][不一致告警] 图5-14 已换成 test 口径新数，但正文段 {stale} 仍印着旧数 0.5612/11.7598"
+              f"（D1 行未落）⇒ 图文不一致只有「D1 落字」这一个封法，本副本不得当冻结版")
+    doc.save(str(copy_path))
+    chk = Document(str(copy_path))
+    from docx.oxml.ns import qn
+    blips = [(i, p) for i, p in enumerate(chk.paragraphs) if p._p.findall(".//" + qn("a:blip"))]
+    print(f"[figs] 回读：段落 {len(chk.paragraphs)}、表 {len(chk.tables)}、图片位 {len(blips)}")
+    for fid, key in FIG_IDS.items():
+        ci = next(i for i, p in enumerate(chk.paragraphs) if is_caption(p.text) and p.text.strip().startswith(fid))
+        pi = next(i for i in range(ci - 1, max(-1, ci - 4), -1) if chk.paragraphs[i]._p.findall(".//" + qn("a:blip")))
+        part = chk.paragraphs[pi].part.rels[
+            chk.paragraphs[pi]._p.findall(".//" + qn("a:blip"))[0].get(qn("r:embed"))].target_part
+        same = hashlib.sha256(part.blob).hexdigest() == hashlib.sha256(made[key].read_bytes()).hexdigest()
+        print(f"   [回读] {fid} 包内 {str(part.partname)} sha256 与渲染件相同 = {same}")
+        if not same:
+            print(f"[INVALID] {fid} 换图没落到包内 ⇒ 副本按半品标")
+            return 0
+    return len(made)
+
+
 def main() -> int:
     for s in (sys.stdout, sys.stderr):
         try:
@@ -707,6 +920,7 @@ def main() -> int:
     g.add_argument("--tables", type=pathlib.Path, help="在给定副本上插三张新表（表4-4b/5-9/5-10）")
     g.add_argument("--t57", type=pathlib.Path, help="在给定副本上改表 5-7：加「模型批次」列 + 追加 B-test-2 行（数字现取）")
     g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
+    g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--selfcheck", action="store_true", help="只跑题注夹具（必过 + 必红各一条）")
     g.add_argument("--all", action="store_true",
                    help="一把跑完整链：新建副本 → 整写/术语/插段 → 三张新表（含来源列）→ 表5-7 → 5.7 成对块。顺序固定，防每轮手接不同次序")
@@ -734,7 +948,8 @@ def main() -> int:
         dst = OUT / f"装配副本-{datetime.datetime.now():%Y%m%dT%H%M%S}.docx"
         shutil.copy2(SRC, dst)
         here = str(pathlib.Path(__file__).resolve())
-        for step in (["--apply-into", str(dst)], ["--tables", str(dst)], ["--t57", str(dst)], ["--pair57", str(dst)]):
+        for step in (["--apply-into", str(dst)], ["--tables", str(dst)], ["--t57", str(dst)],
+                     ["--pair57", str(dst)], ["--figs", str(dst)]):
             if step[0] == "--apply-into":
                 r = subprocess.run([sys.executable, here, "--apply", "--into", str(dst)],
                                    capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -759,6 +974,16 @@ def main() -> int:
             print(f"[INVALID] 副本不存在：{args.pair57}", file=sys.stderr)
             return 2
         return 0 if pair57(args.pair57) else 1
+
+    if args.figs:
+        if not args.figs.exists():
+            print(f"[INVALID] 副本不存在：{args.figs}", file=sys.stderr)
+            return 2
+        n = figs(args.figs)
+        if n != len(FIG_IDS):
+            print(f"[INVALID] 三张图只换了 {n} 张 ⇒ 正本缺件或库不在，本轮副本按半品标，别当交付")
+            return 1
+        return 0
 
     if args.tables:
         if not args.tables.exists():
