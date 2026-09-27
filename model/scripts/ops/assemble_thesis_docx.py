@@ -544,12 +544,65 @@ def value_prov_report() -> int:
         print(f"   仅 B 级：表序{u[0]} (行{u[1]},列{u[2]}) = {u[3]}")
     for u in tiers["NONE"]:
         print(f"   ⚠两层都无：表序{u[0]} (行{u[1]},列{u[2]}) = {u[3]}")
+    # **探针值绝不能再写成字面量**（本回合两次踩）：第一次它躺在 `回执-*`（我把排除做了），
+    # 第二次它躺在**工单第 24 条那条"禁止把探针值写进介质"的规则里**——规则文本本身在被这把尺扫。
+    # ⇒ 机制：探针**运行时导出**（固定种子 ⇒ 同一条命令可重放），并且**当场自证它不在任何一层**。
+    probe = f"{random.Random(20260927 ^ 59).uniform(0.0, 1.0):.6f}"
     must_pass = ("0.539923" in idx or "0.539923" in bset) and ("0.026912" in idx or "0.026912" in hist)
-    must_fail = ("0.987654" not in idx and "0.987654" not in bset and "0.987654" not in hist)
+    must_fail = (probe not in idx) and (probe not in bset) and (probe not in hist)
     print(f"[夹具] 刚落字的 `0.539923` 至少在一层在场={must_pass}（应 True）；"
-          f"合成数 `0.987654` 三层都不在场={must_fail}（必须 True，否则这把尺恒真）⇒ "
-          + ("两发都对 ✓" if must_pass and must_fail else "**夹具失效，本模式本轮不给结论**"))
+          f"**运行时导出探针** `{probe}`（种子 20260927^59，同一条命令可重放）三层都不在场={must_fail}"
+          f"（必须 True，否则这把尺恒真）⇒ " + ("两发都对 ✓" if must_pass and must_fail else "**夹具失效，本模式本轮不给结论**"))
+    if not must_fail:
+        print("   成因排查：探针值出现在——"
+              + ("A 结果件 " if probe in idx else "") + ("A2 训练历史 " if probe in hist else "")
+              + ("B 登记件（含工单正文！规则文本也被扫）" if probe in bset else ""))
     return 0 if (must_pass and must_fail) else 1
+
+
+def md_gate(target: str) -> int:
+    """**把表格闸叫到自己这层来跑，并且先把路径变成绝对路径**（统括官与我对同一句
+    `--paths ../` 拿到过 524 与 552 两个 files 数 ⇒ 根因嫌疑就是这个**相对路径**：它随 cwd 变。
+    机制＝工具自己打印它扫的是哪个绝对根，报数不带根号的那一行从此不可比较。"""
+    import subprocess
+    tool = (REPO / "model" / "scripts" / "check_md_tables.py")
+    # **相对路径一律按仓根解析，不按 cwd**——本回合我自己就踩了：在 `model/scripts/ops/` 里跑 `--md-gate ../`
+    # 会解析成 `model/scripts`（files=0），而统括官在仓根跑同一句得到的是整棵 `D:/PINN-restart`（files=552）。
+    # 这就是那 28 个件的全部来历嫌疑，所以机制是：**同一个参数串在任何 cwd 下必须指向同一个根**。
+    tp = pathlib.Path(str(target))
+    root = (tp if tp.is_absolute() else REPO / tp).resolve()
+    if not root.exists():
+        print(f"[未验] 表格闸的目标根不存在：{root}")
+        return 1
+    print(f"[表格闸·带根号] 命令＝python {tool.relative_to(REPO).as_posix()} --paths {root}｜"
+          f"跑于 cwd＝{pathlib.Path.cwd()}（**相对参数已按仓根解析，与 cwd 无关**）｜"
+          f"闸本体自 4a37251 起未被本次改动碰过")
+    r = subprocess.run([sys.executable, str(tool), "--paths", str(root)],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(REPO))
+    out = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
+    for line in out[-3:]:
+        print("   ", line)
+    tail_files = int(out[-1].split("files=")[1].split()[0]) if out and "files=" in out[-1] else -1
+    # **报数自带结构**：再把每个顶层目录单独跑一遍，差额就无处可藏
+    # （统括官与我的 524／552 之争缺的就是一份逐件分解——总数对了也不知道是谁涨的）。
+    parts = []
+    for sub in sorted([p for p in root.iterdir() if p.is_dir()]):
+        rr = subprocess.run([sys.executable, str(tool), "--paths", str(sub)],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(REPO))
+        line = ((rr.stdout or "") + (rr.stderr or "")).strip().splitlines()
+        tail = next((l for l in reversed(line) if "files=" in l), "")
+        f = int("".join(c if c.isdigit() else " " for c in tail.split("files=")[1].split()[0]) or 0)
+        blk = int(tail.split("table_blocks=")[1].split()[0]) if "table_blocks=" in tail else -1
+        rag = int(tail.split("ragged_rows=")[1].split()[0]) if "ragged_rows=" in tail else -1
+        parts.append((sub.name, f, blk, rag))
+    sfiles = sum(x[1] for x in parts)
+    print("    分目录（files／table_blocks／ragged_rows）：" +
+          "；".join(f"{n} {f}/{tk}/{rg}" for n, f, tk, rg in parts))
+    nf = sum(1 for p in root.iterdir() if p.is_file() and p.suffix == ".md")
+    print(f"    ⇒ 分目录合计 {sfiles} ＋ 根上散件 {nf} 枚＝**{sfiles + nf}**，与整根的 "
+          f"{tail_files} 相比：{'一致 ✓（差额已归到具体目录，下次没人再问那 28 个件是谁）' if sfiles + nf == tail_files else f'**不一致，差 {tail_files - sfiles - nf} ⇒ 扫描有重叠或漏，报出来不掩盖**'}")
+    print(f"    ⇒ **root={root}** 的数只能与同一根的数比；`../` 这类相对写法作废")
+    return r.returncode
 
 
 def value_prov_boundary():
@@ -2105,6 +2158,7 @@ def main() -> int:
     g.add_argument("--pair57", type=pathlib.Path, help="5.7 成对块：E2 换数 + E3 插段 + E4 结论句改过渡句（同进同退）")
     g.add_argument("--figs", type=pathlib.Path, help="在给定副本上重画并替换 图5-14/5-16/5-17（数从仓内正本现取）")
     g.add_argument("--cells", type=pathlib.Path, help="在给定副本上改表内标签格（A16 这类「换标签」，整格唯一命中才做）")
+    g.add_argument("--md-gate", metavar="路径", help="把表格闸跑在这个**绝对化后的根**上并打印根号（消灭『--paths ../ 随 cwd 变』那一类不可比）")
     g.add_argument("--prov-boundary", action="store_true",
                     help="只读：把 39 张表分成「已可主张」与「不可主张（短位数／靠登记件背书）」两张清单")
     g.add_argument("--value-prov", action="store_true",
@@ -2123,6 +2177,8 @@ def main() -> int:
     import docx  # noqa: F401  ② 先确认库在，不在就别硬写
     from docx import Document
 
+    if getattr(args, "md_gate", None):
+        return md_gate(args.md_gate)
     if getattr(args, "prov_boundary", None):
         bb = value_prov_boundary()
         if bb is None:
