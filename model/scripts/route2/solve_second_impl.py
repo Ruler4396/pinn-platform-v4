@@ -129,19 +129,59 @@ def vertex_tag(x: float, y: float) -> str:
     return "0"
 
 
-def write_nodes(path: Path, pts: list[tuple[float, float]], u: list[float], v: list[float],
-                p: list[float]) -> int:
+def write_rows(path: Path, rows: list[tuple[float, float, float, float, float]]) -> int:
     """One row per node, same header as the reference export.  12 digits: this side is the newer
     implementation, so it must not be the one that loses precision (the K0 lesson runs the other
-    way -- a 6-digit reference cannot separate bands)."""
+    way -- a 6-digit reference cannot separate bands).  The single place that formats a node."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         w = csv.writer(fh, lineterminator="\n")
         w.writerow(HEADER)
-        for (x, y), uu, vv, pp in zip(pts, u, v, p):
+        for x, y, uu, vv, pp in rows:
             w.writerow([f"{x:.12g}", f"{y:.12g}", f"{uu:.12g}", f"{vv:.12g}", f"{pp:.12g}",
                         vertex_tag(x, y)])
-    return len(pts)
+    return len(rows)
+
+
+def write_nodes(path: Path, pts: list[tuple[float, float]], u: list[float], v: list[float],
+                p: list[float]) -> int:
+    return write_rows(path, [(x, y, uu, vv, pp)
+                             for (x, y), uu, vv, pp in zip(pts, u, v, p)])
+
+
+def nodes_from_dofs(dof_pts, u_dofs, p_pts, p_dofs, gdim=2):
+    """Rebuild per-vertex (x, y, u, v, p) rows from a vector space's FLAT dof array.
+
+    0.9's `Function.x.array` is one scalar per dof, and the two velocity dofs of a vertex sit next to
+    each other only under an interleaved layout -- under a blocked layout they are N apart.  Reading
+    `row[0]`/`row[1]` assumed the first and died with `IndexError: invalid index to scalar variable`
+    on the real box (smoke leg, 01:38:54).  So the layout is not assumed at all: group the scalar dofs
+    by their coordinate, sort each group by dof index, and take the components in that order -- which
+    is component 0 then component 1 under either layout.  Both orderings are exercised in --selfcheck.
+    Anything that does not line up raises, because a half-matched CSV would feed the three integrals
+    numbers belonging to different vertices, which is worse than no run at all.
+    """
+    if gdim != 2:
+        raise ValueError(f"this export writes (x,y,u,v,p): gdim must be 2, got {gdim}")
+    groups: dict[tuple[float, float], list[int]] = {}
+    for idx, pt in enumerate(dof_pts):
+        groups.setdefault((round(float(pt[0]), 9), round(float(pt[1]), 9)), []).append(idx)
+    pmap: dict[tuple[float, float], int] = {}
+    for idx, pt in enumerate(p_pts):
+        key = (round(float(pt[0]), 9), round(float(pt[1]), 9))
+        if key in pmap:
+            raise ValueError(f"pressure space carries two dofs at {key} -- not one dof per vertex")
+        pmap[key] = idx
+    rows = []
+    for key, idxs in groups.items():
+        if len(idxs) != gdim:
+            raise ValueError(f"vertex {key} carries {len(idxs)} velocity dofs, expected {gdim}")
+        if key not in pmap:
+            raise ValueError(f"vertex {key} has velocity but no pressure dof -- spaces disagree")
+        iu, iv = sorted(idxs)
+        rows.append((key[0], key[1], float(u_dofs[iu]), float(u_dofs[iv]), float(p_dofs[pmap[key]])))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return rows
 
 
 # --- the solver: dolfinx lives only inside here, so importing this module needs no install ------
@@ -244,9 +284,10 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     u1.interpolate(Usol.sub(0).collapse())
     p1f.interpolate(Usol.sub(1).collapse())
     coords = q1.tabulate_dof_coordinates()
-    pts = [(float(c[0]), float(c[1])) for c in coords]
-    n = write_nodes(out_csv, pts, [float(r[0]) for r in u1.x.array],
-                    [float(r[1]) for r in u1.x.array], [float(r) for r in p1f.x.array])
+    dof_pts = [(float(c[0]), float(c[1])) for c in coords]
+    p_pts = [(float(c[0]), float(c[1])) for c in s1.tabulate_dof_coordinates()]
+    rows = nodes_from_dofs(dof_pts, u1.x.array, p_pts, p1f.x.array, gdim)
+    n = write_rows(out_csv, rows)
     import dolfinx
     return {"nx": nx, "ny": ny, "nodes": n, "ksp_reason": int(reason), "ksp_its": int(its),
             "dolfinx": dolfinx.__version__, "geometry": {"BETA": BETA, "LIN": LIN, "LC": LC,
@@ -350,6 +391,30 @@ def selfcheck() -> int:
         ck("MUST-RED: one node on the outlet plane cannot pass for a flux integral", False, "it computed")
     except ValueError as exc:
         ck("MUST-RED: one node on the outlet plane cannot pass for a flux integral", True,
+           f"refused: {str(exc)[:60]}")
+
+    # The layout question the smoke leg answered with an IndexError, settled by construction: both the
+    # interleaved and the blocked dof ordering have to give back the same vertex table, because this
+    # file does not get to know which one 0.9 used on this build.
+    verts = [(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)]
+    want_rows = [(x, y, 100.0 + k, 200.0 + k, 300.0 + k) for k, (x, y) in enumerate(verts)]
+    inter_pts = [pt for pt in verts for _ in range(2)]
+    inter_u = [v for k in range(len(verts)) for v in (100.0 + k, 200.0 + k)]
+    block_pts = verts + verts
+    block_u = [100.0 + k for k in range(len(verts))] + [200.0 + k for k in range(len(verts))]
+    p_pts = list(verts)
+    p_dofs = [300.0 + k for k in range(len(verts))]
+    got_i = nodes_from_dofs(inter_pts, inter_u, p_pts, p_dofs)
+    got_b = nodes_from_dofs(block_pts, block_u, p_pts, p_dofs)
+    ck("nodes_from_dofs gives the same vertex table from an interleaved AND a blocked dof layout "
+       "(the 0.9 array is flat; 01:38:54's smoke died assuming one of them)",
+       got_i == sorted(want_rows) and got_b == sorted(want_rows),
+       f"interleaved={len(got_i)} rows blocked={len(got_b)} rows, want {len(want_rows)}")
+    try:
+        nodes_from_dofs(inter_pts, inter_u, verts[:3], p_dofs[:3])
+        ck("MUST-RED: a velocity vertex with no pressure dof is refused, not written", False, "it wrote")
+    except ValueError as exc:
+        ck("MUST-RED: a velocity vertex with no pressure dof is refused, not written", True,
            f"refused: {str(exc)[:60]}")
 
     # the reference itself, read through the same code path: proves this file's tag convention

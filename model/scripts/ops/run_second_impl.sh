@@ -103,6 +103,34 @@ require_dolfinx_09() {
   esac
 }
 
+# Same measurement, callable twice: install writes it into install_channel.txt, status re-reads it.
+# It is a function and not an inline heredoc because the first reading came back EMPTY
+# (install_channel.txt at 01:38:50 says `served_by=/root/condapkgs/urls.txt -> `): mamba had created
+# urls.txt but had not written the URLs into it yet, and the loop stopped at "the file exists".
+# "Exists" is not "has the answer" -- so an empty tally now falls through to the next candidate and,
+# if nothing has entries, says so instead of printing a bare arrow.
+served_by_measured() {
+  local py="${1:-python3}"
+  "$py" - "$PREFIX" "$MF_HOME" "${CONDA_PKGS_DIRS:-}" <<'PY'
+import collections, os, sys
+cands = [p for p in (sys.argv[3], os.path.join(sys.argv[1], "pkgs"), os.path.join(sys.argv[2], "pkgs")) if p]
+for c in cands:
+    cand = os.path.join(c, "urls.txt")
+    if not os.path.exists(cand):
+        continue
+    ls = [l.strip() for l in open(cand, errors="replace") if l.strip()]
+    cnt = collections.Counter(l.split("//")[1].split("/")[0] for l in ls if "//" in l)
+    if not cnt:
+        print("%s exists but holds 0 urls -- not read yet, trying the next candidate" % cand)
+        continue
+    print("%s -> %d urls, hosts: %s" % (cand, len(ls),
+                                        ", ".join("%s:%d" % kv for kv in cnt.most_common(4))))
+    break
+else:
+    print("no pkgs/urls.txt with entries -- serving host UNKNOWN, not assumed")
+PY
+}
+
 # --- channel bootstrap: Miniforge, pinned by URL + published sha256 + byte size -------------------
 # Why this exists: install_external_solver.sh stops (correctly) when no conda/mamba is on PATH, and
 # §四M measured from this instance that micromamba off micro.mamba.pm crawls (~120 KB/min) while GitHub
@@ -176,7 +204,7 @@ read_pointer() {
 # Linux clone with autocrlf off, so its working bytes equal the blob bytes there; on a CRLF working
 # copy the two rulers part ways, which is why the number below is quoted with its ruler.
 declare -A EXPECT=(
-  [model/scripts/route2/solve_second_impl.py]=d8d05d7da4d60e9d
+  [model/scripts/route2/solve_second_impl.py]=bacc01428fb6abda
 )
 # crosscheck_second_impl.py and install_external_solver.sh are checked for PRESENCE only: they landed
 # before this table existed, and their blobs are already in git (pin 7e67943 and earlier).
@@ -251,19 +279,7 @@ install_body() {
   # byte from conda.anaconda.org at ~48 KB/s (mirror: 13.9 MB/s), so restating the request would be
   # the hard-coded claim this file already carried once.
   local hosts
-  hosts=$("$ENVPY" - "$PREFIX" "$MF_HOME" "${CONDA_PKGS_DIRS:-}" <<'PY'
-import collections, os, sys
-cands = [p for p in (sys.argv[3], os.path.join(sys.argv[1], "pkgs"), os.path.join(sys.argv[2], "pkgs")) if p]
-for cand in (os.path.join(c, "urls.txt") for c in cands):
-    if os.path.exists(cand):
-        ls = [l.strip() for l in open(cand, errors="replace") if l.strip()]
-        cnt = collections.Counter(l.split("//")[1].split("/")[0] for l in ls if "//" in l)
-        print("%s -> %s" % (cand, ", ".join("%s:%d" % kv for kv in cnt.most_common(4))))
-        break
-else:
-    print("no pkgs/urls.txt -- serving host UNKNOWN, not assumed")
-PY
-)
+  hosts="$(served_by_measured "$ENVPY")"
   printf 'dolfinx=%s\nprefix=%s\nconda=%s\nrequested_channel=%s\nserved_by=%s\ncondarc=%s\nbootstrap=%s\nrecorded=%s\n' \
     "$pv" "$PREFIX" "$("$MF_HOME/bin/conda" --version 2>&1 | head -1)" "${CF_CHANNEL:-conda-forge}" \
     "$hosts" "${CONDARC:-none}" \
@@ -370,6 +386,13 @@ status_body() {
     exit 0
   fi
   log "python=$(PYBIN) prefix-present=$([ -x "$PREFIX/bin/python" ] && echo yes || echo no)"
+  # The version and the serving host are re-measured here with the same code install uses, because
+  # install_channel.txt is a snapshot taken at the moment the transaction printed its last line --
+  # and that snapshot came out with an empty host tally (urls.txt existed, was still empty).
+  if [ -x "$PREFIX/bin/python" ]; then
+    log "dolfinx=$("$PREFIX/bin/python" -c 'import dolfinx; print(dolfinx.__version__)' 2>/dev/null || echo 'not importable')"
+    log "served_by=$(served_by_measured "$PREFIX/bin/python")"
+  fi
   if [ -f "$OUTROOT/second_impl.POINTER" ]; then
     log "pointer=$(head -1 "$OUTROOT/second_impl.POINTER")"
   else
