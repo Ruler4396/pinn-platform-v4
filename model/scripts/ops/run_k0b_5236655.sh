@@ -20,6 +20,7 @@ REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="$WS/ffroot.tgz"
 LOGD="$WS/out/k0b_5236655"
+SUITED="${SUITED:-/mnt/workspace/route2_selftest}"   # must be OUTSIDE the repo checkout
 PHASE="${1:-check}"
 BUDGET_S="${BUDGET_S:-180}"
 CASE="${CASE:-TB-base}"
@@ -129,7 +130,14 @@ case "$PHASE" in
     for p in "${!EXPECT[@]}"; do fetch_one "$p" || { log "ABORT: fetch failed for $p"; exit 1; }; done
     step emission fatal 90 "cd '$R2' && python3 generate_t_case.py --selfcheck-emission"
     expect_red digits_refused "cd '$R2' && python3 generate_t_case.py --truth-digits 6 --dry-run --out-root '$LOGD/digits'"
-    step suite fatal 300 "cd '$R2' && python3 selftest_route2_stdlib.py --json '$LOGD/route2_selftest.json' --cases TB-base"
+    # TWO fixes found by running this on dsw-2213920 at 14:43:
+    #  1. $LOGD lives under $WS, and $WS is a repo checkout on the instance, so the suite's own
+    #     guard ("refusing to write self-test output inside the repo") correctly killed it.  The
+    #     evidence directory must be outside the checkout.
+    #  2. `--cases TB-base` made `s2_adversary_geometry_is_the_asymmetric_one` fail by
+    #     construction (it reads the TB-asym summary), so it was a harness artefact, not a finding.
+    mkdir -p "$SUITED"
+    step suite fatal 300 "cd '$R2' && python3 selftest_route2_stdlib.py --json '$SUITED/route2_selftest.json'"
     log "CHECK done: emission controls, the 6-digit refusal and the stdlib suite all had to bite."
     ;;
   smoke)
