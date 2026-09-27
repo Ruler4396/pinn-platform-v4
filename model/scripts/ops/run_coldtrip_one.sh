@@ -22,7 +22,7 @@
 # No training, no money, no rewrite of pushed history.
 set -uo pipefail
 
-FULL_PIN="${FULL_PIN:-5aab6f06986ed2ae502b92787f5b395344842a25}"   # origin/main, read this turn
+FULL_PIN="${FULL_PIN:-4d7601458e2038962a9e1f60a2433b545222cacb}"   # origin/main = the commit this driver itself landed in
 REPO=Ruler4396/pinn-platform-v4
 WS="${WS:-/mnt/workspace/pinn-repro-2026}"
 FFROOT="${FFROOT:-$WS/ffroot.tgz}"
@@ -44,7 +44,9 @@ seg_end() { # verdict  shutdown-advice  what-is-missing
   say "SEGMENT-END shutdown=$2 missing=$3"
 }
 
-# sha256(blob bytes) prefix at FULL_PIN, measured this turn (not remembered from an older trip).
+# sha256(blob bytes) prefix, measured at the pin below this turn (all 13 re-read at 4d76014,
+# which is where this driver itself lives -- the earlier lesson: a table partly measured at an
+# older pin makes the instance side FETCH badhash and burns the trip).
 declare -A WANT=(
   [model/scripts/gen_ns_re_edp.py]=530a74544dc046d7
   [model/scripts/finalize_ns_truth.py]=adc427cf87bc8995
