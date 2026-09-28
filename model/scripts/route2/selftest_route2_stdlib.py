@@ -2314,6 +2314,51 @@ def module_hygiene_checks(ck: Check) -> None:
            "positive control: the first is reported, the second is not")
 
 
+def roundtrip_clock_checks(ck: Check, tmp: Path) -> None:
+    """The clock-in-the-artefact guard, now as a machine-decided gate.
+
+    This shape appeared three times today (s1_plan.json, k0_verdict.json, roundtrip_h_test.py) and the
+    third one I only caught because two local passes of the SAME code printed two different digests.
+    That is past the threshold where "be careful" is the control: two identical runs of the harness must
+    give one byte-identical verdict JSON, with the seconds living in a named sidecar.
+    """
+    import hashlib
+    import subprocess
+
+    def digest(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+    script = HERE / "roundtrip_h_test.py"
+    seed = 20260928
+    dirs = []
+    rc = []
+    for tag in ("pass1", "pass2"):
+        root = tmp / f"roundtrip_{tag}"
+        r = subprocess.run([sys.executable, str(script), "--stdlib-only", "--out-root", str(root),
+                            "--obs-seed", str(seed)], capture_output=True, text=True, timeout=180)
+        rc.append(r.returncode)
+        dirs.append(root / f"roundtrip_h_seed{seed}.json")
+    v1, v2 = [json.loads(p.read_text(encoding="utf-8")) for p in dirs]
+    t1, t2 = [json.loads(Path(str(p).replace(".json", "_timing.json")).read_text(encoding="utf-8"))
+              for p in dirs]
+    ck.add("runtime.TWO_IDENTICAL_PASSES_OF_THE_ROUNDTRIP_GIVE_ONE_DIGEST",
+           rc == [0, 0] and digest(dirs[0]) == digest(dirs[1]) and "wall_s" not in json.dumps(v1),
+           {"digest_pass1": digest(dirs[0]), "digest_pass2": digest(dirs[1]),
+            "sidecar_wall_s": [t1.get("wall_s"), t2.get("wall_s")],
+            "gates": {"rank": v1.get("G1_rank", {}).get("rank"),
+                      "baseline_sse_last": v1.get("arm_baseline_same_dof", {}).get("sse_last")}},
+           "the seconds differ, the verdict does not -- and no clock key is left inside it")
+
+    # 必红: fold the sidecar back into the comparable block and the SAME two readings must split.
+    folded = [json.dumps({**v1, "wall_s": t1.get("wall_s")}, sort_keys=True),
+              json.dumps({**v2, "wall_s": t2.get("wall_s")}, sort_keys=True)]
+    fh = [hashlib.sha256(x.encode("utf-8")).hexdigest()[:16] for x in folded]
+    ck.add("runtime.MUST_RED_refolding_the_clock_into_the_verdict_splits_the_two_passes",
+           fh[0] != fh[1],
+           {"folded_pass1": fh[0], "folded_pass2": fh[1], "as_shipped": digest(dirs[0])},
+           "if wall_s ever moves back, two identical runs stop being one digest -- that is this red")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="route2 K0/S1 stdlib self-test")
     ap.add_argument("--json", default=str(DEFAULT_OUT), help="output json (scratch dir)")
@@ -2355,6 +2400,7 @@ def main() -> int:
               f"({100.0 * lens / geom.area():.1f}% of domain) -- frame assignment is a "
               f"convention there, made single-valued by blend weights for plan (b)")
     ck.prefix = ""
+    roundtrip_clock_checks(ck, tmp_root)
     mesh_gate_checks(ck)
     k0_verdict_checks(ck)
     module_hygiene_checks(ck)

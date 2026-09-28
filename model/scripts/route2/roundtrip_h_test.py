@@ -274,7 +274,10 @@ def train_mlp(target, log):
     dof_hat = {}
     for b in ("stem", "up", "down"):
         with __import__("torch").no_grad():
-            dof_hat[b] = tuple(float(hnet(b, [f])[i]) for i, f in enumerate(KNOTS[b]))
+            # one call per branch: hnet returns one row per fraction, so feeding a single fraction and
+            # then indexing [i] is an IndexError -- this is exactly what the instance run caught.
+            vals = hnet(b, list(KNOTS[b]))
+            dof_hat[b] = tuple(float(v) for v in vals)
     return {"ran": True, "torch_version": torch.__version__, "steps": len(hist),
             "loss_first": hist[0], "loss_last": hist[-1], "grad_norm_first": gnorm[0],
             "grad_norm_last": gnorm[-1], "trainable_parameters": len(ps),
@@ -330,7 +333,11 @@ def main() -> int:
             log.append("[G2b] trainable arm skipped on purpose (--stdlib-only)")
         else:
             ck.enter("G2b_trainable")
-            t = train_mlp(target, log)
+            try:
+                t = train_mlp(target, log)
+            except Exception as exc:                    # torch is an external dependency: report, don't crash
+                t = {"ran": False, "why": f"trainable arm raised {type(exc).__name__}: {str(exc)[:160]}"}
+                log.append(f"[G2b] trainable arm raised {type(exc).__name__} -- reported as NOT RUN")
             if not t["ran"]:
                 v["arm_trainable"] = t
                 v["G2_training"] = {"pass": False, "why": t["why"]}
@@ -373,15 +380,22 @@ def main() -> int:
         log.append(f"[STOP] budget {s.info['budget_s']:.0f}s exceeded in phase {s.info['phase']} "
                    f"at {s.info['used_s']}s -- named, not hidden")
         rc = 3
-    v["wall_s"] = ck.used()
+    # The wall clock does NOT belong in the artefact: this is the third time today the same shape
+    # appeared (s1_plan.json, k0_verdict.json, and now this file). Two identical runs must produce one
+    # byte-identical JSON, so the seconds go to a named sidecar next to it.
+    timing = {"wall_s": ck.used(), "budget_s": args.max_seconds,
+              "self_stopped": v.pop("self_stopped", None)}
     out_root = Path(args.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
     out = out_root / f"roundtrip_h_seed{args.obs_seed}.json"
     out.write_text(json.dumps(v, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tout = out_root / f"roundtrip_h_seed{args.obs_seed}_timing.json"
+    tout.write_text(json.dumps(timing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print("\n".join(log))
     print(f"json={out}")
+    print(f"timing_json={tout} wall={timing['wall_s']}s stopped_in={timing.get('self_stopped') or 'no'}")
     print(f"GATES rank={v.get('G1_rank', {}).get('pass')} training={v.get('G2_training', {}).get('pass')} "
-          f"shape={v.get('G3_shape', {}).get('pass')} rc={rc} wall={v['wall_s']}s")
+          f"shape={v.get('G3_shape', {}).get('pass')} rc={rc}")
     return rc
 
 
