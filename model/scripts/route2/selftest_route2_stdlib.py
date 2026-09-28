@@ -2359,6 +2359,60 @@ def roundtrip_clock_checks(ck: Check, tmp: Path) -> None:
            "if wall_s ever moves back, two identical runs stop being one digest -- that is this red")
 
 
+def inversion_gate_checks(ck: Check) -> None:
+    """The §4 gate as a permanent fixture set: the floor must be non-vacuous, and the old denominator
+    must be caught passing something the new one refuses.  Tonight's sixth tautological-gate shape,
+    so it is judged by a red the machine produces, not by a sentence.
+    """
+    import inversion_gate as ig
+    import roundtrip_h_test as rh
+    htrue = ig.dof_fn(rh.H_TRUE)
+    e_k1 = ig.shape_error(ig.constant_fn(1.0), htrue)["rel_l2"]
+    e_b = ig.shape_error(ig.dof_fn({"stem": (1.0, 0.98, 0.85), "up": (1.02, 1.0), "down": (1.05,)}), htrue)["rel_l2"]
+    e_c = ig.shape_error(ig.dof_fn({"stem": (1.0, 0.96, 0.78), "up": (1.04, 0.96), "down": (1.09,)}), htrue)["rel_l2"]
+    ck.add("gate.floor_denominator_is_measured_not_zero", e_k1 > 0.0 and e_b < e_k1,
+           {"e_K1_constant_baseline": round(e_k1, 6), "e_B": round(e_b, 6), "e_C": round(e_c, 6),
+            "floor_0.20x": round(0.20 * e_k1, 6)},
+           "the denominator is the K=1 constant fit through the SAME metric pipeline")
+
+    d_good = ig.decide([e_k1], [e_b], [e_c], monotone_ok=True, peak_ok=True)
+    ck.add("gate.positive_example_reaches_the_strong_verdict",
+           d_good["status"] == "判定" and "反演成立" in (d_good["verdict"] or "")
+           and d_good["effect_ok"] and d_good["stat_ok"],
+           {"verdict": d_good["verdict"], "delta": round(d_good["delta"], 6),
+            "boot_lower_95": round(d_good["boot_lower_95"], 6) if d_good.get("boot_lower_95") else None},
+           "effect floor AND paired bootstrap lower bound > 0, both required")
+
+    d_tie = ig.decide([e_k1], [e_b], [e_b], monotone_ok=False, peak_ok=False)
+    ck.add("gate.copy_of_the_baseline_scores_zero_delta_and_the_honest_verdict",
+           abs(d_tie["delta"]) < 1.0e-15 and "不优于" in (d_tie["verdict"] or ""),
+           {"delta": d_tie["delta"], "verdict": d_tie["verdict"]},
+           "a tie is never a pass -- 归宿② is the only legal output")
+
+    old_passes = (e_b - e_c) >= 0.20 * 0.0
+    d_red = ig.decide([0.0], [e_b], [e_c], monotone_ok=True)
+    ck.add("gate.MUST_RED_the_old_e(A)=0_denominator_passed_what_this_one_refuses",
+           old_passes and d_red["status"] == "未验" and d_red["refused"] == "floor_denominator_zero"
+           and d_red["verdict"] is None,
+           {"old_gate_said_pass": old_passes, "new_status": d_red["status"],
+            "new_refused": d_red["refused"]},
+           "this is the red that shows the new gate is not empty")
+
+    d_one = ig.decide([e_k1], [e_b], [e_c], monotone_ok=False, peak_ok=False)
+    ck.add("gate.MUST_RED_one_cell_alone_never_reaches_the_strong_verdict",
+           d_one["cells_ok"] == 1 and "不优于" in (d_one["verdict"] or ""),
+           {"cells_ok": d_one["cells_ok"], "cells_supplied": d_one["cells_supplied"],
+            "shape_l2_passed": d_one["cells"]["shape_l2"], "verdict": d_one["verdict"]},
+           "a real shape improvement alone is NOT enough: §4 needs >=2 of 3 cells, and loosening that "
+           "is exactly what this red catches")
+
+    r4 = ig.rank_is_deficient_for_node_only(rh.H_TRUE)
+    ck.add("gate.node_only_observations_are_measurably_rank_deficient",
+           r4["deficient"] and r4["rank_node_only"] < r4["n_dof"],
+           {"rank_node_only": r4["rank_node_only"], "n_dof": r4["n_dof"], "rows": r4["rows"]},
+           "归宿③ (observation cannot determine the shape) is measured from the forward model")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="route2 K0/S1 stdlib self-test")
     ap.add_argument("--json", default=str(DEFAULT_OUT), help="output json (scratch dir)")
@@ -2401,6 +2455,7 @@ def main() -> int:
               f"convention there, made single-valued by blend weights for plan (b)")
     ck.prefix = ""
     roundtrip_clock_checks(ck, tmp_root)
+    inversion_gate_checks(ck)
     mesh_gate_checks(ck)
     k0_verdict_checks(ck)
     module_hygiene_checks(ck)
