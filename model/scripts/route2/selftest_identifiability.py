@@ -55,6 +55,21 @@ EXACT_PRINT = "%.6g"                                  # the repo's 6-significant
 PLATEAU_INJECT = 1.35                                 # push one cell 35% above the band
 
 
+def _emit(line: str) -> None:
+    """Print without ever letting a glyph take the suite down.
+
+    Measured 12:57: a `ck.measure` value containing `=>`/`\u21d2` hit the GBK console, raised
+    UnicodeEncodeError inside `print`, and killed 58 finished readings plus the summary line --
+    the same failure family as an in-process product call throwing through `ck.add`'s argument.
+    Evidence must degrade to a `?`, never to a missing `total=`.
+    """
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(line.encode(enc, errors="replace").decode(enc, errors="replace"))
+
+
 class Check:
     def __init__(self) -> None:
         self.rows: List[dict] = []
@@ -62,18 +77,18 @@ class Check:
 
     def add(self, name: str, ok: bool, value: object, limit: object = "") -> None:
         self.rows.append({"check": name, "pass": bool(ok), "value": value, "limit": limit})
-        print(f"[{'PASS' if ok else 'FAIL'}] {name}: value={_fmt(value)} limit={_fmt(limit)}")
+        _emit(f"[{'PASS' if ok else 'FAIL'}] {name}: value={_fmt(value)} limit={_fmt(limit)}")
 
     def skip(self, name: str, value: object, limit: object = "") -> None:
         """Counted and printed, never folded into PASS: a check with no input to run on is
         not the same claim as one that ran and passed."""
         self.rows.append({"check": name, "pass": True, "skipped": True,
                           "value": value, "limit": limit})
-        print(f"[SKIP] {name}: value={_fmt(value)} limit={_fmt(limit)}")
+        _emit(f"[SKIP] {name}: value={_fmt(value)} limit={_fmt(limit)}")
 
     def measure(self, name: str, value: object) -> None:
         """A reading, not a verdict -- see the module docstring."""
-        print(f"[gateA-measure] {name}={_fmt(value)}")
+        _emit(f"[gateA-measure] {name}={_fmt(value)}")
 
     @property
     def skipped(self) -> List[str]:
@@ -879,9 +894,12 @@ def main() -> int:
 
     # The verdict prints before anything touches the disk: a refused artifact write must not
     # be able to eat the summary line and leave green lines with rc=1 (统括官 11:0x 实测形状)
-    print(f"total={len(ck.rows)} failed={len(ck.failed)} skipped={len(ck.skipped)}")
+    _emit(f"total={len(ck.rows)} failed={len(ck.failed)} skipped={len(ck.skipped)}")
+    skip_names = ", ".join(ck.skipped) if ck.skipped else "(none)"
+    _emit(f"[gateA] skip_context: skipped={len(ck.skipped)} 只在本次上下文成立——凡依赖 .git 或真数据的格子，"
+          f"在仓外子箱里诚实 [SKIP]（是\u201c没跑\u201d，不是\u201c跑坏\u201d）；本轮名单={skip_names}")
     if ck.failed:
-        print("FAILED: " + ", ".join(ck.failed))
+        _emit("FAILED: " + ", ".join(ck.failed))
     verdict_rc = 1 if ck.failed else 0
     print(f"{'FAILED' if ck.failed else 'ALL GREEN'} elapsed_s={time.perf_counter() - t0:.3f}")
     out = Path(args.json) if args.json else DEFAULT_OUT

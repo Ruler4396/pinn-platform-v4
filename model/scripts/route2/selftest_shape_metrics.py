@@ -62,23 +62,38 @@ DEFAULT_OUT = (Path("D:/PINN-restart/.scratch/route2/shape_metrics_selftest.json
                / "shape_metrics_selftest.json")
 
 
+def _emit(line: str) -> None:
+    """Print without ever letting a glyph take the suite down.
+
+    Measured 12:57: a `ck.measure` value containing `=>`/`\u21d2` hit the GBK console, raised
+    UnicodeEncodeError inside `print`, and killed 58 finished readings plus the summary line --
+    the same failure family as an in-process product call throwing through `ck.add`'s argument.
+    Evidence must degrade to a `?`, never to a missing `total=`.
+    """
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(line.encode(enc, errors="replace").decode(enc, errors="replace"))
+
+
 class Check:
     def __init__(self) -> None:
         self.rows: List[dict] = []
 
     def add(self, name: str, ok: bool, value: object, limit: object = "") -> None:
         self.rows.append({"check": name, "pass": bool(ok), "value": value, "limit": limit})
-        print(f"[{'PASS' if ok else 'FAIL'}] {name}: value={_fmt(value)} limit={_fmt(limit)}")
+        _emit(f"[{'PASS' if ok else 'FAIL'}] {name}: value={_fmt(value)} limit={_fmt(limit)}")
 
     def measure(self, name: str, value: object) -> None:
-        print(f"[shape-measure] {name}={_fmt(value)}")
+        _emit(f"[shape-measure] {name}={_fmt(value)}")
 
     def skip(self, name: str, value: object, limit: object = "") -> None:
         """Counted and printed, never folded into PASS: a check with nothing to run on is not
         the same claim as one that ran and passed."""
         self.rows.append({"check": name, "pass": True, "skipped": True,
                           "value": value, "limit": limit})
-        print(f"[SKIP] {name}: value={_fmt(value)} limit={_fmt(limit)}")
+        _emit(f"[SKIP] {name}: value={_fmt(value)} limit={_fmt(limit)}")
 
     @property
     def skipped(self) -> List[str]:
@@ -606,9 +621,12 @@ def main() -> int:
     # The verdict prints before anything touches the disk, so a refused artifact write can
     # never leave "a wall of green lines, no summary, rc=1" -- the shape a healthy suite was
     # wearing when a verifier ran it from another directory (统括官 11:0x).
-    print(f"total={len(ck.rows)} failed={len(ck.failed)} skipped={len(ck.skipped)}")
+    _emit(f"total={len(ck.rows)} failed={len(ck.failed)} skipped={len(ck.skipped)}")
+    skip_names = ", ".join(ck.skipped) if ck.skipped else "(none)"
+    _emit(f"[shape] skip_context: skipped={len(ck.skipped)} 只在本次上下文成立——凡依赖 .git 或真数据的格子，"
+          f"在仓外子箱里诚实 [SKIP]（是\u201c没跑\u201d，不是\u201c跑坏\u201d）；本轮名单={skip_names}")
     if ck.failed:
-        print("FAILED: " + ", ".join(ck.failed))
+        _emit("FAILED: " + ", ".join(ck.failed))
     verdict_rc = 1 if ck.failed else 0
     print(f"{'FAILED' if ck.failed else 'ALL GREEN'} elapsed_s={time.perf_counter() - t0:.3f}")
 

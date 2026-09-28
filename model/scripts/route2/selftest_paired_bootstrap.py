@@ -44,6 +44,7 @@ import sys
 import threading
 import tempfile
 import time
+import pathlib
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -66,23 +67,38 @@ NULL_BASE_SEED = 20260928
 MIN_SD_MARGIN = 2.0
 
 
+def _emit(line: str) -> None:
+    """Print without ever letting a glyph take the suite down.
+
+    Measured 12:57: a `ck.measure` value containing `=>`/`\u21d2` hit the GBK console, raised
+    UnicodeEncodeError inside `print`, and killed 58 finished readings plus the summary line --
+    the same failure family as an in-process product call throwing through `ck.add`'s argument.
+    Evidence must degrade to a `?`, never to a missing `total=`.
+    """
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(line.encode(enc, errors="replace").decode(enc, errors="replace"))
+
+
 class Check:
     def __init__(self) -> None:
         self.rows: List[dict] = []
 
     def add(self, name: str, ok: bool, value: object, limit: object = "") -> None:
         self.rows.append({"check": name, "pass": bool(ok), "value": value, "limit": limit})
-        print(f"[{'PASS' if ok else 'FAIL'}] {name}: value={_fmt(value)} limit={_fmt(limit)}")
+        _emit(f"[{'PASS' if ok else 'FAIL'}] {name}: value={_fmt(value)} limit={_fmt(limit)}")
 
     def skip(self, name: str, value: object, limit: object = "") -> None:
         """Counted and printed, never folded into PASS: 'all green' and 'green minus the
         checks that had no input to run on' are different claims."""
         self.rows.append({"check": name, "pass": True, "skipped": True,
                           "value": value, "limit": limit})
-        print(f"[SKIP] {name}: value={_fmt(value)} limit={_fmt(limit)}")
+        _emit(f"[SKIP] {name}: value={_fmt(value)} limit={_fmt(limit)}")
 
     def measure(self, name: str, value: object) -> None:
-        print(f"[boot-measure] {name}={_fmt(value)}")
+        _emit(f"[boot-measure] {name}={_fmt(value)}")
 
     @property
     def skipped(self) -> List[str]:
@@ -521,14 +537,58 @@ def cross_impl_checks(ck: Check) -> None:
            "a non-zero failure here, so this difference is intentional and named")
 
     ck.measure("route2_reported_first_run", dict(ROUTE2_REPORTED))
+    # 统括官 12:5x ④: the 1-ULP residue closes only when the instance product itself enters git
+    # (`git ls-tree -r HEAD | grep inversion_arms` read 0 hits at 12:5x, so "一切走 git" covers the
+    # code but not the bytes).  Naming the condition here means the label flips by measurement --
+    # nobody has to remember which way it went last time, and nobody may loosen the tolerance.
+    # Two scratch roots are searched, not one: this suite lives under the repository, but the
+    # route-2 products land in the WORKSPACE scratch (`D:/PINN-restart/.scratch/route2`) -- the
+    # 统括官's bad base64 frame is there.  Scanning only the repo root would keep reporting
+    # "转写层" out of blindness even after the real bytes arrived on this disk.
+    seen = set()
+    roots, found_scratch = [], {}
+    for cand in (pb.repo_root(), HERE.parents[2] if len(HERE.parents) > 2 else None,
+                 Path("D:/PINN-restart")):
+        if cand is not None and str(cand) not in seen:
+            seen.add(str(cand))
+            roots.append(Path(cand))
+    for r in roots:
+        sc = r / ".scratch" / "route2"
+        if sc.is_dir():
+            hits = sorted(str(x.relative_to(sc)) for x in sc.glob("**/inversion_arms.json"))
+            found_scratch[str(sc)] = hits or "dir present, 0 arms files"
+    if not found_scratch:
+        found_scratch = {"(no .scratch/route2 under any root)": "none"}
+    in_git = []
+    if roots:
+        done = subprocess.run(["git", "ls-tree", "-r", "HEAD", "--name-only"],
+                              capture_output=True, cwd=str(roots[0]), timeout=120, env=child_env())
+        if done.returncode == 0 and done.stdout is not None:
+            in_git = [l for l in done.stdout.decode(CHILD_ENCODING, "replace").splitlines()
+                      if "inversion_arms" in l]
+    # The condition that closes the last ULP is the BYTES, not the location: 统括官 quoted
+    # sha256 43d825ba... for the 5,405 B instance product, so every candidate on this disk is
+    # hashed and compared.  Reporting each candidate's own digest also proves the comparison is
+    # not a vacuous "nothing found, so nothing to check".
+    cands = []
+    for f in sorted({x for sc in found_scratch if isinstance(sc, str)
+                     for x in (pathlib.Path(sc).glob("**/inversion_arms.json")
+                               if pathlib.Path(sc).is_dir() else [])}):
+        raw = f.read_bytes()
+        h = hashlib.sha256(raw).hexdigest()
+        cands.append({"path": str(f), "bytes": len(raw), "sha16": h[:16],
+                      "matches_quoted_43d825ba": h.startswith("43d825ba5e8fc57f")})
+    found_scratch = {k: (len(v) if isinstance(v, list) else v) for k, v in found_scratch.items()}
+    closed = any(c["matches_quoted_43d825ba"] for c in cands)
     ck.measure("reconciliation_input_available_on_this_disk",
-               {"looked_for": "inversion_arms.json 5,405 B / sha256 43d825ba5e8fc57f",
-                "found_instead": sorted(str(x.relative_to(HERE.parents[1] / ".scratch" /
-                                                        "route2"))
-                                        for x in (HERE.parents[1] / ".scratch" / "route2")
-                                        .glob("armC_*/inversion_arms.json"))
-                if (HERE.parents[1] / ".scratch" / "route2").is_dir() else "no .scratch",
-                "per_seed_arrays_present": False})
+               {"looked_for": "inversion_arms.json 5,405 B / sha256 43d825ba... (旧) "
+                              "和 11,172 B (新, leg21 12:19)",
+                "found_on_scratch": found_scratch, "found_in_git": in_git,
+                "candidates_hashed": cands,
+                "strength_label": "原件在这块盘上（sha 对上 43d825ba…）=> 请点一发“原件复算”帧；本测只报条件，"
+                                  "不自动解析别人的 schema" if closed else
+                                  "转写层：quoted sha 未在这块盘上任何 arms 件中出现 => "
+                                  "1 ULP 维持未闭合，不许放宽容差（此测只报条件，不自动跑那一帧）"})
 
 
 # ---- route-2's first-run product, transcribed by the 统括官 from the instance (11:3x).
@@ -622,11 +682,6 @@ def identity_checks(ck: Check) -> None:
            "door-to-door, not door-to-oracle: the two entry points must hash one input alike")
     reap(staged.parent)
 
-    if pb.repo_root() is None:
-        ck.skip("boot_cli_prints_exactly_one_identity_line",
-                "no repository above this copy; the CLI refuses nothing but still needs a table",
-                "driven in the repo, skipped here by cause")
-        return
     box = Path(tempfile.mkdtemp(prefix="boot_ident_"))
     csv_path = box / "rows.csv"
     csv_path.write_bytes(("obs_seed,A,B,C\n" + "\n".join(
@@ -995,11 +1050,14 @@ def main() -> int:
 
     # The verdict prints BEFORE anything touches the disk: a refused artifact write must not
     # be able to eat the summary line and leave a green-looking run exiting 1.
-    print(f"total={len(ck.rows)} failed={len(ck.failed)} skipped={len(ck.skipped)}")
+    _emit(f"total={len(ck.rows)} failed={len(ck.failed)} skipped={len(ck.skipped)}")
+    skip_names = ", ".join(ck.skipped) if ck.skipped else "(none)"
+    _emit(f"[boot] skip_context: skipped={len(ck.skipped)} 只在本次上下文成立——凡依赖 .git 或真数据的格子，"
+          f"在仓外子箱里诚实 [SKIP]（是\u201c没跑\u201d，不是\u201c跑坏\u201d）；本轮名单={skip_names}")
     if ck.failed:
-        print("FAILED: " + ", ".join(ck.failed))
+        _emit("FAILED: " + ", ".join(ck.failed))
     verdict_rc = 1 if ck.failed else 0
-    print(f"{'FAILED' if ck.failed else 'ALL GREEN'} "
+    _emit(f"{'FAILED' if ck.failed else 'ALL GREEN'} "
           f"elapsed_s={time.perf_counter() - t0:.3f}")
 
     out = Path(args.json) if args.json else DEFAULT_OUT
