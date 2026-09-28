@@ -33,6 +33,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -68,6 +69,17 @@ class Check:
         self.rows.append({"check": name, "pass": bool(ok), "value": value, "limit": limit})
         print(f"[{'PASS' if ok else 'FAIL'}] {name}: value={_fmt(value)} limit={_fmt(limit)}")
 
+    def skip(self, name: str, value: object, limit: object = "") -> None:
+        """Counted and printed, never folded into PASS: a check with nothing to run on is not
+        the same claim as one that ran and passed."""
+        self.rows.append({"check": name, "pass": True, "skipped": True,
+                          "value": value, "limit": limit})
+        print(f"[SKIP] {name}: value={_fmt(value)} limit={_fmt(limit)}")
+
+    @property
+    def skipped(self) -> List[str]:
+        return [r["check"] for r in self.rows if r.get("skipped")]
+
     @property
     def failed(self) -> List[str]:
         return [r["check"] for r in self.rows if not r["pass"]]
@@ -77,6 +89,43 @@ def _fmt(v: object) -> str:
     if isinstance(v, float):
         return f"{v:.6g}"
     return json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else str(v)
+
+
+def repo_root() -> Optional[Path]:
+    """Repository = the directory with a `.git` above this file; None if there is none.
+
+    Counting parent levels (the first version: `parents[2]`) is only correct while these files
+    sit at `model/scripts/route2/`.  A verifier who copies them elsewhere got a "repo root" of
+    the drive letter, so every --json target looked in-repo and the refusal fired *after* all the
+    checks and *before* the summary -> a wall of green lines, no total=, rc=1, i.e. a suite that
+    looks broken.  Found no root -> refuse nothing, and say root=unknown out loud.
+    """
+    here = Path(__file__).resolve()
+    for cand in (here, *here.parents):
+        if (cand / ".git").exists():
+            return cand
+    return None
+
+
+def mirror_run_checks(ck: Check) -> None:
+    """Copy the pair to a directory outside any repository and run the copy: rc must be 0 and
+    the summary line must be printed.  Under the old depth-counting root this assertion fails."""
+    if os.environ.get("SHAPE_MIRRORED") == "1":
+        ck.skip("shape_mirror_run_at_foreign_depth_is_green", "we are the mirror run",
+                "not re-entered, so the fixture cannot recurse")
+        return
+    mirror = Path(tempfile.mkdtemp(prefix="shape_mirror_"))
+    for name in ("shape_metrics.py", "selftest_shape_metrics.py"):
+        shutil.copy2(HERE / name, mirror / name)
+    done = subprocess.run([sys.executable, str(mirror / "selftest_shape_metrics.py")],
+                          capture_output=True, text=True, timeout=600, cwd=str(mirror),
+                          env=dict(os.environ, SHAPE_MIRRORED="1"))
+    tail = done.stdout.strip().splitlines()[-1][:70] if done.stdout.strip() else ""
+    ck.add("shape_mirror_run_at_foreign_depth_is_green",
+           done.returncode == 0 and "total=" in done.stdout and "ALL GREEN" in done.stdout,
+           {"rc": done.returncode, "summary_present": "total=" in done.stdout,
+            "last_line": tail, "mirror": mirror.name},
+           "rc=0 with a total= line, at a depth where counting parents gives a wrong root")
 
 
 # ------------------------------------------------------------------ red 1: zero denominator
@@ -334,26 +383,35 @@ def main() -> int:
                           capture_output=True, text=True, timeout=120).returncode == 0,
            "rc=0", "the demo entry point is reachable")
 
+    mirror_run_checks(ck)
+
+    # The verdict prints before anything touches the disk, so a refused artifact write can
+    # never leave "a wall of green lines, no summary, rc=1" -- the shape a healthy suite was
+    # wearing when a verifier ran it from another directory (统括官 11:0x).
+    print(f"total={len(ck.rows)} failed={len(ck.failed)} skipped={len(ck.skipped)}")
+    if ck.failed:
+        print("FAILED: " + ", ".join(ck.failed))
+    verdict_rc = 1 if ck.failed else 0
+    print(f"{'FAILED' if ck.failed else 'ALL GREEN'} elapsed_s={time.perf_counter() - t0:.3f}")
+
     out = Path(args.json) if args.json else DEFAULT_OUT
-    repo_root = HERE.parents[2]
-    if repo_root in out.resolve().parents or str(out).startswith(str(repo_root)):
-        raise SystemExit(f"refusing to write self-test output inside the repo: {out}")
+    root = repo_root()
+    if root is not None and (root in out.resolve().parents
+                             or str(out.resolve()).startswith(str(root) + os.sep)):
+        print(f"[shape] artifact_refused: 目标是仓内路径，不写盘: {out}")
+        return verdict_rc or 2
     if args.json:
         out.parent.mkdir(parents=True, exist_ok=True)
-        text = json.dumps({"checks": ck.rows, "failed": ck.failed}, ensure_ascii=False,
-                         indent=2) + "\n"
+        text = json.dumps({"checks": ck.rows, "failed": ck.failed, "skipped": ck.skipped},
+                          ensure_ascii=False, indent=2) + "\n"
         if out.is_file() and out.stat().st_size > 0 and not args.force:
-            raise SystemExit(f"refusing to overwrite non-empty {out} (pass --force)")
+            print(f"[shape] artifact_refused: 目标非空且未加 --force，不覆盖: {out}")
+            return verdict_rc or 2
         out.write_bytes(text.encode("utf-8"))
         digest = hashlib.sha256(out.read_bytes()).hexdigest()
         print(f"json={out}")
         print(f"[shape] artifact_selfcert: path={out} bytes={out.stat().st_size} sha256={digest}")
-    print(f"total={len(ck.rows)} failed={len(ck.failed)}")
-    if ck.failed:
-        print("FAILED: " + ", ".join(ck.failed))
-        return 1
-    print(f"ALL GREEN elapsed_s={time.perf_counter() - t0:.3f}")
-    return 0
+    return verdict_rc
 
 
 if __name__ == "__main__":

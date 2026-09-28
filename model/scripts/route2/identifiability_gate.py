@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import json
 import math
 import sys
@@ -80,7 +81,7 @@ N_PARAMS = len(PARAM_NAMES_D)
 # UNMEASURED.  This is a missing input, not a folded-away arm.
 FULL_SCALE_DP_KPA: Optional[float] = None
 BANNED_IMPORT_ROOTS = ("numpy", "scipy", "torch")
-IMPORT_ALLOW_LIST = ("__future__", "argparse", "hashlib", "json", "math", "sys", "time",
+IMPORT_ALLOW_LIST = ("__future__", "argparse", "hashlib", "json", "math", "os", "sys", "time",
                      "pathlib", "typing", "impedance_baseline")
 
 
@@ -541,9 +542,31 @@ def report(lengths: Dict[str, float], theta_true: Sequence[float], p_in: float,
     return out
 
 
-def _is_inside_repo(path: Path) -> bool:
-    root = HERE.parents[2]
-    return root in path.resolve().parents or str(path).startswith(str(root))
+def repo_root():
+    """The repository is wherever a `.git` sits above this file -- never a fixed parent count.
+
+    `Path(__file__).parents[2]` is only correct while the file stays at model/scripts/route2/.
+    A verifier who copies these files to any other depth then gets a "root" of the drive letter,
+    every --json target looks in-repo, and the guard fires after the work: green lines, no
+    summary, rc=1, which reads exactly like a broken suite (统括官 11:0x 实测).  No `.git`
+    found -> no root -> the guard does not refuse, and says root=unknown out loud.
+    """
+    here = Path(__file__).resolve()
+    for cand in (here, *here.parents):
+        if (cand / ".git").exists():
+            return cand
+    return None
+
+
+def inside_repo(path):
+    root = repo_root()
+    if root is None:
+        return False
+    target = Path(path).resolve()
+    return root in target.parents or str(target).startswith(str(root) + os.sep)
+
+def _is_inside_repo(path: Path) -> bool:      # kept as an alias for the self-test's checks
+    return inside_repo(path)
 
 
 def main() -> int:
@@ -591,12 +614,19 @@ def main() -> int:
             print(f"[gateA] REFUSED: {exc}")
             rc = 1
 
+    out = None
     if args.json:
         out = Path(args.json)
         if _is_inside_repo(out):
-            raise SystemExit(f"refusing to write inside the repository: {out}")
-        if out.is_file() and out.stat().st_size > 0 and not args.force:
-            raise SystemExit(f"refusing to overwrite non-empty {out} (pass --force)")
+            print(f"[gateA] artifact_refused: 目标是仓内路径，不写盘: {out} "
+                  f"(root={repo_root()})")
+            rc = rc or 2
+            out = None
+        elif out.is_file() and out.stat().st_size > 0 and not args.force:
+            print(f"[gateA] artifact_refused: 目标非空且未加 --force，不覆盖: {out}")
+            rc = rc or 2
+            out = None
+    if out is not None and args.json:
         out.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(rep, ensure_ascii=False, indent=2) + "\n"
         # write_bytes, not write_text: text mode turns every \n into \r\n on Windows, so a

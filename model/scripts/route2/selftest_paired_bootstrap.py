@@ -36,6 +36,8 @@ import json
 import math
 import os
 import random
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -336,10 +338,15 @@ def cli_checks(ck: Check) -> None:
     refused = pb.main(["--table", _write_csv([(0.0, 3.0, 1.0), (0.0, 5.0, 3.0)])])
     ck.add("boot_cli_dead_floor_exits_nonzero", refused == 1, "rc=1",
            "a blocked verdict is not a successful run")
-    ck.add("boot_cli_refuses_to_write_inside_the_repo",
-           pb.main(["--table", five, "--json", str(HERE / "junk.json")]) == 2
-           and not (HERE / "junk.json").exists(),
-           "rc=2 and no file created", "artifact must land outside the repository")
+    if pb.repo_root() is None:
+        ck.skip("boot_cli_refuses_to_write_inside_the_repo",
+                "no .git above this copy, so the guard has nothing to refuse",
+                "not attempted here; in the real repo it must return rc=2")
+    else:
+        ck.add("boot_cli_refuses_to_write_inside_the_repo",
+               pb.main(["--table", five, "--json", str(HERE / "junk.json")]) == 2
+               and not (HERE / "junk.json").exists(),
+               "rc=2 and no file created", "artifact must land outside the repository")
 
 
 def _write_csv(rows: Sequence[Tuple[float, float, float]]) -> str:
@@ -495,6 +502,34 @@ def cross_impl_checks(ck: Check) -> None:
                 "per_seed_arrays_present": False})
 
 
+def mirror_run_checks(ck: Check) -> None:
+    """Copy the pair to a directory outside the repo and run the copy: the summary line must
+    still print and rc must be 0.
+
+    The first version located the repository by counting parent levels
+    (`Path(__file__).parents[2]`), so a verifier who moved these two files elsewhere got a
+    "repo root" of the drive letter, every --json target looked in-repo, and the refusal fired
+    after all the checks but before the summary -> 42 green lines, no total=, rc=1, which reads
+    exactly like a broken suite.
+    """
+    if os.environ.get("BOOT_MIRRORED") == "1":
+        ck.skip("boot_mirror_run_at_foreign_depth_is_green", "we are the mirror run",
+                "not re-entered, so the fixture cannot recurse")
+        return
+    mirror = Path(tempfile.mkdtemp(prefix="boot_mirror_"))
+    for name in ("paired_bootstrap.py", "selftest_paired_bootstrap.py"):
+        shutil.copy2(HERE / name, mirror / name)
+    done = subprocess.run([sys.executable, str(mirror / "selftest_paired_bootstrap.py")],
+                          capture_output=True, text=True, timeout=600, cwd=str(mirror),
+                          env=dict(os.environ, BOOT_MIRRORED="1"))
+    tail = done.stdout.strip().splitlines()[-1][:70] if done.stdout.strip() else ""
+    ck.add("boot_mirror_run_at_foreign_depth_is_green",
+           done.returncode == 0 and "total=" in done.stdout and "ALL GREEN" in done.stdout,
+           {"rc": done.returncode, "summary_present": "total=" in done.stdout,
+            "last_line": tail, "mirror": mirror.name},
+           "rc=0 with a total= line, at a depth where counting parents gives a wrong root")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="paired_bootstrap self-test (stdlib, no machine time)")
     ap.add_argument("--json", default="", help="write the check log outside the repository")
@@ -510,28 +545,37 @@ def main() -> int:
     cli_checks(ck)
     structure_checks(ck)
     cross_impl_checks(ck)
+    mirror_run_checks(ck)
+
+    # The verdict prints BEFORE anything touches the disk: a refused artifact write must not
+    # be able to eat the summary line and leave a green-looking run exiting 1.
+    print(f"total={len(ck.rows)} failed={len(ck.failed)} skipped={len(ck.skipped)}")
+    if ck.failed:
+        print("FAILED: " + ", ".join(ck.failed))
+    verdict_rc = 1 if ck.failed else 0
+    print(f"{'FAILED' if ck.failed else 'ALL GREEN'} "
+          f"elapsed_s={time.perf_counter() - t0:.3f}")
 
     out = Path(args.json) if args.json else DEFAULT_OUT
-    repo_root = HERE.parents[2]
-    if repo_root in out.resolve().parents or str(out).startswith(str(repo_root)):
-        raise SystemExit(f"refusing to write self-test output inside the repo: {out}")
+    root = pb.repo_root()
+    if root is not None and (root in out.resolve().parents
+                             or str(out.resolve()).startswith(str(root) + os.sep)):
+        print(f"[boot] artifact_refused: 目标是仓内路径，不写盘: {out}")
+        return verdict_rc or 2
     if args.json:
         out.parent.mkdir(parents=True, exist_ok=True)
-        text = json.dumps({"checks": ck.rows, "failed": ck.failed}, ensure_ascii=False,
-                         indent=2) + "\n"
+        text = json.dumps({"checks": ck.rows, "failed": ck.failed,
+                           "skipped": ck.skipped}, ensure_ascii=False,
+                          indent=2) + "\n"
         if out.is_file() and out.stat().st_size > 0 and not args.force:
-            raise SystemExit(f"refusing to overwrite non-empty {out} (pass --force)")
+            print(f"[boot] artifact_refused: 目标非空且未加 --force，不覆盖: {out}")
+            return verdict_rc or 2
         out.write_bytes(text.encode("utf-8"))
         digest = hashlib.sha256(out.read_bytes()).hexdigest()
         print(f"json={out}")
         print(f"[boot] artifact_selfcert: path={out} bytes={out.stat().st_size} "
               f"sha256={digest}")
-    print(f"total={len(ck.rows)} failed={len(ck.failed)} skipped={len(ck.skipped)}")
-    if ck.failed:
-        print("FAILED: " + ", ".join(ck.failed))
-        return 1
-    print(f"ALL GREEN elapsed_s={time.perf_counter() - t0:.3f}")
-    return 0
+    return verdict_rc
 
 
 if __name__ == "__main__":

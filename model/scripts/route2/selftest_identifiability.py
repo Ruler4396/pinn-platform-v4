@@ -30,6 +30,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -62,9 +63,20 @@ class Check:
         self.rows.append({"check": name, "pass": bool(ok), "value": value, "limit": limit})
         print(f"[{'PASS' if ok else 'FAIL'}] {name}: value={_fmt(value)} limit={_fmt(limit)}")
 
+    def skip(self, name: str, value: object, limit: object = "") -> None:
+        """Counted and printed, never folded into PASS: a check with no input to run on is
+        not the same claim as one that ran and passed."""
+        self.rows.append({"check": name, "pass": True, "skipped": True,
+                          "value": value, "limit": limit})
+        print(f"[SKIP] {name}: value={_fmt(value)} limit={_fmt(limit)}")
+
     def measure(self, name: str, value: object) -> None:
         """A reading, not a verdict -- see the module docstring."""
         print(f"[gateA-measure] {name}={_fmt(value)}")
+
+    @property
+    def skipped(self) -> List[str]:
+        return [r["check"] for r in self.rows if r.get("skipped")]
 
     @property
     def failed(self) -> List[str]:
@@ -549,8 +561,32 @@ def axis_checks(ck: Check) -> None:
            "classify() returns state/cause/meets_noise_floor/note and neither axis field")
 
 
+def mirror_run_checks(ck: Check) -> None:
+    """Copy the gate + its self-test (and the two read-only modules the gate imports, as
+    copies only) to a directory with no repository above it, and run the copy: rc must be 0
+    and the summary line must be printed.  This is the fixture that would have caught the
+    depth-counting repo root the 统括官 hit at 11:0x."""
+    if os.environ.get("GATEA_MIRRORED") == "1":
+        ck.skip("gateA_mirror_run_at_foreign_depth_is_green", "we are the mirror run",
+                "not re-entered, so the fixture cannot recurse")
+        return
+    mirror = Path(tempfile.mkdtemp(prefix="gateA_mirror_"))
+    for name in ("identifiability_gate.py", "selftest_identifiability.py",
+                 "impedance_baseline.py", "t_geometry.py"):
+        shutil.copy2(HERE / name, mirror / name)     # copies only; nothing in the repo is touched
+    done = subprocess.run([sys.executable, str(mirror / "selftest_identifiability.py")],
+                          capture_output=True, text=True, timeout=600, cwd=str(mirror),
+                          env=dict(os.environ, GATEA_MIRRORED="1"))
+    tail = done.stdout.strip().splitlines()[-1][:70] if done.stdout.strip() else ""
+    ck.add("gateA_mirror_run_at_foreign_depth_is_green",
+           done.returncode == 0 and "total=" in done.stdout and "ALL GREEN" in done.stdout,
+           {"rc": done.returncode, "summary_present": "total=" in done.stdout,
+            "last_line": tail, "mirror": mirror.name},
+           "rc=0 with a total= line, at a depth where counting parents gives a wrong root")
+
+
 def hygiene_checks(ck: Check) -> None:
-    repo_root = HERE.parents[2]
+    root = G.repo_root()      # found by walking up for .git, never by counting levels
     # The CLI itself has to be reachable: argparse interpolates '%' inside help strings, so a
     # bare "3%" in a help line makes `--help` die with TypeError.  That is a real defect in a
     # deliverable whose whole job is to be run by someone else, and only a subprocess sees it.
@@ -560,10 +596,15 @@ def hygiene_checks(ck: Check) -> None:
                               capture_output=True, text=True, timeout=120)
         ck.add(f"gateA_cli.{label}_help_reachable", done.returncode == 0,
                {"rc": done.returncode, "tail": done.stderr.strip()[-60:]}, "rc == 0")
-    ck.add("gateA_refuses_to_write_inside_the_repository",
-           G._is_inside_repo(repo_root / "model" / "smoke.json")
-           and not G._is_inside_repo(Path(DEFAULT_OUT)),
-           str(repo_root), "repo paths refused, scratch path allowed")
+    if root is None:
+        ck.skip("gateA_refuses_to_write_inside_the_repository",
+                "no .git above this copy: the guard has nothing to refuse",
+                "not attempted here; in the real repo an in-repo target must be refused")
+    else:
+        ck.add("gateA_refuses_to_write_inside_the_repository",
+               G._is_inside_repo(root / "model" / "smoke.json")
+               and not G.inside_repo(Path(DEFAULT_OUT)),
+               str(root), "repo paths refused, scratch path allowed")
     tmp = Path(tempfile.mkdtemp(prefix="gateA_"))
     target = tmp / "exists.json"
     target.write_text("{", encoding="utf-8")
@@ -571,8 +612,8 @@ def hygiene_checks(ck: Check) -> None:
     ck.add("gateA_refuses_to_clobber_a_non_empty_artifact_without_force", refused, refused,
            "raise (a re-run must not silently replace the previous reading)")
     ck.add("gateA_artifact_default_path_is_outside_the_repo",
-           repo_root not in Path(DEFAULT_OUT).resolve().parents, str(DEFAULT_OUT),
-           "outside the repository")
+           root is None or root not in Path(DEFAULT_OUT).resolve().parents, str(DEFAULT_OUT),
+           "outside the repository (or no repository in sight to be inside of)")
     # The self-certified digest has to be the digest of the bytes on disk, or every number in
     # a receipt that quotes it is unfalsifiable.  Driving the real CLI is the only way to see
     # this: text mode rewrites \n as \r\n on Windows, so a digest of the string is not a
@@ -612,6 +653,7 @@ def main() -> int:
     rows = report_checks(ck, geo)
     axis_checks(ck)
     hygiene_checks(ck)
+    mirror_run_checks(ck)
     node_rank = G.rank_of(G.jacobian_distributed(geo["theta_node"], geo["lengths"],
                                                   geo["p_in"], ()))
     rich_rank = G.rank_of(G.jacobian_distributed(geo["theta_dist"], geo["lengths"],
@@ -622,26 +664,30 @@ def main() -> int:
     print(f"[gateA-measure] reference_vs_gate_jacobian_max_rel_dev={mismatch:.3e} "
           f"(non-zero means the 1/theta_i factor came back; rank unaffected either way)")
 
+    # The verdict prints before anything touches the disk: a refused artifact write must not
+    # be able to eat the summary line and leave green lines with rc=1 (统括官 11:0x 实测形状)
+    print(f"total={len(ck.rows)} failed={len(ck.failed)} skipped={len(ck.skipped)}")
+    if ck.failed:
+        print("FAILED: " + ", ".join(ck.failed))
+    verdict_rc = 1 if ck.failed else 0
+    print(f"{'FAILED' if ck.failed else 'ALL GREEN'} elapsed_s={time.perf_counter() - t0:.3f}")
     out = Path(args.json) if args.json else DEFAULT_OUT
-    repo_root = HERE.parents[2]
-    if repo_root in out.resolve().parents or str(out).startswith(str(repo_root)):
-        raise SystemExit(f"refusing to write self-test output inside the repo: {out}")
+    root = G.repo_root()
+    if root is not None and G.inside_repo(out):
+        print(f"[gateA] artifact_refused: 目标是仓内路径，不写盘: {out}")
+        return verdict_rc or 2
     if args.json:
         out.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps({"checks": ck.rows, "failed": ck.failed, "rows": rows},
                          ensure_ascii=False, indent=2) + "\n"
         if out.is_file() and out.stat().st_size > 0 and not args.force:
-            raise SystemExit(f"refusing to overwrite non-empty {out} (pass --force)")
+            print(f"[gateA] artifact_refused: 目标非空且未加 --force，不覆盖: {out}")
+            return verdict_rc or 2
         out.write_bytes(text.encode("utf-8"))
         digest = hashlib.sha256(out.read_bytes()).hexdigest()
         print(f"json={out}")
         print(f"[gateA] artifact_selfcert: path={out} bytes={out.stat().st_size} sha256={digest}")
-    print(f"total={len(ck.rows)} failed={len(ck.failed)}")
-    if ck.failed:
-        print("FAILED: " + ", ".join(ck.failed))
-        return 1
-    print(f"ALL GREEN elapsed_s={time.perf_counter() - t0:.3f}")
-    return 0
+    return verdict_rc
 
 
 def _scaling_mismatch(geo: Dict[str, object]) -> float:

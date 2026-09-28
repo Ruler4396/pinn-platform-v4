@@ -253,10 +253,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--cell", default="shape_l2", help="label printed back for traceability")
     ap.add_argument("--json", default="", help="write the result outside the repository")
     args = ap.parse_args(argv)
+    root = repo_root()
     if args.json:
-        root = _repo_root()
         out = pathlib.Path(args.json)
-        if root in out.resolve().parents or str(out).startswith(str(root)):
+        if root is not None and (root in out.resolve().parents
+                or str(out.resolve()).startswith(str(root) + "/")):
             print(f"[boot] REFUSED: 不许写进仓内: {out}")
             return 2
     try:
@@ -278,8 +279,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0 if res["cell_verdict"] == "PASS" else 1
 
 
-def _repo_root():
-    return pathlib.Path(__file__).resolve().parents[2]
+def repo_root() -> Optional["pathlib.Path"]:
+    """Where is the repository?  Decided by walking up for `.git`, never by counting levels.
+
+    The first version did `Path(__file__).parents[2]`, which is only right while the file sits
+    at `model/scripts/route2/`.  A verifier who copies these two files anywhere else (a mirror
+    tree, a scratch dir) got a root pointing at a drive letter, so *every* --json target looked
+    "inside the repository" and the run refused after doing all the work -- which reads like a
+    broken suite.  No root found -> no refusal, and the line says root=unknown out loud.
+    """
+    here = pathlib.Path(__file__).resolve()
+    for cand in [here, *here.parents]:
+        if (cand / ".git").exists():
+            return cand
+    return None
 
 
 if __name__ == "__main__":
