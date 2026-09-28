@@ -2408,6 +2408,15 @@ def inversion_gate_checks(ck: Check) -> None:
 
     # With a zero denominator the comparison is degenerate the OTHER way from §4's floor: the threshold
     # is 0, so even a near-perfect trained arm is judged FAIL. Both directions are why the gate refuses.
+    d_onecell_only = ig.decide([e_k1], [e_b], [e_c])          # shape cell alone, as the first runner did
+    ck.add("gate.MUST_RED_a_single_supplied_cell_is_refused_not_judged",
+           d_onecell_only["status"] == "未验" and d_onecell_only["refused"] == "insufficient_cells"
+           and d_onecell_only["verdict"] is None,
+           {"cells_supplied": d_onecell_only["cells_supplied"], "status": d_onecell_only["status"],
+            "refused": d_onecell_only["refused"]},
+           "the runner that produced the archived 8-seed verdict supplied one cell -- from now on that "
+           "is 未验, not 归宿②, because one cell cannot satisfy '>=2 of 3' either way")
+
     sg_perfect = 1.0e-9 <= 0.5 * 0.0                                  # naive verdict on a ~perfect arm
     sg = ig.shape_gate(0.0, 1.0e-9)
     ck.add("gate.MUST_RED_shape_gate_with_a_zero_denominator_refuses_instead_of_judging",

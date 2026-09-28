@@ -48,10 +48,24 @@ def shape_error(hat, truth) -> dict:
             den += t * t
     throat = min(((b, f, hat(b, f)) for b in rt.KNOTS for f in grid), key=lambda x: x[2])
     throat_true = min(((b, f, truth(b, f)) for b in rt.KNOTS for f in grid), key=lambda x: x[2])
+    # the two discrete cells, so `decide()` stops being handed only one of the three it requires
+    mono = 0
+    tot = 0
+    for b in rt.KNOTS:
+        ds_hat = [hat(b, (i + 1) / 20.0) - hat(b, i / 20.0) for i in range(20)]
+        ds_true = [truth(b, (i + 1) / 20.0) - truth(b, i / 20.0) for i in range(20)]
+        for x, y in zip(ds_hat, ds_true):
+            if abs(y) < 1.0e-4:
+                continue
+            tot += 1
+            mono += 1 if (x > 0) == (y > 0) else 0
+    monotone_frac = (mono / tot) if tot else None
     return {"rel_l2": math.sqrt(num / max(den, 1.0e-30)),
             "throat": {"branch": throat[0], "frac": round(throat[1], 4), "h": round(throat[2], 6)},
             "throat_true": {"branch": throat_true[0], "frac": round(throat_true[1], 4)},
-            "throat_offset_frac": round(abs(throat[1] - throat_true[1]), 4)}
+            "throat_offset_frac": round(abs(throat[1] - throat_true[1]), 4),
+            "monotone_sign_agreement": monotone_frac,
+            "monotone_cells": tot}
 
 
 def dof_fn(dof):
@@ -104,6 +118,12 @@ def decide(per_seed_e_k1, per_seed_e_b, per_seed_e_c, monotone_ok=None, peak_ok=
                 "effect_ok": effect_ok, "stat_ok": stat_ok})
     decided = [v for v in cells.values() if v is not None]
     out["cells_supplied"] = len(decided)
+    if len(decided) < 2:
+        # §4 needs >=2 cells, so a runner that hands over one cell cannot produce a verdict at all --
+        # reporting 归宿② there would look like a judgement and actually be the gate measuring nothing.
+        return {**out, "status": "未验", "refused": "insufficient_cells", "verdict": None,
+                "why": f"cells_supplied={len(decided)} < 2: the rule is '>=2 of 3 cells', so one cell "
+                       "can neither pass nor fail it. Fix the runner, not the threshold."}
     n_ok = sum(1 for v in decided if v)
     # §4 says >= 2 of the three cells.  A one-cell shortcut here would quietly weaken the rule that
     # the pre-registration exists to freeze, so there is deliberately no `n_ok == 1` branch.

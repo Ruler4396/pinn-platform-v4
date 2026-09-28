@@ -157,7 +157,8 @@ def main() -> int:
         e_k1 = ig.shape_error(ig.dof_fn(constant_fit(target)[0]), htrue_fn)["rel_l2"]
         v_b, hist_b = rt.gauss_newton(target, [1.0] * len(rt.PARAMS))
         dof_b = rt.dof_from_vec(v_b)
-        e_b = ig.shape_error(ig.dof_fn(dof_b), htrue_fn)["rel_l2"]
+        err_b = ig.shape_error(ig.dof_fn(dof_b), htrue_fn)
+        e_b = err_b["rel_l2"]
         row = {"obs_seed": s, "e_K1": e_k1, "e_B": e_b, "B_sse_last": hist_b[-1],
                "B_iters": len(hist_b)}
         if args.stdlib_only:
@@ -165,7 +166,8 @@ def main() -> int:
         else:
             c = trained_mlp(target, steps=args.steps, lr=args.lr)
             if c.get("ran"):
-                e_c = ig.shape_error(ig.dof_fn(c["dof_hat_knots"]), htrue_fn)["rel_l2"]
+                err_c = ig.shape_error(ig.dof_fn(c["dof_hat_knots"]), htrue_fn)
+                e_c = err_c["rel_l2"]
                 row["C"] = {k: c[k] for k in ("steps_run", "loss_first", "loss_last", "loss_best",
                                               "best_step", "early_stopped", "trainable_parameters",
                                               "grad_norm_last")}
@@ -173,9 +175,11 @@ def main() -> int:
                 # only checkable if the number itself is carried out of the loop.
                 row["training_cell"] = ig.training_gate(c["loss_first"], c["loss_last"],
                                                         c["grad_norm_last"], orders=3.0)
-                row["shape_cell"] = ig.shape_gate(e_b, row["e_C"], factor=0.5)
+                row["shape_cell"] = ig.shape_gate(e_b, e_c, factor=0.5)
                 row["e_C"] = e_c
-                row["throat_C"] = ig.shape_error(ig.dof_fn(c["dof_hat_knots"]), htrue_fn)["throat"]
+                row["throat_C"] = err_c["throat"]
+                row["throat_offset_frac"] = err_c["throat_offset_frac"]
+                row["monotone_agreement"] = err_c["monotone_sign_agreement"]
             else:
                 row["C"] = c
         res["per_seed"][str(s)] = row
@@ -185,9 +189,14 @@ def main() -> int:
 
     ks = [k for k, v in res["per_seed"].items() if "e_C" in v]
     if ks:
+        # all three cells are now fed, so 归宿① is reachable -- previously the runner handed decide()
+        # one cell and could only ever print 归宿②, which is the same vacuity disease from the other end
+        peak_ok = all(res["per_seed"][k].get("throat_offset_frac", 9.0) <= 0.10 for k in ks)
+        mono_ok = all((res["per_seed"][k].get("monotone_agreement") or 0) >= 0.8 for k in ks)
         verdict = ig.decide([res["per_seed"][k]["e_K1"] for k in ks],
                             [res["per_seed"][k]["e_B"] for k in ks],
-                            [res["per_seed"][k]["e_C"] for k in ks])
+                            [res["per_seed"][k]["e_C"] for k in ks],
+                            monotone_ok=mono_ok, peak_ok=peak_ok)
         res["verdict"] = verdict
         say(f"GATE status={verdict['status']} refused={verdict.get('refused')} "
             f"cells_ok={verdict.get('cells_ok')} verdict={verdict.get('verdict')}")
