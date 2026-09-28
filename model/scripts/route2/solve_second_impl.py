@@ -252,10 +252,22 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     print(f"[solve] exterior facets: total={len(all_ext)} claimed={len(covered)} "
           f"uncovered={len(uncovered)} in-two-sets={doubled}", flush=True)
     if len(uncovered) or doubled:
+        # Which ones, not just how many: a hole on top/bottom means the wall set is wrong, a hole at
+        # an end means the inlet/outlet set is wrong, and those two get opposite corrections.  The
+        # accessor is the one measured on this dolfinx at 08:28:42: `topology.connectivity(1, 0)` gives
+        # an AdjacencyList_int32 with `.links(i)`, and geometry.x is one row per mesh vertex here.
+        try:
+            msh.topology.create_connectivity(1, 0)
+            f2v = msh.topology.connectivity(1, 0)
+            gxyz = msh.geometry.x
+            desc = [(int(i), [tuple(round(float(c), 5) for c in gxyz[int(v)][:2])
+                              for v in f2v.links(int(i))]) for i in sorted(uncovered)[:8]]
+        except Exception as exc:
+            desc = [f"lookup-failed {type(exc).__name__}: {str(exc)[:90]}"]
         raise RuntimeError(f"boundary marking is not a partition: {len(uncovered)} exterior facets "
                            f"carry no condition and {doubled} are claimed twice -- through those the "
                            f"solve leaks, and its three integrals would be reported as a second "
-                           f"implementation's answer")
+                           f"implementation's answer. facets(idx, vertices)={desc}")
     print(f"[solve] exterior facets: inlet={len(f_in)} outlet={len(f_out)} wall={len(f_wall)} "
           f"(inlet+outlet+wall must cover the boundary)", flush=True)
 
