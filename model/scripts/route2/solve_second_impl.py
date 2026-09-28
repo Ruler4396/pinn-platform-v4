@@ -222,23 +222,19 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     Vv, _ = W0.collapse()
     Vp, _ = W1.collapse()
 
-    # Boundary marking.  locate_entities_boundary only ever looks at EXTERIOR facets, and it
-    # evaluates its marker at facet midpoints -- which is exactly why the wall is defined here as
-    # "exterior, and not one of the two end planes" rather than by a curve test: on a
-    # piecewise-linear wall the chord midpoint is not on the curve, so a curve test would mark
-    # nothing and would silently drop the no-slip condition.
+    # Boundary marking.  locate_entities_boundary only ever looks at EXTERIOR facets -- but it does NOT
+    # evaluate its marker at one midpoint per facet, which is what this comment claimed until it was
+    # measured wrong here.  08:31:46 on this box: the four exterior facets left uncovered by
+    # "exterior and not at an end" are the top/bottom WALL facets that merely share a corner vertex with
+    # an end plane, e.g. (15.91111,-0.35)-(16.0,-0.35) and (0.08889,0.5)-(0.0,0.5).  The marker has to
+    # hold for every point the facet has, so any predicate of the form "not near x=0 and not near x=LTOT"
+    # drops exactly those, and the no-slip condition then has four holes the flow leaks through.
+    # The wall is therefore taken as the COMPLEMENT of the two end sets among exterior facets: a
+    # partition by construction, which is what the check below can then demand of it.
     at_in = lambda x: np.isclose(x[0], 0.0)                                    # noqa: E731
     at_out = lambda x: np.isclose(x[0], LTOT)                                  # noqa: E731
-    at_wall = lambda x: ~(np.isclose(x[0], 0.0) | np.isclose(x[0], LTOT))       # noqa: E731
     f_in = locate_entities_boundary(msh, 1, at_in)
     f_out = locate_entities_boundary(msh, 1, at_out)
-    f_wall = locate_entities_boundary(msh, 1, at_wall)
-    # Why this line exists: the base level measured an outlet flux of 0.531 against an inlet flux of
-    # 0.999 (probe at 02:37:51), and the pressure rows make the NET boundary flux exactly zero, so
-    # ~0.47 of the flow left through boundary facets no BC touched.  Constant q in P1 turns
-    # "div u = 0 weakly" into global conservation, so a deficit is a marking hole, not a discretisation
-    # difference.  Count it instead of reasoning about it: every exterior facet must be in exactly one
-    # of the three sets.
     # The API here is measured, not assumed: 0.9's Mesh has no `exterior_facets` attribute at all
     # (08:20:53 on this box: `Mesh attrs: []`, and my first version died with AttributeError), and
     # `dolfinx.mesh.exterior_facet_indices(topology)` raises "Facet to cell connectivity has not been
@@ -246,6 +242,13 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     from dolfinx.mesh import exterior_facet_indices
     msh.topology.create_connectivity(msh.topology.dim, msh.topology.dim - 1)
     all_ext = np.asarray(exterior_facet_indices(msh.topology))
+    f_wall = np.setdiff1d(all_ext, np.union1d(f_in, f_out))
+    # Why this line exists: the base level measured an outlet flux of 0.531 against an inlet flux of
+    # 0.999 (probe at 02:37:51), and the pressure rows make the NET boundary flux exactly zero, so
+    # ~0.47 of the flow left through boundary facets no BC touched.  Constant q in P1 turns
+    # "div u = 0 weakly" into global conservation, so a deficit is a marking hole, not a discretisation
+    # difference.  Count it instead of reasoning about it: every exterior facet must be in exactly one
+    # of the three sets.
     covered = np.concatenate([f_in, f_out, f_wall])
     uncovered = np.setdiff1d(all_ext, covered)
     doubled = len(covered) - len(np.unique(covered))
@@ -276,8 +279,11 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     inlet.interpolate(lambda x: np.stack((np.array([u_inlet(float(yy)) for yy in x[1]]),
                                           np.zeros(x.shape[1], dtype=default_real_type))))
     bc = [
-        dirichletbc(inlet, locate_dofs_topological((W0, Vv), 1, f_in), W0),     # .edp :73
+        # Order carries the precedence, because the corner vertices belong to two sets at once: .edp:84-85
+        # says inlet/outlet beat wall, so no-slip goes in first and the driving profile last (the later
+        # dirichletbc is the one that wins a shared dof).
         dirichletbc(noslip, locate_dofs_topological((W0, Vv), 1, f_wall), W0),  # .edp :74
+        dirichletbc(inlet, locate_dofs_topological((W0, Vv), 1, f_in), W0),     # .edp :73
         dirichletbc(Function(Vp), locate_dofs_topological((W1, Vp), 1, f_out), W1),  # .edp :75  p=0
     ]
 
@@ -354,10 +360,25 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
                            f"table whose two pressure means are averages over an empty set")
     print(f"[solve] tag coverage: inlet={n_in} outlet={n_out} wall={tags.count(TAG_WALL)} "
           f"interior={tags.count('0')}", flush=True)
+
+    # Reported, not judged: the pressure row taken against a constant q says the NET boundary flux is
+    # zero, so inlet and outlet columns of one converged Stokes solve must carry the same flux.  This is
+    # the measurement that turned the 9/28 FAIL from "two implementations disagree" into "my marking
+    # leaks" (0.999375 in / 0.531439 out at the time of the leak; the reference CSV reads
+    # 0.999334 / 0.998606).  No threshold lives here -- §4's 1% and §1's 2% decide, elsewhere.
+    def _flux(tag: str) -> float:
+        col = sorted((y, uu) for (x, y, uu, vv, pp), t in zip(rows, tags) if t == tag)
+        return (sum(0.5 * (col[i][1] + col[i + 1][1]) * (col[i + 1][0] - col[i][0])
+                    for i in range(len(col) - 1)) if len(col) > 1 else float("nan"))
+
+    q_in, q_out = _flux(TAG_IN), _flux(TAG_OUT)
+    print(f"[solve] trapezoid flux through the export's own columns: inlet={q_in:.6f} "
+          f"outlet={q_out:.6f}", flush=True)
     n = write_rows(out_csv, rows)
     import dolfinx
     return {"nx": nx, "ny": ny, "nodes": n, "ksp_reason": int(reason), "ksp_its": int(its),
             "mat_solver": pkg or "PETSc default (SuperLU)",
+            "flux_in": q_in, "flux_out": q_out,
             "dolfinx": dolfinx.__version__, "geometry": {"BETA": BETA, "LIN": LIN, "LC": LC,
                                                          "LTOT": LTOT, "pin": PRESSURE_PIN}}
 
