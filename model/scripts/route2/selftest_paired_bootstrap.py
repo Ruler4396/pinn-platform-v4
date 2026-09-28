@@ -502,6 +502,92 @@ def cross_impl_checks(ck: Check) -> None:
                 "per_seed_arrays_present": False})
 
 
+# ---- route-2's first-run product, transcribed by the 统括官 from the instance (11:3x).
+# Source: /mnt/workspace/pinn-repro-2026/route2_out/armC_20260928/inversion_arms.json
+#         5,405 B, sha256 43d825ba5e8fc57faf79f532f6b44effd4a3a742f3d050ea0197f923b1140332
+# This is a labelled copy of someone else's reading, kept as a fixture so the two
+# implementations can be compared on identical bytes.  It is NOT this module's output.
+REAL8: List[Tuple[float, float, float]] = [
+    (0.0508827031098853, 0.02172042622438079, 0.030818473494250005),
+    (0.050383390457691954, 0.045548358138925174, 0.05249919052400318),
+    (0.05226954559010526, 0.005012222557949382, 0.016903228810166357),
+    (0.050250377641424614, 0.03283269641449873, 0.04998445277598644),
+    (0.05349508986262563, 0.02899105894254597, 0.021914339177867108),
+    (0.05013454953272896, 0.01582664475129503, 0.05395804245021143),
+    (0.048640532585062686, 0.009826337424069189, 0.021710216595462444),
+    (0.04992904508834397, 0.03031195998386412, 0.06539916848865751),
+]
+ROUTE2_BOOT = {"lower_bound": -0.024177214033532964, "delta_obs": -0.015389675984884511,
+               "seed": 4242, "reps": 2000, "index": 100, "floor": 0.010149630846696709}
+
+
+def real_input_checks(ck: Check) -> None:
+    """The reconciliation on route-2's own bytes: code paths are one estimator, the VALUE is
+    not stable, and only the sign is.  Written as four bounds, not as one number.
+
+    What is claimable:  "95% one-sided lower bound < 0" survives both the order-statistic
+    convention (99 vs 100) and the resample seed (4242 vs 20260928).
+    What is NOT:        "the two implementations agree bit-for-bit" -- the match at our seed is
+    the 8-pair mean distribution being atomised (2^8 arrangements of indices, so the tail has
+    few distinct values), i.e. a coincidence of atoms, not evidence.  The evidence for the
+    implementations being the same estimator is the OTHER cell: their seed + their index run
+    through this module reproduces their 17 digits exactly.
+    """
+    table = [{"obs_seed": i + 1, "A": a, "B": b, "C": c}
+             for i, (a, b, c) in enumerate(REAL8)]
+    four = {}
+    for seed in (ROUTE2_BOOT["seed"], pb.DEFAULT_SEED):
+        for idx in pb.INDEX_CONVENTIONS:
+            r = pb.paired_lower_bound(table, reps=2000, seed=seed, index=idx)
+            four[f"{idx}@{seed}"] = r["lower_bound"]
+    bounds = list(four.values())
+    ck.add("boot_real_their_seed_and_their_index_reproduce_their_number_bitwise",
+           four["route2_int@4242"] == ROUTE2_BOOT["lower_bound"],
+           {"from_this_module": four["route2_int@4242"], "route2_reported":
+            ROUTE2_BOOT["lower_bound"]},
+           "exact 17-digit match => same RNG consumption, same sort, same order statistic")
+    ck.add("boot_real_all_four_bounds_are_negative", all(v < 0.0 for v in bounds),
+           four, "sign is the invariant; this is the claimable sentence")
+    ck.add("boot_real_the_four_bounds_are_not_one_number", len(set(bounds)) >= 2,
+           {"distinct": len(set(bounds)), "bounds": four},
+           "value is convention-and-seed dependent, so no receipt may quote one of them "
+           "as 'the' lower bound")
+    ck.add("boot_real_our_seed_collision_is_atomicity_not_agreement",
+           four["inverse_ecdf@20260928"] == ROUTE2_BOOT["lower_bound"]
+           and four["route2_int@20260928"] != ROUTE2_BOOT["lower_bound"],
+           {"mine_at_our_seed": four["inverse_ecdf@20260928"],
+            "their_index_at_our_seed": four["route2_int@20260928"]},
+           "one of the four lands on their atom, the other does not => atoms, not methods")
+    obs = pb.paired_lower_bound(table, reps=2000, seed=ROUTE2_BOOT["seed"],
+                                index="route2_int")
+    floor = 0.20 * obs["e_a_mean"]
+    # delta_obs is bitwise equal; the floor differs by EXACTLY one ULP (measured:
+    # 1.734723475976807e-18 = ulp of the value), which is what transcribing the instance JSON
+    # into 17-digit CSV rows does.  The bound is therefore stated in ULPs -- the first version
+    # guessed 1e-18 and the measurement went red on it, i.e. it was another un-measured
+    # assertion.  Closing the last ULP needs the file itself, not a looser bound.
+    ck.add("boot_real_aggregate_quantity_matches_their_verdict_fields",
+           obs["delta_obs"] == ROUTE2_BOOT["delta_obs"]
+           and abs(floor - ROUTE2_BOOT["floor"]) <= math.ulp(ROUTE2_BOOT["floor"]),
+           {"delta_obs": obs["delta_obs"], "floor_mine": floor, "floor_theirs":
+            ROUTE2_BOOT["floor"], "floor_diff_in_ulps": abs(floor - ROUTE2_BOOT["floor"])
+            / math.ulp(ROUTE2_BOOT["floor"])},
+           "delta_obs bitwise equal; floor within 1 ULP (CSV is a transcription of the "
+           "instance JSON -- closing that ULP needs the file, not a retuned bound)")
+    better = sum(1 for _, b, c in REAL8 if c < b)
+    ck.add("boot_real_only_one_of_eight_rows_favours_C", better == 1
+           and [i for i, (_, b, c) in enumerate(REAL8, 1) if c < b] == [5],
+           {"rows_favouring_C": better, "obs_seeds": [i for i, (_, b, c) in enumerate(REAL8, 1)
+                                                      if c < b]},
+           "matches route-2's own 'only seed 5' line, read off the same 8 rows")
+    ck.measure("four_lower_bounds_real_input", four)
+    ck.measure("input_provenance", {"path_on_nas":
+               "/mnt/workspace/pinn-repro-2026/route2_out/armC_20260928/inversion_arms.json",
+               "bytes": 5405,
+               "sha256": "43d825ba5e8fc57faf79f532f6b44effd4a3a742f3d050ea0197f923b1140332",
+               "transcribed_by": "统括官 11:3x, from GET api/contents (not on this laptop)"})
+
+
 def mirror_run_checks(ck: Check) -> None:
     """Copy the pair to a directory outside the repo and run the copy: the summary line must
     still print and rc must be 0.
@@ -545,6 +631,7 @@ def main() -> int:
     cli_checks(ck)
     structure_checks(ck)
     cross_impl_checks(ck)
+    real_input_checks(ck)
     mirror_run_checks(ck)
 
     # The verdict prints BEFORE anything touches the disk: a refused artifact write must not
