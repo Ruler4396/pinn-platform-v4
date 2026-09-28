@@ -112,6 +112,41 @@ def decide(per_seed_e_k1, per_seed_e_b, per_seed_e_c, monotone_ok=None, peak_ok=
     return {**out, "status": "判定", "verdict": verdict, "cells_ok": n_ok, "refused": None}
 
 
+def shape_gate(e_base: float, e_train: float, factor: float = 0.5) -> dict:
+    """The round-trip G3 as a standalone gate, with the zero-denominator refusal attached.
+
+    Same disease as the vacuous §4 floor: `e_train <= factor * e_base` is meaningless when `e_base`
+    is 0 -- it passes for any value of `e_train`, including a worse one. So a zero denominator is
+    reported as "未验" and refuses to yield a PASS; it is never silently treated as a fail or a pass.
+    """
+    if e_base <= 0.0:
+        return {"status": "未验", "refused": "denominator_zero",
+                "why": f"e_base={e_base} -> the threshold {factor}*e_base is 0, so this comparison "
+                       "cannot go red for any trained value. No PASS/FAIL is issued.",
+                "pass": None, "threshold": None, "e_base": e_base, "e_train": e_train}
+    thr = factor * e_base
+    ok = e_train <= thr
+    return {"status": "判定", "refused": None, "pass": bool(ok), "threshold": thr,
+            "factor": factor, "e_base": e_base, "e_train": e_train}
+
+
+def training_gate(loss_first: float, loss_last: float, grad_norm_last: float,
+                  orders: float = 3.0, initialized_from_baseline: bool = False) -> dict:
+    """G2, with the degenerate-initialisation refusal: an arm that STARTS at the baseline's own
+    optimum has no information in its loss drop, so a >=3-order fall must not be read as a pass."""
+    drop = loss_first / max(loss_last, 1.0e-300)
+    got = math.log10(max(drop, 1.0e-300))
+    base = {"loss_first": loss_first, "loss_last": loss_last, "orders": round(got, 3),
+            "need_orders": orders, "grad_norm_last": grad_norm_last,
+            "initialized_from_baseline": bool(initialized_from_baseline)}
+    if initialized_from_baseline:
+        return {**base, "status": "未验", "refused": "degenerate_initialisation", "pass": None,
+                "why": "the trainable arm was seeded with the baseline's own solution: its loss fall "
+                       "measures nothing, so no PASS may be issued from this cell"}
+    ok = got >= orders and grad_norm_last > 0.0
+    return {**base, "status": "判定", "refused": None, "pass": bool(ok)}
+
+
 def rank_is_deficient_for_node_only(dof, tol=1.0e-9):
     """归宿③ test: the node-only observables carry no information about the shape DOF."""
     node = ["q_in", "q_up", "q_down", "p_junction"]

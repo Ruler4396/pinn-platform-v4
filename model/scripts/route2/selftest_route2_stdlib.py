@@ -2406,6 +2406,35 @@ def inversion_gate_checks(ck: Check) -> None:
            "a real shape improvement alone is NOT enough: §4 needs >=2 of 3 cells, and loosening that "
            "is exactly what this red catches")
 
+    # With a zero denominator the comparison is degenerate the OTHER way from §4's floor: the threshold
+    # is 0, so even a near-perfect trained arm is judged FAIL. Both directions are why the gate refuses.
+    sg_perfect = 1.0e-9 <= 0.5 * 0.0                                  # naive verdict on a ~perfect arm
+    sg = ig.shape_gate(0.0, 1.0e-9)
+    ck.add("gate.MUST_RED_shape_gate_with_a_zero_denominator_refuses_instead_of_judging",
+           sg_perfect is False and sg["status"] == "未验" and sg["refused"] == "denominator_zero"
+           and sg["pass"] is None,
+           {"naive_formula_on_a_perfect_arm": "FAIL", "gate_status": sg["status"],
+            "refused": sg["refused"], "note": "zero threshold makes every trained arm lose, even a "
+                                              "1e-9 one -- that is why we refuse, not judge"},
+           "e_base=0 makes `<= 0.5*e_base` a permanently-lost comparison -- the mirror image of the "
+           "vacuous §4 floor, and equally not a measurement")
+    sg_ok = ig.shape_gate(0.0249, 0.0385)
+    ck.add("gate.shape_gate_still_judges_when_the_denominator_is_real",
+           sg_ok["status"] == "判定" and sg_ok["pass"] is False and abs(sg_ok["threshold"] - 0.01245) < 1e-9,
+           {"threshold": round(sg_ok["threshold"], 6), "pass": sg_ok["pass"],
+            "e_base": sg_ok["e_base"], "e_train": sg_ok["e_train"]},
+           "the round-trip's own numbers: 0.0385 vs gate <= 0.01245 -> FAIL, judged not refused")
+
+    tg_naive = ig.training_gate(1.0, 1.0e-5, 0.1, orders=3.0)          # 5 orders: a clean pass
+    tg_deg = ig.training_gate(1.0, 1.0e-5, 0.1, orders=3.0, initialized_from_baseline=True)
+    ck.add("gate.MUST_RED_a_baseline-seeded_arm_cannot_pass_the_training_cell",
+           tg_naive["pass"] is True and tg_deg["status"] == "未验"
+           and tg_deg["refused"] == "degenerate_initialisation" and tg_deg["pass"] is None,
+           {"same_numbers_plain": tg_naive["pass"], "same_numbers_seeded_from_baseline": tg_deg["status"],
+            "refused": tg_deg["refused"]},
+           "a loss fall measured from the baseline's own optimum carries no information -- the gate "
+           "must refuse it, and this red proves it does")
+
     r4 = ig.rank_is_deficient_for_node_only(rh.H_TRUE)
     ck.add("gate.node_only_observations_are_measurably_rank_deficient",
            r4["deficient"] and r4["rank_node_only"] < r4["n_dof"],
