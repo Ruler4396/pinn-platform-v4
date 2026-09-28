@@ -84,7 +84,7 @@ def trained_mlp(target, steps=6000, lr=2.0e-2, patience=300, log_every=500):
         return torch.stack([vals[k] for k in rt.OBS_ORDER])
 
     opt = torch.optim.Adam(ps, lr=lr)
-    hist, best, best_at, bad = [], float("inf"), 0, 0
+    hist, best, best_at, bad, last_gnorm = [], float("inf"), 0, 0, 0.0
     for it in range(steps):
         opt.zero_grad()
         loss_t = ((observe() - tgt) ** 2).sum()
@@ -92,6 +92,7 @@ def trained_mlp(target, steps=6000, lr=2.0e-2, patience=300, log_every=500):
         loss_t.backward()
         gnorm = float(sum((p.grad.norm() ** 2).item() for p in ps) ** 0.5)
         opt.step()
+        last_gnorm = gnorm
         hist.append(loss)
         if loss < best * (1.0 - 1.0e-6):
             best, best_at = loss, it
@@ -108,6 +109,7 @@ def trained_mlp(target, steps=6000, lr=2.0e-2, patience=300, log_every=500):
             knots = hnet(b, list(rt.KNOTS[b]))
             dof_hat[b] = tuple(float(x) for x in knots)
     return {"ran": True, "torch_version": torch.__version__, "steps_run": len(hist),
+            "grad_norm_last": last_gnorm,
             "loss_first": hist[0], "loss_last": hist[-1], "loss_best": best, "best_step": best_at,
             "early_stopped": bad >= patience, "trainable_parameters": len(ps),
             "dof_hat_knots": dof_hat}
@@ -165,7 +167,13 @@ def main() -> int:
             if c.get("ran"):
                 e_c = ig.shape_error(ig.dof_fn(c["dof_hat_knots"]), htrue_fn)["rel_l2"]
                 row["C"] = {k: c[k] for k in ("steps_run", "loss_first", "loss_last", "loss_best",
-                                              "best_step", "early_stopped", "trainable_parameters")}
+                                              "best_step", "early_stopped", "trainable_parameters",
+                                              "grad_norm_last")}
+                # §4bis (c)/(d) need BOTH cells reported, and the training cell's gradient half is
+                # only checkable if the number itself is carried out of the loop.
+                row["training_cell"] = ig.training_gate(c["loss_first"], c["loss_last"],
+                                                        c["grad_norm_last"], orders=3.0)
+                row["shape_cell"] = ig.shape_gate(e_b, row["e_C"], factor=0.5)
                 row["e_C"] = e_c
                 row["throat_C"] = ig.shape_error(ig.dof_fn(c["dof_hat_knots"]), htrue_fn)["throat"]
             else:
