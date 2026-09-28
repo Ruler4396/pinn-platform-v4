@@ -2444,6 +2444,23 @@ def inversion_gate_checks(ck: Check) -> None:
            "a loss fall measured from the baseline's own optimum carries no information -- the gate "
            "must refuse it, and this red proves it does")
 
+    # The frame 4000 steps actually produced (11:00:30 on-box): the continuous cell LOST -- arm C
+    # is worse than the same-DOF zero-training baseline -- and the two discrete cells carried the
+    # strong verdict anyway.  That is the registered rule working as written, and it is still a
+    # claim its own measurement does not support, so the hole gets a name and a red of its own.
+    # If decide() is ever edited this check goes red on purpose: that edit is a criterion change
+    # and needs its own pre-registration, not a quiet commit.
+    d_hole = ig.decide([e_k1], [e_b], [e_b], monotone_ok=True, peak_ok=True)
+    ck.add("gate.KNOWN_HOLE_the_two_discrete_cells_can_outvote_the_shape_cell",
+           d_hole["cells"]["shape_l2"] is False and d_hole["cells_ok"] == 2
+           and "反演成立" in (d_hole["verdict"] or ""),
+           {"cells": d_hole["cells"], "delta": round(d_hole["delta"], 6),
+            "verdict": d_hole["verdict"],
+            "对外口径": "only the 4bis(e) sentence may be quoted; the four characters meaning "
+                      "inversion-holds must not appear in any outward text"},
+           "e_B == e_C so the shape delta is 0, yet >=2 of 3 prints the strong verdict -- the same "
+           "disease family as the vacuous floor: a verdict string that says more than the numbers")
+
     r4 = ig.rank_is_deficient_for_node_only(rh.H_TRUE)
     ck.add("gate.node_only_observations_are_measurably_rank_deficient",
            r4["deficient"] and r4["rank_node_only"] < r4["n_dof"],
