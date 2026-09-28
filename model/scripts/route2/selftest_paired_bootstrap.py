@@ -69,8 +69,19 @@ class Check:
         self.rows.append({"check": name, "pass": bool(ok), "value": value, "limit": limit})
         print(f"[{'PASS' if ok else 'FAIL'}] {name}: value={_fmt(value)} limit={_fmt(limit)}")
 
+    def skip(self, name: str, value: object, limit: object = "") -> None:
+        """Counted and printed, never folded into PASS: 'all green' and 'green minus the
+        checks that had no input to run on' are different claims."""
+        self.rows.append({"check": name, "pass": True, "skipped": True,
+                          "value": value, "limit": limit})
+        print(f"[SKIP] {name}: value={_fmt(value)} limit={_fmt(limit)}")
+
     def measure(self, name: str, value: object) -> None:
         print(f"[boot-measure] {name}={_fmt(value)}")
+
+    @property
+    def skipped(self) -> List[str]:
+        return [r["check"] for r in self.rows if r.get("skipped")]
 
     @property
     def failed(self) -> List[str]:
@@ -370,6 +381,120 @@ def structure_checks(ck: Check) -> None:
            "so neither guard can be bypassed by a later edit that forgets it")
 
 
+
+GATE_SRC = HERE / "inversion_gate.py"          # route-2's own gate; read, never imported
+ROUTE2_REPORTED = {"boot_lower_95": -0.02417721, "e_b": 0.02375871, "e_c": 0.03914839,
+                   "delta": -0.01538968, "e_k1": 0.05074815, "floor": 0.01014963,
+                   "n_obs_seed": 8}
+
+
+def _route2_index_expression() -> Optional[str]:
+    """Pull route-2's order-statistic expression out of its source, if the file is present.
+
+    The cross-check models their line `means[min(int((1.0 - level) * n), n - 1)]`; if that
+    text ever changes, this returns the new expression and the check below goes red instead
+    of quietly comparing against a stale strawman.
+    """
+    if not GATE_SRC.is_file():
+        return None
+    for line in GATE_SRC.read_text(encoding="utf-8").splitlines():
+        if "means[" in line and "level" in line:
+            return line.strip()
+    return ""
+
+
+def cross_impl_checks(ck: Check) -> None:
+    """§4.2 now has two implementations on purpose.  Where they differ is stated as a number."""
+    ck.add("boot_ximpl_index_conventions_differ_by_exactly_one",
+           pb.quantile_index(2000, pb.ALPHA, "inverse_ecdf") == 99
+           and pb.quantile_index(2000, pb.ALPHA, "route2_int") == 100,
+           {"mine": pb.quantile_index(2000, pb.ALPHA, "inverse_ecdf"),
+            "route2": pb.quantile_index(2000, pb.ALPHA, "route2_int")},
+           "99 vs 100 (0-based) at R=2000, alpha=0.05")
+
+    expr = _route2_index_expression()
+    if expr is None:
+        ck.skip("boot_ximpl_route2_expression_still_matches_my_model",
+                "inversion_gate.py not present next to this file",
+                "not attempted, so it is not counted as green")
+    else:
+        ck.add("boot_ximpl_route2_expression_still_matches_my_model",
+               "int((1.0 - level) * n)" in expr, expr,
+               "my route2_int convention models their live line; if they edit it this goes red")
+
+    # Reproduce their estimator from scratch (same stream, their index) and compare with the
+    # convention this module exposes -- an independent recalculation, not a call into their code.
+    cont = _table([0.7, 2.1, -0.4, 1.3, 0.2, 1.9, 0.5, 1.1])
+    deltas = pb._as_delta_rows(cont)
+    import random as _r
+    rng = _r.Random(pb.DEFAULT_SEED)
+    k = len(deltas)
+    means = sorted(sum(deltas[rng.randrange(k)] for _ in range(k)) / k
+                   for _ in range(pb.DEFAULT_REPS))
+    their_number = means[min(int(pb.ALPHA * pb.DEFAULT_REPS), pb.DEFAULT_REPS - 1)]
+    rec = pb.reconcile(cont, reps=pb.DEFAULT_REPS, seed=pb.DEFAULT_SEED)
+    ck.add("boot_ximpl_my_route2_convention_reproduces_their_estimator",
+           rec["route2_int"] == their_number,
+           {"from_their_formula": their_number, "from_my_convention": rec["route2_int"],
+            "mine_inverse_ecdf": rec["mine_inverse_ecdf"]},
+           "bitwise equal to their formula applied to the same replicate stream")
+    ck.add("boot_ximpl_route2_bound_is_never_below_mine",
+           rec["route2_int"] >= rec["mine_inverse_ecdf"],
+           {"mine": rec["mine_inverse_ecdf"], "route2": rec["route2_int"]},
+           "a higher order statistic can only be >=; reported, not averaged away")
+
+    # Battery over several table sizes and replicate counts, because "the conventions differ by
+    # one order statistic" is only worth stating with the rate it actually shows up at.  Two
+    # kinds of difference are counted apart: a real one (>1e-9, the statistic moved) and a
+    # last-bit one (<=1e-15, just summation order -- quoting these numbers past ~12 digits
+    # is what would make that count matter).
+    prng = random.Random(7)
+    battery = [_table([0.7, 2.1, -0.4, 1.3, 0.2, 1.9, 0.5, 1.1])]
+    battery += [_table([round(prng.gauss(0.0, 1.0), 6) for _ in range(k)])
+                for k in (8, 8, 14, 30, 50)]
+    battery.append(_table([2.0, 5.0, 8.0]))
+    cells = [(t, r, pb.reconcile(t, reps=r, seed=pb.DEFAULT_SEED))
+             for t in battery for r in (200, 500, 1000, 2000, 4000)]
+    real = [c for c in cells
+            if abs(c[2]["route2_int"] - c[2]["mine_inverse_ecdf"]) > 1.0e-9]
+    ulp = [c for c in cells if 0.0 < abs(c[2]["route2_int"] - c[2]["mine_inverse_ecdf"])
+           <= 1.0e-15]
+    ck.add("boot_ximpl_route2_never_sits_below_mine_across_the_battery",
+           all(c[2]["route2_int"] >= c[2]["mine_inverse_ecdf"] - 1.0e-12 for c in cells),
+           {"cells": len(cells),
+            "worst_violation": max((c[2]["mine_inverse_ecdf"] - c[2]["route2_int"])
+                                   for c in cells)},
+           "a higher order statistic cannot be lower, over every cell"),
+    ck.add("boot_ximpl_convention_difference_is_observable_not_assumed",
+           len(real) >= 1, {"cells": len(cells), "real_differences": len(real),
+                             "last_bit_only": len(ulp),
+                             "example": [round(x[2]["mine_inverse_ecdf"], 9)
+                                         for x in real[:1]]
+                             + [round(x[2]["route2_int"], 9) for x in real[:1]]},
+           ">=1 cell must differ by >1e-9, else the named convention would be decoration")
+    ck.measure("ximpl_battery", {"cells": len(cells), "differences_gt_1e-9": len(real),
+                                 "differences_only_at_last_bit": len(ulp),
+                                 "identical_bitwise": sum(1 for c in cells
+                                                          if c[2]["identical"])})
+
+    ck.add("boot_ximpl_degeneracy_differences_are_documented",
+           _raises(lambda: pb.paired_lower_bound(_table([3.0])), pb.BootstrapError)
+           and _raises(lambda: pb.paired_lower_bound([]), pb.BootstrapError),
+           "1 row -> BootstrapError here; empty -> BootstrapError here",
+           "their gate returns a number for 1 row and None for empty; the dispatch asked for "
+           "a non-zero failure here, so this difference is intentional and named")
+
+    ck.measure("route2_reported_first_run", dict(ROUTE2_REPORTED))
+    ck.measure("reconciliation_input_available_on_this_disk",
+               {"looked_for": "inversion_arms.json 5,405 B / sha256 43d825ba5e8fc57f",
+                "found_instead": sorted(str(x.relative_to(HERE.parents[1] / ".scratch" /
+                                                        "route2"))
+                                        for x in (HERE.parents[1] / ".scratch" / "route2")
+                                        .glob("armC_*/inversion_arms.json"))
+                if (HERE.parents[1] / ".scratch" / "route2").is_dir() else "no .scratch",
+                "per_seed_arrays_present": False})
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="paired_bootstrap self-test (stdlib, no machine time)")
     ap.add_argument("--json", default="", help="write the check log outside the repository")
@@ -384,6 +509,7 @@ def main() -> int:
     guard_checks(ck)
     cli_checks(ck)
     structure_checks(ck)
+    cross_impl_checks(ck)
 
     out = Path(args.json) if args.json else DEFAULT_OUT
     repo_root = HERE.parents[2]
@@ -400,7 +526,7 @@ def main() -> int:
         print(f"json={out}")
         print(f"[boot] artifact_selfcert: path={out} bytes={out.stat().st_size} "
               f"sha256={digest}")
-    print(f"total={len(ck.rows)} failed={len(ck.failed)}")
+    print(f"total={len(ck.rows)} failed={len(ck.failed)} skipped={len(ck.skipped)}")
     if ck.failed:
         print("FAILED: " + ", ".join(ck.failed))
         return 1

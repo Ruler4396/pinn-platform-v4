@@ -90,16 +90,36 @@ def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values)
 
 
-def _inverse_cdf(sorted_draws: Sequence[float], alpha: float) -> float:
+INDEX_CONVENTIONS = ("inverse_ecdf", "route2_int")
+
+
+def quantile_index(count: int, alpha: float, convention: str = "inverse_ecdf") -> int:
+    """Which order statistic the 95% lower bound is.  Named, because the two implementations
+    on this project differ by exactly one here.
+
+      inverse_ecdf : ceil(alpha*R) - 1 -> 99 at (0.05, 2000); the smallest draw whose
+                     empirical CDF reaches alpha, i.e. P(X <= bound) >= 1 - alpha.
+      route2_int   : int(alpha*R) -> 100, which is inversion_gate.paired_bootstrap_lower
+                     (`means[min(int((1-level)*n), n-1)]`), one statistic higher.
+
+    The dispatch asked for an independent second implementation, so this is exposed as a
+    choice with both numbers reported, not smoothed into one answer.
+    """
+    if convention not in INDEX_CONVENTIONS:
+        raise BootstrapError(f"未知分位数约定 {convention!r}，可用 {INDEX_CONVENTIONS}")
+    idx = math.ceil(alpha * count) - 1 if convention == "inverse_ecdf" else int(alpha * count)
+    return min(max(idx, 0), count - 1)
+
+
+def _inverse_cdf(sorted_draws: Sequence[float], alpha: float,
+                 convention: str = "inverse_ecdf") -> float:
     """Smallest draw whose empirical CDF reaches alpha (right-continuous inverse).
 
     Stated as a formula so the self-test can reproduce it by enumeration with the SAME
     definition -- comparing a Monte-Carlo quantile against a differently-defined analytic
     one would be a tolerance fight, not a check.
     """
-    r = len(sorted_draws)
-    idx = min(max(int(math.ceil(alpha * r)) - 1, 0), r - 1)
-    return sorted_draws[idx]
+    return sorted_draws[quantile_index(len(sorted_draws), alpha, convention)]
 
 
 def resample_deltas(deltas: Sequence[float], reps: int, rng: random.Random
@@ -115,12 +135,15 @@ def resample_deltas(deltas: Sequence[float], reps: int, rng: random.Random
 
 
 def paired_lower_bound(table: Sequence[object], reps: int = DEFAULT_REPS,
-                       seed: int = DEFAULT_SEED, alpha: float = ALPHA) -> dict:
+                       seed: int = DEFAULT_SEED, alpha: float = ALPHA,
+                       index: str = "inverse_ecdf") -> dict:
     """The whole computation, including the two refusal paths and the shared floor guard."""
     if reps < 100:
         raise BootstrapError(f"reps={reps} 太少（<100）：分位数由重抽次数决定，别拿它当读数")
     if not (0.0 < alpha < 0.5):
         raise BootstrapError(f"alpha={alpha} 不在 (0, 0.5)：这里要的是单侧下界")
+    if index not in INDEX_CONVENTIONS:
+        raise BootstrapError(f"未知分位数约定 {index!r}，可用 {INDEX_CONVENTIONS}")
     deltas = _as_delta_rows(table)
     e_a = [float(row["A"] if isinstance(row, Mapping) else list(row)[0]) for row in table]
     n = len(deltas)
@@ -130,6 +153,7 @@ def paired_lower_bound(table: Sequence[object], reps: int = DEFAULT_REPS,
     out: dict = {
         "n_pairs": n, "reps": reps, "seed": seed, "alpha": alpha,
         "arms": list(ARMS), "statistic": "mean(e_B - e_C) over paired obs_seed rows",
+        "index_convention": index,
         "delta_obs": obs, "delta_min": min(deltas), "delta_max": max(deltas),
         "deltas": deltas, "e_a_mean": floor_mean,
         "lower_bound": None, "upper_check": None,
@@ -138,7 +162,8 @@ def paired_lower_bound(table: Sequence[object], reps: int = DEFAULT_REPS,
     }
 
     # guard 1 (shared with §4.1): a zero floor denominator makes "improvement" unfalsifiable
-    if floor_mean == 0.0:
+    if floor_mean <= 0.0:            # "<=" adopted from route-2's decide(): a negative
+        # e(K1) kills the floor just as dead as a zero one does
         out["floor_status"] = ZERO_FLOOR
         out["reasons"].append("e(A) 均值 = 0（A 臂没有形状自由度）=> 0.20*e(A) 恒被满足，"
                               "地板不bind；总判决不许 PASS")
@@ -155,7 +180,9 @@ def paired_lower_bound(table: Sequence[object], reps: int = DEFAULT_REPS,
 
     rng = random.Random(seed)
     draws = sorted(resample_deltas(deltas, reps, rng))
-    out["lower_bound"] = _inverse_cdf(draws, alpha)
+    out["index_convention"] = index
+    out["quantile_index"] = quantile_index(len(draws), alpha, index)
+    out["lower_bound"] = _inverse_cdf(draws, alpha, index)
     out["upper_check"] = _inverse_cdf(draws, 1.0 - alpha)      # printed, not part of the verdict
     out["resample_min"], out["resample_max"] = draws[0], draws[-1]
     out["distinct_draws"] = len(set(draws))
@@ -171,6 +198,24 @@ def paired_lower_bound(table: Sequence[object], reps: int = DEFAULT_REPS,
     else:
         out["cell_verdict"] = "未通过" if out["floor_status"] == OK else "未验"
     return out
+
+
+def reconcile(table: Sequence[object], reps: int = DEFAULT_REPS,
+              seed: int = DEFAULT_SEED) -> dict:
+    """Both index conventions on the SAME replicate stream, both numbers returned.
+
+    The dispatch said: if the two implementations disagree, report both numbers instead of
+    bending one.  Any gap here therefore has a named cause (the order statistic) rather than
+    being a reconciliation failure.
+    """
+    mine = paired_lower_bound(table, reps=reps, seed=seed, index="inverse_ecdf")
+    theirs = paired_lower_bound(table, reps=reps, seed=seed, index="route2_int")
+    return {"mine_inverse_ecdf": mine["lower_bound"], "route2_int": theirs["lower_bound"],
+            "quantile_index_mine": mine["quantile_index"],
+            "quantile_index_route2": theirs["quantile_index"], "identical":
+            mine["lower_bound"] == theirs["lower_bound"],
+            "n_pairs": mine["n_pairs"], "reps": reps, "seed": seed,
+            "delta_obs": mine["delta_obs"]}
 
 
 def format_row(res: dict, cell: str = "cell") -> str:
