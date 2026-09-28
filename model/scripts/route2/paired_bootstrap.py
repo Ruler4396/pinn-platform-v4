@@ -152,6 +152,7 @@ def paired_lower_bound(table: Sequence[object], reps: int = DEFAULT_REPS,
 
     out: dict = {
         "n_pairs": n, "reps": reps, "seed": seed, "alpha": alpha,
+        "rows_sha256": rows_digest(table),
         "arms": list(ARMS), "statistic": "mean(e_B - e_C) over paired obs_seed rows",
         "index_convention": index,
         "delta_obs": obs, "delta_min": min(deltas), "delta_max": max(deltas),
@@ -200,6 +201,43 @@ def paired_lower_bound(table: Sequence[object], reps: int = DEFAULT_REPS,
     return out
 
 
+def _canon(v: object) -> str:
+    """`1` and `1.0` must name the same number.
+
+    The CSV loader turns every column into a float, while an in-memory table keeps `obs_seed` as
+    an int; hashing the raw reprs would give one input two digests depending on which door it
+    came in through -- the opposite of what an identity line is for.
+    """
+    try:
+        return repr(float(v))         # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return repr(v)
+
+
+def rows_digest(table: Sequence[object]) -> str:
+    """sha256 over the canonical row form, so a number can name the bytes behind it.
+
+    统括官 12:2x ④: `reconcile()` returns two bounds, and a reader who quotes one of them later
+    cannot tell "the two implementations compute the same estimator" (proved by matching the
+    identity) from "the two produced the same value" (an artefact of 8-pair atomisation).  The
+    caller hands over a list of dicts, not a path, so the identity names the ROWS.
+    """
+    lines = []
+    for row in table:
+        others = "|".join(f"{k}={_canon(row[k])}" for k in sorted(row) if k not in ARMS)
+        arms = "|".join(f"{k}={_canon(row[k])}" for k in ARMS if k in row)
+        lines.append(f"{others}||{arms}")
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def estimator_identity(reps: int, seed: int, table: Sequence[object],
+                       conventions: Sequence[Tuple[str, int]]) -> str:
+    """One line naming everything that must match before two numbers may be compared."""
+    pair = "/".join(f"{name}({idx})" for name, idx in conventions)
+    return (f"estimator=paired-bootstrap delta=e_B-e_C | reps={reps} | seed={seed} | "
+            f"index_pair={pair} | n_pairs={len(table)} | rows_sha256={rows_digest(table)}")
+
+
 def reconcile(table: Sequence[object], reps: int = DEFAULT_REPS,
               seed: int = DEFAULT_SEED) -> dict:
     """Both index conventions on the SAME replicate stream, both numbers returned.
@@ -207,6 +245,9 @@ def reconcile(table: Sequence[object], reps: int = DEFAULT_REPS,
     The dispatch said: if the two implementations disagree, report both numbers instead of
     bending one.  Any gap here therefore has a named cause (the order statistic) rather than
     being a reconciliation failure.
+
+    The result carries `identity`: same seed + same rows + both conventions named, so quoting
+    one number cannot silently merge ①(估计量已对齐) and ②(跨约定跨种子只同号不同值).
     """
     mine = paired_lower_bound(table, reps=reps, seed=seed, index="inverse_ecdf")
     theirs = paired_lower_bound(table, reps=reps, seed=seed, index="route2_int")
@@ -215,6 +256,10 @@ def reconcile(table: Sequence[object], reps: int = DEFAULT_REPS,
             "quantile_index_route2": theirs["quantile_index"], "identical":
             mine["lower_bound"] == theirs["lower_bound"],
             "n_pairs": mine["n_pairs"], "reps": reps, "seed": seed,
+            "rows_sha256": rows_digest(table),
+            "identity": estimator_identity(reps, seed, table,
+                                           [("inverse_ecdf", mine["quantile_index"]),
+                                            ("route2_int", theirs["quantile_index"])]),
             "delta_obs": mine["delta_obs"]}
 
 
@@ -267,6 +312,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[boot] ERROR: {exc}")
         return 1
     print(format_row(res, args.cell))
+    # The number and its identity travel together: convention, seed and the bytes behind it,
+    # so nobody can quote this bound as "the same estimator" without naming what was held fixed.
+    # `quantile_index` is absent on the refusal paths, so it is read with .get(): an identity
+    # line that crashes the CLI on a dead floor would be worse than no identity line.
+    qi = res.get("quantile_index", "n/a")
+    identity = estimator_identity(args.reps, args.seed, table,
+                                  [(res["index_convention"], qi)])
+    print(f"[boot] identity: cell={args.cell} | {identity}")
     if args.json:
         from pathlib import Path
         text = json.dumps(res, ensure_ascii=False, indent=2) + "\n"

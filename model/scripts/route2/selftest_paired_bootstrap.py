@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import hashlib
+import io
 import itertools
 import json
 import math
@@ -321,33 +323,59 @@ def guard_checks(ck: Check) -> None:
            "dispatch: 空输入或行数 <2 直接报错退出而非给出 0")
 
 
+def cli_rc(argv: Sequence[str]) -> Dict[str, object]:
+    """Run the CLI in-process and turn a raise into DATA instead of a dead suite.
+
+    The mutation test at 12:36 found the hole: with the identity line reading
+    `res["quantile_index"]` (which the refusal paths never set), the KeyError propagated out of
+    `ck.add`'s own argument, the suite died mid-phase and printed no `total=` -- one product
+    defect destroying 55 other readings.  A raise is a finding: name it, count it, carry on.
+    """
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            return {"rc": pb.main(list(argv)), "raised": None, "printed": buf.getvalue()}
+    except BaseException as exc:                      # noqa: BLE001 - the point is to catch it
+        return {"rc": None, "raised": f"{type(exc).__name__}: {str(exc)[:80]}",
+                "printed": buf.getvalue()}
+
+
 def cli_checks(ck: Check) -> None:
     empty = _write_csv([])
     one = _write_csv([(1.0, 2.0, 1.0)])
     five = _write_csv([(1.0, 3.0, 1.0), (1.0, 5.0, 1.0), (1.0, 4.0, 1.0),
                        (1.0, 6.0, 1.0), (1.0, 2.0, 1.0)])
-    ck.add("boot_cli_empty_table_exits_1", pb.main(["--table", empty]) == 1, "rc=1",
+    a_empty, a_one = cli_rc(["--table", empty]), cli_rc(["--table", one])
+    ck.add("boot_cli_empty_table_exits_1", a_empty["rc"] == 1 and a_empty["raised"] is None,
+           {"rc": a_empty["rc"], "raised": a_empty["raised"]},
            "loud failure, not an empty bound")
-    ck.add("boot_cli_single_row_exits_1", pb.main(["--table", one]) == 1, "rc=1",
+    ck.add("boot_cli_single_row_exits_1", a_one["rc"] == 1 and a_one["raised"] is None,
+           {"rc": a_one["rc"], "raised": a_one["raised"]},
            "one pair cannot carry an uncertainty statement")
     api = pb.paired_lower_bound(_table([2.0, 4.0, 3.0, 5.0, 1.0]), reps=500, seed=7)
-    rc = pb.main(["--table", five, "--reps", "500", "--seed", "7", "--cell", "shape_l2"])
+    five_res = cli_rc(["--table", five, "--reps", "500", "--seed", "7", "--cell", "shape_l2"])
+    want_rc = 0 if api["cell_verdict"] == "PASS" else 1
     ck.add("boot_cli_rc_matches_the_api_verdict_on_the_same_rows",
-           rc == (0 if api["cell_verdict"] == "PASS" else 1) and rc in (0, 1),
-           {"cli_rc": rc, "api_verdict": api["cell_verdict"]},
+           five_res["rc"] == want_rc and five_res["raised"] is None
+           and five_res["rc"] in (0, 1),
+           {"cli_rc": five_res["rc"], "raised": five_res["raised"],
+            "api_verdict": api["cell_verdict"]},
            "rc = 0 only on PASS; the CSV path and the mapping path agree")
-    refused = pb.main(["--table", _write_csv([(0.0, 3.0, 1.0), (0.0, 5.0, 3.0)])])
-    ck.add("boot_cli_dead_floor_exits_nonzero", refused == 1, "rc=1",
-           "a blocked verdict is not a successful run")
+    refused = cli_rc(["--table", _write_csv([(0.0, 3.0, 1.0), (0.0, 5.0, 3.0)])])
+    ck.add("boot_cli_dead_floor_exits_nonzero",
+           refused["rc"] == 1 and refused["raised"] is None,
+           {"rc": refused["rc"], "raised": refused["raised"]},
+           "a blocked verdict is not a successful run -- and must not crash the CLI either")
     if pb.repo_root() is None:
         ck.skip("boot_cli_refuses_to_write_inside_the_repo",
                 "no .git above this copy, so the guard has nothing to refuse",
                 "not attempted here; in the real repo it must return rc=2")
     else:
+        junk = cli_rc(["--table", five, "--json", str(HERE / "junk.json")])
         ck.add("boot_cli_refuses_to_write_inside_the_repo",
-               pb.main(["--table", five, "--json", str(HERE / "junk.json")]) == 2
-               and not (HERE / "junk.json").exists(),
-               "rc=2 and no file created", "artifact must land outside the repository")
+               junk["rc"] == 2 and junk["raised"] is None and not (HERE / "junk.json").exists(),
+               {"rc": junk["rc"], "raised": junk["raised"]},
+               "rc=2 and no file created; artifact must land outside the repository")
 
 
 def _write_csv(rows: Sequence[Tuple[float, float, float]]) -> str:
@@ -522,17 +550,133 @@ ROUTE2_BOOT = {"lower_bound": -0.024177214033532964, "delta_obs": -0.01538967598
                "seed": 4242, "reps": 2000, "index": 100, "floor": 0.010149630846696709}
 
 
-def real_input_checks(ck: Check) -> None:
-    """The reconciliation on route-2's own bytes: code paths are one estimator, the VALUE is
-    not stable, and only the sign is.  Written as four bounds, not as one number.
+def identity_checks(ck: Check) -> None:
+    """④ 统括官 12:2x: `reconcile()` must carry an estimator-identity line (convention + seed +
+    input digest), so the next person quoting a bound cannot merge "same estimator" (①) with
+    "same value" (②).
 
-    What is claimable:  "95% one-sided lower bound < 0" survives both the order-statistic
-    convention (99 vs 100) and the resample seed (4242 vs 20260928).
-    What is NOT:        "the two implementations agree bit-for-bit" -- the match at our seed is
-    the 8-pair mean distribution being atomised (2^8 arrangements of indices, so the tail has
-    few distinct values), i.e. a coincidence of atoms, not evidence.  The evidence for the
-    implementations being the same estimator is the OTHER cell: their seed + their index run
-    through this module reproduces their 17 digits exactly.
+    The expected digest is rebuilt here from the row bytes rather than read back from
+    `rows_digest` -- an assertion whose expectation comes from the function under test is a
+    tautology wearing a name.
+    """
+    import hashlib
+
+    def oracle(rows: Sequence[Tuple[float, float, float]]) -> str:
+        lines = []
+        for i, (a, b, c) in enumerate(rows, 1):
+            lines.append(f"obs_seed={float(i)!r}||A={a!r}|B={b!r}|C={c!r}")
+        return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+    table = [{"obs_seed": i + 1, "A": a, "B": b, "C": c}
+             for i, (a, b, c) in enumerate(REAL8)]
+    rec = pb.reconcile(table)
+    ident = rec.get("identity", "")
+    want = oracle(REAL8)
+    ck.add("boot_identity_names_conventions_seed_and_input_digest",
+           all(s in ident for s in ("seed=20260928", "inverse_ecdf(99)", "route2_int(100)",
+                                    "reps=2000", "n_pairs=8", f"rows_sha256={want}"))
+           and rec["rows_sha256"] == want,
+           {"identity_tail": ident[-88:], "digest_matches_independent_rebuild":
+            rec["rows_sha256"] == want},
+           "identity carries both conventions, the seed and the digest rebuilt from the rows")
+    perturbed = [{**table[0], "C": table[0]["C"] + 1e-9}] + table[1:]
+    ck.add("boot_identity_survives_reps_and_breaks_on_one_changed_number",
+           pb.reconcile(table)["identity"] == pb.reconcile(table)["identity"]
+           and pb.reconcile(table)["rows_sha256"] != pb.reconcile(perturbed)["rows_sha256"],
+           {"stable_across_calls": pb.reconcile(table)["identity"]
+            == pb.reconcile(table)["identity"],
+            "changed_one_C_digit": pb.reconcile(perturbed)["rows_sha256"][:16],
+            "original": want[:16]},
+           "same bytes -> same identity; one 1e-9 change in one arm -> different digest")
+    ck.add("boot_identity_is_shared_by_two_bounds_that_differ",
+           rec["identical"] is False
+           and rec["mine_inverse_ecdf"] != rec["route2_int"]
+           and rec["identity"].count(want) == 1,
+           {"mine": rec["mine_inverse_ecdf"], "theirs": rec["route2_int"],
+            "identity": ident[:60] + "..."},
+           "one identity, two numbers -> ② (cross-convention) is written as sign-only")
+    align = pb.paired_lower_bound(table, reps=2000, seed=ROUTE2_BOOT["seed"], index="route2_int")
+    ck.add("boot_alignment_cell_names_its_input_too",
+           align["rows_sha256"] == want and align["lower_bound"] == ROUTE2_BOOT["lower_bound"],
+           {"seed": align["seed"], "index": align["index_convention"],
+            "digest_16": align["rows_sha256"][:16],
+            "bound": align["lower_bound"], "route2_reported": ROUTE2_BOOT["lower_bound"]},
+           "① : bitwise equality is evidence exactly when convention+seed+rows all match")
+    # Same numbers, two entry points: the CSV loader turns obs_seed into a float while an
+    # in-memory table keeps it an int.  The first version hashed the raw reprs, so ONE input got
+    # TWO digests depending on the door it came in through -- the opposite of what an identity
+    # line is for.  This check runs wherever the suite runs; only the subprocess checks below
+    # need a repository.
+    staged = Path(tempfile.mkdtemp(prefix="boot_door_")) / "rows.csv"
+    staged.write_bytes(("obs_seed,A,B,C\n" + "\n".join(
+        f"{i},{a!r},{b!r},{c!r}" for i, (a, b, c) in enumerate(REAL8, 1)) + "\n").encode("utf-8"))
+    via_csv = pb._load_table(str(staged))
+    ck.add("boot_digest_is_the_same_through_both_doors",
+           pb.rows_digest(table) == pb.rows_digest(via_csv) == want
+           and isinstance(via_csv[0]["obs_seed"], float)
+           and isinstance(table[0]["obs_seed"], int),
+           {"csv_type": type(via_csv[0]["obs_seed"]).__name__,
+            "memory_type": type(table[0]["obs_seed"]).__name__,
+            "digest_memory_16": pb.rows_digest(table)[:16],
+            "digest_csv_16": pb.rows_digest(via_csv)[:16]},
+           "door-to-door, not door-to-oracle: the two entry points must hash one input alike")
+    reap(staged.parent)
+
+    if pb.repo_root() is None:
+        ck.skip("boot_cli_prints_exactly_one_identity_line",
+                "no repository above this copy; the CLI refuses nothing but still needs a table",
+                "driven in the repo, skipped here by cause")
+        return
+    box = Path(tempfile.mkdtemp(prefix="boot_ident_"))
+    csv_path = box / "rows.csv"
+    csv_path.write_bytes(("obs_seed,A,B,C\n" + "\n".join(
+        f"{i},{a!r},{b!r},{c!r}" for i, (a, b, c) in enumerate(REAL8, 1))
+        + "\n").encode("utf-8"))
+    rc, out, err, missing = run_suite(Path(pb.__file__), box,
+                                      ("--table", str(csv_path), "--cell", "shape_l2"),
+                                      timeout=120)
+    id_lines = [L for L in out.splitlines() if L.startswith("[boot] identity:")]
+    ck.add("boot_cli_prints_exactly_one_identity_line",
+           not missing and len(id_lines) == 1
+           and f"rows_sha256={want}" in id_lines[0] and "cell=shape_l2" in id_lines[0],
+           {"rc": rc, "identity_lines": len(id_lines),
+            "line": id_lines[0][:100] if id_lines else ""},
+           "the printed bound travels with its identity, on the real entry point")
+    # The identity line reads `quantile_index`, which the refusal paths never set -- so a naive
+    # implementation crashes the CLI exactly on the inputs it exists to document.  Caught here
+    # rather than in someone else's terminal: dead floor -> rc=1, identity still printed, and no
+    # traceback on stderr.
+    dead = box / "dead_floor.csv"
+    dead.write_bytes(b"obs_seed,A,B,C\n1,0.0,3.0,1.0\n2,0.0,5.0,3.0\n")
+    rc_d, out_d, err_d, missing_d = run_suite(Path(pb.__file__), box,
+                                              ("--table", str(dead), "--cell", "shape_l2"),
+                                              timeout=120)
+    ck.add("boot_cli_identity_line_survives_a_refused_floor",
+           rc_d == 1 and not missing_d and "[boot] identity:" in out_d
+           and "Traceback" not in err_d,
+           {"rc": rc_d, "identity_present": "[boot] identity:" in out_d,
+            "stderr_has_traceback": "Traceback" in err_d,
+            "identity_line": next((L[:96] for L in out_d.splitlines()
+                                   if L.startswith("[boot] identity:")), "")},
+           "refused input must still exit 1 with the identity line, not with a KeyError")
+    reap(box)
+
+
+def real_input_checks(ck: Check) -> None:
+    """The reconciliation on route-2's own bytes: four bounds, and TWO claims that must not be
+    merged (统括官 12:2x withdrew the previous turn's blanket ban on "bit-for-bit equal").
+
+    (1) Same order-statistic convention AND same resample seed (`route2_int @ 4242`) reproduces
+        route-2's 17 digits bit for bit.  THAT cell is the evidence that the two implementations
+        compute one estimator.  An over-broad prohibition here would throw away real evidence --
+        which is as damaging as having no rule at all.
+    (2) Across conventions and across seeds the four numbers take 3 distinct values and are all
+        < 0: the *judgement* (lower bound < 0) is robust, the *value* is not, because 8 paired
+        means give an atomised resampling distribution (2^8 index arrangements).
+        `boot_real_the_four_bounds_are_not_one_number` catches writing (2) as if it were (1).
+        `boot_real_our_seed_collision_is_atomicity_not_agreement` catches the other direction: at
+        OUR seed one convention lands on their atom and the other does not -- that collision is
+        still an atom, not alignment.
     """
     table = [{"obs_seed": i + 1, "A": a, "B": b, "C": c}
              for i, (a, b, c) in enumerate(REAL8)]
@@ -844,6 +988,7 @@ def main() -> int:
     structure_checks(ck)
     cross_impl_checks(ck)
     real_input_checks(ck)
+    identity_checks(ck)
     mirror_run_checks(ck)
     oob_run_checks(ck)
     capture_teeth_checks(ck)
