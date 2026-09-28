@@ -239,7 +239,13 @@ def solve(nx: int, ny: int, out_csv: Path) -> dict:
     # "div u = 0 weakly" into global conservation, so a deficit is a marking hole, not a discretisation
     # difference.  Count it instead of reasoning about it: every exterior facet must be in exactly one
     # of the three sets.
-    all_ext = np.asarray(msh.exterior_facets.indices)
+    # The API here is measured, not assumed: 0.9's Mesh has no `exterior_facets` attribute at all
+    # (08:20:53 on this box: `Mesh attrs: []`, and my first version died with AttributeError), and
+    # `dolfinx.mesh.exterior_facet_indices(topology)` raises "Facet to cell connectivity has not been
+    # computed" unless that connectivity is created first.
+    from dolfinx.mesh import exterior_facet_indices
+    msh.topology.create_connectivity(msh.topology.dim, msh.topology.dim - 1)
+    all_ext = np.asarray(exterior_facet_indices(msh.topology))
     covered = np.concatenate([f_in, f_out, f_wall])
     uncovered = np.setdiff1d(all_ext, covered)
     doubled = len(covered) - len(np.unique(covered))
