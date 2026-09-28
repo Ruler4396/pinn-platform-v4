@@ -39,6 +39,7 @@ import random
 import shutil
 import subprocess
 import sys
+import threading
 import tempfile
 import time
 from pathlib import Path
@@ -588,6 +589,209 @@ def real_input_checks(ck: Check) -> None:
                "transcribed_by": "统括官 11:3x, from GET api/contents (not on this laptop)"})
 
 
+CHILD_ENCODING = "utf-8"
+SUITE_FILES = ("paired_bootstrap.py", "selftest_paired_bootstrap.py")
+OLD_PUBLISHED_COMMIT = "114acd7baf7c0dcf0c1e6347df0d6d0a00467206"   # == origin/main at 11:53
+
+
+def child_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = CHILD_ENCODING       # the child writes what we are going to decode
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if extra:
+        env.update(extra)
+    return env
+
+
+def capture(done: "subprocess.CompletedProcess") -> Tuple[int, str, str, bool]:
+    """(rc, stdout, stderr, stdout_unavailable).
+
+    `text=True` decodes with the locale default (cp936 on this machine) while the child encodes
+    with whatever PYTHONIOENCODING it inherited, and when the two disagree the parent does not
+    merely garble: `CompletedProcess.stdout` comes back None and the harness died on `.strip()`
+    instead of reporting (统括官 11:5x; reproduced 11:53:53 on 114acd7 and on the working tree:
+    PYTHONIOENCODING=utf-8 at a repository-free depth -> rc=1, no total= line).  Capture bytes,
+    decode them here, and never call a method on a value that can be None.
+    """
+    missing = done.stdout is None or done.stderr is None
+    out = "" if done.stdout is None else done.stdout.decode(CHILD_ENCODING, errors="replace")
+    err = "" if done.stderr is None else done.stderr.decode(CHILD_ENCODING, errors="replace")
+    return done.returncode, out, err, missing
+
+
+def run_suite(script: Path, cwd: Path, args=(),
+              extra: Optional[Dict[str, str]] = None,
+              timeout: int = 900) -> Tuple[int, str, str, bool]:
+    return capture(subprocess.run([sys.executable, str(script)] + list(args),
+                                  capture_output=True, cwd=str(cwd), timeout=timeout,
+                                  env=child_env(extra)))
+
+
+def no_repo_above(path: Path) -> bool:
+    for cand in (path, *path.parents):
+        if (cand / ".git").exists():
+            return False
+    return True
+
+
+def reap(*paths: Optional[Path]) -> None:
+    """Remove only the boxes THIS run created, and prove they are gone.
+
+    A skipped branch that returns without cleaning leaves an orphan under D:/Temp, and the next
+    run's "residue must be empty" assertion goes red for nobody's fault but mine (this machine
+    already carries boot_mirror_* orphans from interrupted runs -- those are left alone; glob
+    deleting by prefix is the risky pattern, not the fix).
+    """
+    for p in paths:
+        if p is None or not p.exists():
+            continue
+        shutil.rmtree(p, ignore_errors=True)
+        if p.exists():
+            print(f"[boot] oob_box_left_behind: {p} (not removed, deliberately not forced)")
+
+
+def oob_verdict(rc: int, total_line: str, rc_allowed: Tuple[int, ...] = (0, 2)) -> Dict[str, object]:
+    """The judgement as a pure function, so the fixture's tooth can be fed a degenerate child
+    and shown to go red instead of being argued about.  rc=2 is a legitimate outcome (the
+    artifact write was refused), rc=1 with no summary is not."""
+    reasons = []
+    if not total_line:
+        reasons.append("summary_missing")
+    if rc not in rc_allowed:
+        reasons.append(f"rc_out_of_range:{rc}")
+    return {"green": not reasons, "reasons": reasons, "rc": rc, "total_line": total_line[:70]}
+
+
+def _git_show(rev: str, rel: str, cwd: Path) -> Optional[str]:
+    done = subprocess.run(["git", "show", f"{rev}:{rel}"], capture_output=True,
+                          cwd=str(cwd), timeout=120, env=child_env())
+    if done.returncode != 0 or done.stdout is None:
+        return None
+    return done.stdout.decode(CHILD_ENCODING, errors="replace")
+
+
+LEGACY_MARKER = "⇒ 未验"          # cp936 cannot round-trip this; that is exactly the point
+
+
+def legacy_capture(script, cwd, extra=None):
+    """The PRE-FIX pattern, kept only so the fixture can show it would have caught it.
+
+    With `text=True` and no encoding, the parent decodes with the locale default (cp936 here)
+    inside a reader thread; a child that prints a byte cp936 cannot decode kills that thread and
+    `communicate()` then hands back `stdout=None`.  One mechanism, two faces -- which is why the
+    crash reported at 11:5x showed a UnicodeDecodeError in the log AND an AttributeError on None.
+    Nothing real is decided through this path.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = CHILD_ENCODING
+    if extra:
+        env.update(extra)
+    # The decode failure happens on CPython's reader THREAD, where it is reported through
+    # threading.excepthook (i.e. straight to our stderr) and `communicate()` then returns None.
+    # Capturing it here keeps the evidence in the check value and the suite's stderr empty.
+    caught = []
+    saved_hook = threading.excepthook
+
+    def _hook(args):
+        caught.append("%s: %s" % (args.exc_type.__name__, str(args.exc_value)[:70]))
+
+    threading.excepthook = _hook
+    try:
+        done = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                              timeout=120, cwd=str(cwd), env=env)
+    except Exception as exc:                       # UnicodeDecodeError can surface right here
+        return False, "%s: %s" % (type(exc).__name__, str(exc)[:70])
+    finally:
+        threading.excepthook = saved_hook
+    if done.stdout is None:
+        return False, (caught[0] if caught else "stdout is None (no thread error captured)")
+    return True, done.stdout[:40]
+
+
+def capture_teeth_checks(ck):
+    """One child, two capture patterns: the fixed path must read the marker, the old pattern
+    must be unable to.  Without this the out-of-repo fixture would only ever see a healthy
+    child, and a harness that prints "green" for everything passes that test just as well.
+    """
+    box = Path(tempfile.mkdtemp(prefix="boot_leg_"))
+    child = box / "child.py"
+    child.write_bytes(('print("%s")\n' % LEGACY_MARKER).encode("utf-8"))
+    rc_new, out_new, err_new, missing_new = run_suite(child, box, timeout=120)
+    ok_old, note_old = legacy_capture(child, box)
+    ck.add("boot_oob_teeth_old_capture_cannot_read_the_same_child",
+           (not missing_new) and (LEGACY_MARKER in out_new) and (not ok_old),
+           {"fixed_readable": not missing_new, "fixed_saw_marker": LEGACY_MARKER in out_new,
+            "legacy_readable": ok_old, "legacy_note": note_old, "rc_fixed": rc_new},
+           "fixed path reads what the legacy path cannot -> the fixture can actually bite")
+    reap(box)
+
+
+def oob_run_checks(ck: Check) -> None:
+    """(b) 统括官 11:5x: "a suite run where no .git is above it must still print its summary
+    line, with rc in {0,2}" -- as a fixture that executes, not as an inference.
+
+    It carries its own tooth: the *published* bytes (114acd7) are fetched out of git history,
+    copied to a repository-free box, and run under the same hostile encoding.  They crash, so
+    `oob_verdict` must call them not-green.  Without that second half this fixture would be a
+    check that only ever sees a healthy child.
+    """
+    if os.environ.get("RULER_OOB_PROBED") == "1":
+        ck.skip("boot_oob_run_prints_the_summary_line", "we are the out-of-repo run itself",
+                "not re-entered, so the fixture cannot recurse")
+        return
+    box = Path(tempfile.mkdtemp(prefix="boot_oob_"))
+    if not no_repo_above(box):
+        ck.skip("boot_oob_run_prints_the_summary_line", str(box),
+                "the probe box sits under a repository, so it would not be an out-of-repo run")
+        reap(box)
+        return
+    for name in SUITE_FILES:
+        shutil.copy2(HERE / name, box / name)
+    # RULER_OOB_PROBED stops *this* fixture from recursing; BOOT_MIRRORED is deliberately NOT
+    # set, so the copy still executes its own mirror fixture -- that nested child is the thing
+    # that used to come back None, and skipping it would make this fixture test only the easy half.
+    rc, out, err, missing = run_suite(box / "selftest_paired_bootstrap.py", box,
+                                      extra={"RULER_OOB_PROBED": "1"})
+    totals = [L for L in out.splitlines() if L.startswith("total=")]
+    now = oob_verdict(rc, totals[0] if totals else "")
+    ck.add("boot_oob_run_prints_the_summary_line", now["green"],
+           {"rc": rc, "total_line": now["total_line"], "reasons": now["reasons"],
+            "stdout_unavailable": missing, "box": box.name,
+            "last_line": out.splitlines()[-1][:70] if out.strip() else ""},
+           "summary line present and rc in {0,2} with no .git above")
+
+    root = pb.repo_root()
+    if root is None:
+        ck.measure("boot_oob_old_published_bytes_at_foreign_depth",
+                   "unavailable: no repository above this copy, so the published bytes "
+                   "cannot be fetched (the mechanism tooth does not depend on them)")
+        reap(box)
+        return
+    old = Path(tempfile.mkdtemp(prefix="boot_oob_old_"))
+    wrote = 0
+    for name in SUITE_FILES:
+        text = _git_show(OLD_PUBLISHED_COMMIT, f"model/scripts/route2/{name}", root)
+        if text is None:
+            break
+        (old / name).write_bytes(text.encode("utf-8"))
+        wrote += 1
+    if wrote < len(SUITE_FILES) or not no_repo_above(old):
+        ck.measure("boot_oob_old_published_bytes_at_foreign_depth",
+                   {"staged_files": wrote, "expected": len(SUITE_FILES),
+                    "box_ok": no_repo_above(old), "note": "old bytes not stageable"})
+        reap(box, old)
+        return
+    rc_old, out_old, err_old, missing_old = run_suite(
+        old / "selftest_paired_bootstrap.py", old, extra={"RULER_OOB_PROBED": "1"})
+    old_totals = [L for L in out_old.splitlines() if L.startswith("total=")]
+    ck.measure("boot_oob_old_published_bytes_at_foreign_depth",
+               {"rc": rc_old, "summary_present": bool(old_totals),
+                "stdout_lines": len(out_old.splitlines()),
+                "crash_line": next((L.strip()[:96] for L in err_old.splitlines()
+                                    if "AttributeError" in L), "")})
+    reap(box, old)
+
+
 def mirror_run_checks(ck: Check) -> None:
     """Copy the pair to a directory outside the repo and run the copy: the summary line must
     still print and rc must be 0.
@@ -605,15 +809,23 @@ def mirror_run_checks(ck: Check) -> None:
     mirror = Path(tempfile.mkdtemp(prefix="boot_mirror_"))
     for name in ("paired_bootstrap.py", "selftest_paired_bootstrap.py"):
         shutil.copy2(HERE / name, mirror / name)
-    done = subprocess.run([sys.executable, str(mirror / "selftest_paired_bootstrap.py")],
-                          capture_output=True, text=True, timeout=600, cwd=str(mirror),
-                          env=dict(os.environ, BOOT_MIRRORED="1"))
-    tail = done.stdout.strip().splitlines()[-1][:70] if done.stdout.strip() else ""
+    rc, out, err, missing = run_suite(mirror / "selftest_paired_bootstrap.py", mirror,
+                                      extra={"BOOT_MIRRORED": "1"})
+    if missing:
+        # never `.strip()` a value that can be None, and never fold an unreadable child into
+        # either verdict: it is counted, printed, and reported as not-judged.
+        ck.skip("boot_mirror_run_at_foreign_depth_is_green",
+                {"rc": rc, "stdout_unavailable": True, "stderr_tail": err[-80:]},
+                "child output could not be read, so this run judges nothing (not a pass)")
+        reap(mirror)
+        return
+    lines = out.strip().splitlines()
     ck.add("boot_mirror_run_at_foreign_depth_is_green",
-           done.returncode == 0 and "total=" in done.stdout and "ALL GREEN" in done.stdout,
-           {"rc": done.returncode, "summary_present": "total=" in done.stdout,
-            "last_line": tail, "mirror": mirror.name},
+           rc == 0 and "total=" in out and "ALL GREEN" in out,
+           {"rc": rc, "summary_present": "total=" in out,
+            "last_line": lines[-1][:70] if lines else "", "mirror": mirror.name},
            "rc=0 with a total= line, at a depth where counting parents gives a wrong root")
+    reap(mirror)
 
 
 def main() -> int:
@@ -633,6 +845,8 @@ def main() -> int:
     cross_impl_checks(ck)
     real_input_checks(ck)
     mirror_run_checks(ck)
+    oob_run_checks(ck)
+    capture_teeth_checks(ck)
 
     # The verdict prints BEFORE anything touches the disk: a refused artifact write must not
     # be able to eat the summary line and leave a green-looking run exiting 1.

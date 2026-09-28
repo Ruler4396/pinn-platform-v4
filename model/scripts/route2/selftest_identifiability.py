@@ -33,10 +33,11 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
@@ -561,6 +562,208 @@ def axis_checks(ck: Check) -> None:
            "classify() returns state/cause/meets_noise_floor/note and neither axis field")
 
 
+
+CHILD_ENCODING = "utf-8"
+OLD_PUBLISHED_COMMIT = "114acd7baf7c0dcf0c1e6347df0d6d0a00467206"      # the byte pair that carried the crash-prone capture
+SUITE_FILES = ("identifiability_gate.py", "selftest_identifiability.py", "impedance_baseline.py", "t_geometry.py")
+
+
+def child_env(extra=None):
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = CHILD_ENCODING      # the child writes what we are going to decode
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if extra:
+        env.update(extra)
+    return env
+
+
+def capture(done):
+    """(rc, stdout, stderr, stdout_unavailable) -- the decoding is ours, over bytes.
+
+    `text=True` let the PARENT decode with the locale default (cp936 on this machine) while the
+    CHILD encoded per whatever PYTHONIOENCODING it inherited.  When the two disagree the parent
+    does not merely garble: `CompletedProcess.stdout` comes back None and the harness died on
+    `.strip()` instead of reporting (统括官 11:5x; reproduced 11:53:53 on 114acd7 and on the
+    working tree: hostile env + a directory with no .git above -> rc=1, no total= line).
+    """
+    missing = done.stdout is None or done.stderr is None
+    out = "" if done.stdout is None else done.stdout.decode(CHILD_ENCODING, errors="replace")
+    err = "" if done.stderr is None else done.stderr.decode(CHILD_ENCODING, errors="replace")
+    return done.returncode, out, err, missing
+
+
+def run_suite(script, cwd, args=(), extra=None, timeout=900):
+    return capture(subprocess.run([sys.executable, str(script)] + list(args),
+                                  capture_output=True, cwd=str(cwd), timeout=timeout,
+                                  env=child_env(extra)))
+
+
+def no_repo_above(path):
+    for cand in (path, *path.parents):
+        if (cand / ".git").exists():
+            return False
+    return True
+
+
+def reap(*paths):
+    """Remove only the boxes THIS run created, and prove they are gone.
+
+    A skipped branch that leaks its box is how a later "residue must be empty" assertion turns
+    red.  Orphans already under D:/Temp from interrupted runs are left alone -- sweeping by
+    filename prefix is the risky pattern, not the fix.
+    """
+    for q in paths:
+        if q is None or not q.exists():
+            continue
+        shutil.rmtree(q, ignore_errors=True)
+        if q.exists():
+            print(f"gateA_box_left_behind: {q} (not removed, deliberately not forced)")
+
+
+def oob_verdict(rc, total_line, rc_allowed=(0, 2)):
+    """The judgement as a pure function, so the fixture's tooth can be fed a degenerate child
+    and shown to go red instead of being argued about.  rc=2 (artifact write refused) is a
+    legitimate outcome; rc=1 with no summary line is not.
+    """
+    reasons = []
+    if not total_line:
+        reasons.append("summary_missing")
+    if rc not in rc_allowed:
+        reasons.append(f"rc_out_of_range:{rc}")
+    return {"green": not reasons, "reasons": reasons, "rc": rc,
+            "total_line": total_line[:70]}
+
+
+def _git_show(rev, rel, cwd):
+    done = subprocess.run(["git", "show", f"{rev}:{rel}"], capture_output=True,
+                          cwd=str(cwd), timeout=120, env=child_env())
+    if done.returncode != 0 or done.stdout is None:
+        return None
+    return done.stdout.decode(CHILD_ENCODING, errors="replace")
+
+
+LEGACY_MARKER = "⇒ 未验"          # cp936 cannot round-trip this; that is exactly the point
+
+
+def legacy_capture(script, cwd, extra=None):
+    """The PRE-FIX pattern, kept only so the fixture can show it would have caught it.
+
+    With `text=True` and no encoding, the parent decodes with the locale default (cp936 here)
+    inside a reader thread; a child that prints a byte cp936 cannot decode kills that thread and
+    `communicate()` then hands back `stdout=None`.  One mechanism, two faces -- which is why the
+    crash reported at 11:5x showed a UnicodeDecodeError in the log AND an AttributeError on None.
+    Nothing real is decided through this path.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = CHILD_ENCODING
+    if extra:
+        env.update(extra)
+    # The decode failure happens on CPython's reader THREAD, where it is reported through
+    # threading.excepthook (i.e. straight to our stderr) and `communicate()` then returns None.
+    # Capturing it here keeps the evidence in the check value and the suite's stderr empty.
+    caught = []
+    saved_hook = threading.excepthook
+
+    def _hook(args):
+        caught.append("%s: %s" % (args.exc_type.__name__, str(args.exc_value)[:70]))
+
+    threading.excepthook = _hook
+    try:
+        done = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                              timeout=120, cwd=str(cwd), env=env)
+    except Exception as exc:                       # UnicodeDecodeError can surface right here
+        return False, "%s: %s" % (type(exc).__name__, str(exc)[:70])
+    finally:
+        threading.excepthook = saved_hook
+    if done.stdout is None:
+        return False, (caught[0] if caught else "stdout is None (no thread error captured)")
+    return True, done.stdout[:40]
+
+
+def capture_teeth_checks(ck):
+    """One child, two capture patterns: the fixed path must read the marker, the old pattern
+    must be unable to.  Without this the out-of-repo fixture would only ever see a healthy
+    child, and a harness that prints "green" for everything passes that test just as well.
+    """
+    box = Path(tempfile.mkdtemp(prefix="gateA_leg_"))
+    child = box / "child.py"
+    child.write_bytes(('print("%s")\n' % LEGACY_MARKER).encode("utf-8"))
+    rc_new, out_new, err_new, missing_new = run_suite(child, box, timeout=120)
+    ok_old, note_old = legacy_capture(child, box)
+    ck.add("gateA_oob_teeth_old_capture_cannot_read_the_same_child",
+           (not missing_new) and (LEGACY_MARKER in out_new) and (not ok_old),
+           {"fixed_readable": not missing_new, "fixed_saw_marker": LEGACY_MARKER in out_new,
+            "legacy_readable": ok_old, "legacy_note": note_old, "rc_fixed": rc_new},
+           "fixed path reads what the legacy path cannot -> the fixture can actually bite")
+    reap(box)
+
+
+def oob_run_checks(ck):
+    """(b) 统括官 11:5x: "run the suite where no .git is above it -> the summary line must
+    still print, with rc in {0,2}" -- as a fixture that executes, not as an inference.
+
+    It carries its own tooth: the PUBLISHED bytes come out of git history, run in a
+    repository-free box under the same hostile encoding, and really do lose their summary line
+    (measured 12:01: rc=1, 52 stdout lines, AttributeError on the None stdout).  Without that
+    second half this would be a check that only ever sees a healthy child.
+    """
+    if os.environ.get("RULER_OOB_PROBED") == "1":
+        ck.skip("gateA_oob_run_prints_the_summary_line", "we are the out-of-repo run itself",
+                "not re-entered, so the fixture cannot recurse")
+        return
+    box = Path(tempfile.mkdtemp(prefix="gateA_oob_"))
+    if not no_repo_above(box):
+        ck.skip("gateA_oob_run_prints_the_summary_line", str(box),
+                "the probe box sits under a repository, so it would not be an out-of-repo run")
+        reap(box)
+        return
+    for name in SUITE_FILES:
+        shutil.copy2(HERE / name, box / name)
+    # RULER_OOB_PROBED stops THIS fixture from recursing; the *_MIRRORED guard is deliberately
+    # NOT set, so the copy still executes its own mirror fixture -- that nested child is the
+    # thing that used to come back None, and skipping it would test only the easy half.
+    rc, out, err, missing = run_suite(box / "selftest_identifiability.py", box,
+                                      extra={"RULER_OOB_PROBED": "1"})
+    totals = [L for L in out.splitlines() if L.startswith("total=")]
+    now = oob_verdict(rc, totals[0] if totals else "")
+    ck.add("gateA_oob_run_prints_the_summary_line", now["green"],
+           {"rc": rc, "total_line": now["total_line"], "reasons": now["reasons"],
+            "stdout_unavailable": missing, "box": box.name,
+            "last_line": out.splitlines()[-1][:70] if out.strip() else ""},
+           "summary line present and rc in {0,2} with no .git above")
+
+    root = G.repo_root()
+    if root is None:
+        ck.measure("gateA_oob_old_published_bytes_at_foreign_depth",
+                   "unavailable: no repository above this copy, so the published bytes "
+                   "cannot be fetched (the mechanism tooth does not depend on them)")
+        reap(box)
+        return
+    old = Path(tempfile.mkdtemp(prefix="gateA_oob_old_"))
+    wrote = 0
+    for name in SUITE_FILES:
+        text = _git_show(OLD_PUBLISHED_COMMIT, f"model/scripts/route2/{name}", root)
+        if text is None:
+            break
+        (old / name).write_bytes(text.encode("utf-8"))
+        wrote += 1
+    if wrote < len(SUITE_FILES) or not no_repo_above(old):
+        ck.measure("gateA_oob_old_published_bytes_at_foreign_depth",
+                   {"staged_files": wrote, "expected": len(SUITE_FILES),
+                    "box_ok": no_repo_above(old), "note": "old bytes not stageable"})
+        reap(box, old)
+        return
+    rc_old, out_old, err_old, missing_old = run_suite(
+        old / "selftest_identifiability.py", old, extra={"RULER_OOB_PROBED": "1"})
+    old_totals = [L for L in out_old.splitlines() if L.startswith("total=")]
+    ck.measure("gateA_oob_old_published_bytes_at_foreign_depth",
+               {"rc": rc_old, "summary_present": bool(old_totals),
+                "stdout_lines": len(out_old.splitlines()),
+                "crash_line": next((L.strip()[:96] for L in err_old.splitlines()
+                                    if "AttributeError" in L), "")})
+    reap(box, old)
+
+
 def mirror_run_checks(ck: Check) -> None:
     """Copy the gate + its self-test (and the two read-only modules the gate imports, as
     copies only) to a directory with no repository above it, and run the copy: rc must be 0
@@ -574,15 +777,23 @@ def mirror_run_checks(ck: Check) -> None:
     for name in ("identifiability_gate.py", "selftest_identifiability.py",
                  "impedance_baseline.py", "t_geometry.py"):
         shutil.copy2(HERE / name, mirror / name)     # copies only; nothing in the repo is touched
-    done = subprocess.run([sys.executable, str(mirror / "selftest_identifiability.py")],
-                          capture_output=True, text=True, timeout=600, cwd=str(mirror),
-                          env=dict(os.environ, GATEA_MIRRORED="1"))
-    tail = done.stdout.strip().splitlines()[-1][:70] if done.stdout.strip() else ""
+    rc, out, err, missing = run_suite(mirror / "selftest_identifiability.py", mirror,
+                                      extra={"GATEA_MIRRORED": "1"})
+    if missing:
+        # never `.strip()` a value that can be None, and never fold an unreadable child into
+        # either verdict: it is counted, printed, and reported as not-judged.
+        ck.skip("gateA_mirror_run_at_foreign_depth_is_green",
+                {"rc": rc, "stdout_unavailable": True, "stderr_tail": err[-80:]},
+                "child output could not be read, so this run judges nothing (not a pass)")
+        reap(mirror)
+        return
+    lines = out.strip().splitlines()
     ck.add("gateA_mirror_run_at_foreign_depth_is_green",
-           done.returncode == 0 and "total=" in done.stdout and "ALL GREEN" in done.stdout,
-           {"rc": done.returncode, "summary_present": "total=" in done.stdout,
-            "last_line": tail, "mirror": mirror.name},
+           rc == 0 and "total=" in out and "ALL GREEN" in out,
+           {"rc": rc, "summary_present": "total=" in out,
+            "last_line": lines[-1][:70] if lines else "", "mirror": mirror.name},
            "rc=0 with a total= line, at a depth where counting parents gives a wrong root")
+    reap(mirror)
 
 
 def hygiene_checks(ck: Check) -> None:
@@ -592,10 +803,10 @@ def hygiene_checks(ck: Check) -> None:
     # deliverable whose whole job is to be run by someone else, and only a subprocess sees it.
     for label, path in (("gate", HERE / "identifiability_gate.py"),
                         ("selftest", Path(__file__).resolve())):
-        done = subprocess.run([sys.executable, str(path), "--help"],
-                              capture_output=True, text=True, timeout=120)
-        ck.add(f"gateA_cli.{label}_help_reachable", done.returncode == 0,
-               {"rc": done.returncode, "tail": done.stderr.strip()[-60:]}, "rc == 0")
+        rc_h, out_h, err_h, missing_h = run_suite(path, HERE, ("--help",), timeout=120)
+        ck.add(f"gateA_cli.{label}_help_reachable", rc_h == 0 and not missing_h,
+               {"rc": rc_h, "stdout_unavailable": missing_h,
+                "tail": err_h.strip()[-60:]}, "rc == 0")
     if root is None:
         ck.skip("gateA_refuses_to_write_inside_the_repository",
                 "no .git above this copy: the guard has nothing to refuse",
@@ -619,12 +830,12 @@ def hygiene_checks(ck: Check) -> None:
     # this: text mode rewrites \n as \r\n on Windows, so a digest of the string is not a
     # digest of the file.
     cert = Path(tempfile.mkdtemp(prefix="gateA_cert_")) / "cert.json"
-    done = subprocess.run([sys.executable, str(HERE / "identifiability_gate.py"),
-                           "--json", str(cert)], capture_output=True, text=True, timeout=300)
-    printed = re.search(r"sha256=([0-9a-f]{64})", done.stdout)
+    rc_cert, out_cert, err_cert, missing_cert = run_suite(
+        HERE / "identifiability_gate.py", HERE, ("--json", str(cert)), timeout=300)
+    printed = re.search(r"sha256=([0-9a-f]{64})", out_cert)
     actual = hashlib.sha256(cert.read_bytes()).hexdigest() if cert.is_file() else None
     ck.add("gateA_artifact_selfcert_digest_is_the_digest_of_the_file",
-           done.returncode == 0 and printed is not None and printed.group(1) == actual
+           rc_cert == 0 and printed is not None and printed.group(1) == actual
            and cert.stat().st_size > 0,
            {"printed": printed.group(1)[:16] if printed else None, "file": actual[:16],
             "bytes": cert.stat().st_size if cert.is_file() else None},
@@ -654,6 +865,8 @@ def main() -> int:
     axis_checks(ck)
     hygiene_checks(ck)
     mirror_run_checks(ck)
+    oob_run_checks(ck)
+    capture_teeth_checks(ck)
     node_rank = G.rank_of(G.jacobian_distributed(geo["theta_node"], geo["lengths"],
                                                   geo["p_in"], ()))
     rich_rank = G.rank_of(G.jacobian_distributed(geo["theta_dist"], geo["lengths"],
