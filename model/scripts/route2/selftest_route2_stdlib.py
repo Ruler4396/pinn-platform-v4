@@ -1420,6 +1420,74 @@ def runtime_path_checks(ck: Check, geom: TGeometry, tmp: Path) -> None:
             "digest_as_shipped": man2["files_digest"][:12]},
            "if anyone folds the probe back into files, run-to-run identity breaks right here")
 
+    # ---- §四R: the sibling.  定档甲 put `data/<case>/` INSIDE the hashed set, and
+    # `k0_truth_gate.run_gate` wrote `elapsed_s` straight into `k0_verdict.json` (old line 878), so the
+    # clock K0 publishes now sits in a hashed file: two identical K0 runs would move `files_digest` --
+    # the very failure the digest exists to catch, one level below the file I fixed.  `split_volatile`
+    # is a pure function precisely so this is judgeable here: `run_gate` needs torch, which is
+    # instance-only, so the gate itself did NOT run on this machine and nothing below is a K0 reading.
+    import k0_truth_gate as kg
+    raw = {"case": geom.case.case_id, "level": "h1", "pass": True,
+           "ratio_truth_over_model": {"P1": 0.5}, "chain": {"P1": {"first_total_derivative": 0.1}},
+           "env": {"python": "3.11.15", "numpy": "1.26.4"},
+           "fixture_only": "fabricated dict -- run_gate needs torch and did not run in this selftest",
+           "elapsed_s": 12.4}
+    v1, t1 = kg.split_volatile(raw, geom.case.case_id, "h1")
+    v2, t2 = kg.split_volatile({**raw, "elapsed_s": 99.9}, geom.case.case_id, "h1")
+    k0_v, k0_t = data_dir / "k0_verdict.json", data_dir / "k0_timing.json"
+    art.write_json(k0_v, v1)
+    art.write_json(k0_t, t1)
+    man_k = gc._manifest(out_root, geom.case, data_dir / "sha256sums.json",
+                         data_dir / "env-probe.json", data_dir / "s1_timing.json", k0_t)
+    hashed_k = set(man_k["files"])
+    key_v = str(k0_v).replace("\\", "/")
+    key_t = str(k0_t).replace("\\", "/")
+    need_k = required | {key_v}
+    ck.add("runtime.manifest_keys_include_the_sibling_verdict_and_only_name_four_exclusions",
+           need_k <= hashed_k and key_t not in hashed_k
+           and len(man_k["excluded_by_name"]) == 4 and not man_k["named_exclusions_absent"],
+           {"k0_verdict_hashed": key_v in hashed_k, "k0_timing_hashed": key_t in hashed_k,
+            "excluded_by_name": sorted(man_k["excluded_by_name"]),
+            "named_but_absent": sorted(man_k["named_exclusions_absent"]),
+            "missing_from_ledger": sorted(need_k - hashed_k)},
+           "the sibling verdict is in the list, its clock is not, and the four names are all real files")
+    art.write_json(k0_v, v2)
+    art.write_json(k0_t, t2)
+    man_k2 = gc._manifest(out_root, geom.case, data_dir / "sha256sums.json",
+                          data_dir / "env-probe.json", data_dir / "s1_timing.json", k0_t)
+    ck.add("runtime.files_digest_survives_a_moved_wall_clock_in_the_sibling",
+           man_k2["files_digest"] == man_k["files_digest"],
+           {"clock_sidecar_s": [t1["elapsed_s"], t2["elapsed_s"]],
+            "verdict_sha_both_passes": [man_k["files"].get(key_v, "-")[:12],
+                                        man_k2["files"].get(key_v, "-")[:12]],
+            "moved_files": {k: sorted(v) for k, v in
+                            {"added": set(man_k2["files"]) - set(man_k["files"]),
+                             "removed": set(man_k["files"]) - set(man_k2["files"]),
+                             "changed": [f for f in set(man_k["files"]) & set(man_k2["files"])
+                                         if man_k["files"][f] != man_k2["files"][f]]}.items()}},
+           "87.5 seconds apart, one digest -- and if it ever splits, the lists above say which file")
+
+    # 必红 (改回目录排除): the exclusion as a directory drops the sibling verdict AND the three S1
+    # artefacts from the ledger, so the key-set predicate must go red -- it is the #39 病因 recurring.
+    dir_shape = {str(p).replace("\\", "/") for p in out_root.rglob("*")
+                 if p.is_file() and data_dir not in p.parents}
+    ck.add("runtime.MUST_RED_directory_exclusion_drops_the_sibling_verdict_too",
+           key_v not in dir_shape and (need_k - dir_shape) == need_k,
+           {"hashed_under_directory_rule": sorted(need_k & dir_shape),
+            "dropped_under_directory_rule": sorted(need_k - dir_shape)},
+           "this is the red that says why the exclusion stays a list of names")
+
+    # 必红 (两跑之间 files_digest 不同): undo the split -- clock back inside the hashed verdict, two
+    # passes, and the SAME digest-equality assertion above must now fail.  A guard that cannot fail here
+    # would not be a guard.  `_digest_over` is the same helper the 丙 mutation above uses.
+    one = {**man_k["files"], key_v: art.sha256_text(json.dumps({**v1, "elapsed_s": 12.4}, sort_keys=True))}
+    two = {**man_k2["files"], key_v: art.sha256_text(json.dumps({**v2, "elapsed_s": 99.9}, sort_keys=True))}
+    ck.add("runtime.MUST_RED_unsplitting_the_sibling_clock_reddens_the_two_passes",
+           _digest_over(one) != _digest_over(two),
+           {"digest_pass1": _digest_over(one)[:12], "digest_pass2": _digest_over(two)[:12],
+            "digest_as_shipped": man_k2["files_digest"][:12]},
+           "if the elapsed_s ever moves back into k0_verdict.json, the two passes stop being one digest")
+
 
 def _find_tracked(name: str, *relatives: Path) -> Path:
     """Locate a repo artefact without assuming the checkout took the whole repository.

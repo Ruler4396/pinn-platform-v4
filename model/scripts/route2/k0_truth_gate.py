@@ -750,6 +750,28 @@ def assert_chain_is_numeric(chain: Dict[str, Dict[str, float]]) -> None:
             f"belongs beside it, not inside it -- see second_scan")
 
 
+def split_volatile(raw: dict, case_id: str, level: str) -> tuple[dict, dict]:
+    """Move the wall clock out of the file the S1 manifest hashes (§四R, 定档丙 的兄弟格).
+
+    `k0_verdict.json` lives in `data/<case>/`, and 定档甲 put that directory INSIDE the hashed set
+    (the old exclusion was a directory, which is how #39 found the verdict JSON missing).  One
+    `elapsed_s` in a hashed file is enough to make `files_digest` differ between two identical runs,
+    which is exactly the failure the digest exists to detect.  Nothing is deleted: the seconds land in
+    `k0_timing.json`, excluded BY NAME, and an unmeasured clock is recorded as -1 rather than 0.
+
+    This is a pure function on purpose: `run_gate` needs torch, which is instance-only, so the
+    stdlib self-test can only exercise the sibling if the split itself is callable without a solve.
+    """
+    v = dict(raw)
+    clock = v.pop("elapsed_s", None)
+    timing = {"case": case_id, "level": level,
+              "elapsed_s": clock if isinstance(clock, (int, float)) else -1,
+              "excluded_from_files_digest_because":
+                  "wall-clock seconds differ between two identical runs, and k0_verdict.json is "
+                  "inside the hashed set since 定档甲"}
+    return v, timing
+
+
 # --------------------------------------------------------------------- gate main
 def run_gate(case_root: Path, case_id: str, level: str, sigma: float,
              plans: Sequence[str]) -> dict:
@@ -877,6 +899,9 @@ def run_gate(case_root: Path, case_id: str, level: str, sigma: float,
                           "(a best-case model reading, not the final S3 PINN)",
         "elapsed_s": round(time.time() - t0, 1), "env": art.env_lock(),
     })
+    # 丙 的兄弟格：`elapsed_s` leaves the hashed file and lands in a named sidecar next to it.
+    verdict, timing = split_volatile(verdict, case_id, level)
+    art.write_json(data_dir / "k0_timing.json", timing)
     art.write_json(data_dir / "k0_verdict.json", verdict)
     return verdict
 
@@ -985,7 +1010,10 @@ def main() -> int:
               "plan_b_contract_vs_fd_first"):
         if k in verdict["extra"]:
             print(f"  {k}: {verdict['extra'][k]:.4g}")
-    print(f"json={out} elapsed={verdict['elapsed_s']}s")
+    # The clock is no longer in the verdict (see split_volatile), so the line that reports it reads
+    # the sidecar it moved to -- printing a key that is gone would be a KeyError, not a measurement.
+    timing = art.read_json(case_root / "data" / args.case / "k0_timing.json")
+    print(f"json={out} elapsed={timing.get('elapsed_s', -1)}s sidecar=k0_timing.json")
     return 0 if verdict["pass"] else 1
 
 

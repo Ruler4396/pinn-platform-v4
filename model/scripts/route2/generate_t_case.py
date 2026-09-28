@@ -1132,7 +1132,7 @@ def run_case(case: tg.TCase, out_root: Path, levels: List[dict], execute: bool,
     art.write_json(data_dir / "s1_timing.json", volatile)
     art.write_json(data_dir / "s1_plan.json", plan)
     man = _manifest(out_root, case, data_dir / "sha256sums.json", data_dir / "env-probe.json",
-                    data_dir / "s1_timing.json")
+                    data_dir / "s1_timing.json", data_dir / "k0_timing.json")
     timing["manifest_s"] += time.perf_counter() - _t3     # env-probe + build; the write below is outside
     art.write_json(data_dir / "sha256sums.json", man)
     print(f"manifest n_files={man['n_files']} files_digest={man['files_digest'][:16]}")
@@ -1208,7 +1208,8 @@ def freefem_probe() -> dict:
 
 
 def _manifest(out_root: Path, case: tg.TCase, manifest_path: Path,
-              env_probe_path: Path, timing_path: Path) -> dict:
+              env_probe_path: Path, timing_path: Path,
+              k0_timing_path: Path | None = None) -> dict:
     """content_sha256 over every artefact byte, plus a canonical digest of that map.
 
     Two files are excluded BY NAME, not by directory (定档甲): the manifest itself, which cannot hold
@@ -1220,8 +1221,16 @@ def _manifest(out_root: Path, case: tg.TCase, manifest_path: Path,
     a manifest containing it differs between two identical runs -- and this manifest is the reproduction
     anchor behind the public "truth is recomputable bit for bit" claim (#42).  The digest is computed
     over sorted `path:sha` lines so a comparison is one string equality, not a diff of JSON layout.
+
+    k0_timing.json is the same treatment for the sibling (§四R): `k0_truth_gate.run_gate` wrote
+    `elapsed_s` straight into `k0_verdict.json`, which 定档甲 moved INSIDE the hashed set, so one clock
+    second there would move `files_digest` between two identical K0 runs.  The verdict stays hashed --
+    only the named sidecar leaves the ledger, and a name that does not exist in this tree is reported
+    under `named_exclusions_absent` rather than silently dropped from the list.
     """
-    skip = {p.resolve() for p in (manifest_path, env_probe_path, timing_path)}
+    named = [manifest_path, env_probe_path, timing_path] + ([k0_timing_path] if k0_timing_path else [])
+    present = [p for p in named if p.is_file()]
+    skip = {p.resolve() for p in present}
     paths = [p for p in out_root.rglob("*") if p.is_file() and p.resolve() not in skip]
     files = {str(p).replace("\\", "/"): art.sha256_file(p) for p in sorted(paths)}
     canonical = "\n".join(f"{key}:{value}" for key, value in sorted(files.items()))
@@ -1230,8 +1239,8 @@ def _manifest(out_root: Path, case: tg.TCase, manifest_path: Path,
             "files": files,
             "files_digest": art.sha256_text(canonical),
             "digest_over": "sha256 of sorted 'path:content_sha256' lines joined by LF",
-            "excluded_by_name": [str(p).replace("\\", "/")
-                                  for p in (manifest_path, env_probe_path, timing_path)]}
+            "excluded_by_name": [str(p).replace("\\", "/") for p in present],
+            "named_exclusions_absent": [str(p).replace("\\", "/") for p in named if p not in present]}
 
 
 def main() -> int:
