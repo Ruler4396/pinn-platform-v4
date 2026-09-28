@@ -23,6 +23,7 @@ for _s in (sys.stdout, sys.stderr):
 
 HERE = pathlib.Path(__file__).resolve()
 REPO = HERE.parents[3]                                     # …/pinn-platform-v4
+OUTSIDE_SCRATCH = pathlib.Path(r"D:/PINN-restart/.scratch")   # **临时变异件只许落仓外**（第十七条要造旧写法/无工单两枚对照件；落进 repo 就是往别人写面上扔东西）
 ROOT = HERE.parents[4]                                     # …/PINN-restart（工作区根，原件与 .scratch 在这）
 if not (ROOT / "毕业论文汇编格式.docx").exists():            # 挪目录也别静默指错件
     for cand in (REPO.parent, REPO.parent.parent):
@@ -217,6 +218,29 @@ def count_needle(needle: str, quiet: bool = False):
         print("    判不一致**只用「数据行内」这个数**；「条文自身」那一档随“谁在断言行里多写一句”漂，"
               "裸跑值 = 两者之和，拿它判必假红。")
     return in_rows, outside, raw
+
+
+RC_OK, RC_MISMATCH, RC_UNVERIFIED = 0, 2, 5
+
+
+def count_needle_cli(needle: str, expect) -> int:
+    """`--count-needle` 的**命令行层退码**（统括官 9/28 P3 件一）：上一版只报数（恒 0），那不带命中信息、进不了闸门链。
+    三档：**0** =已测且与 `--expect` 相符（未给 `--expect` ⇒ 只报数，也退 0；判定必须显式声明期望值，不默认判）；
+    **2** =已测但不符；**5** =**未验**（工单取不到/读失败 ⇒ 那三个数没有意义，不许拿 rc=0 冒充"过"）。
+    判不一致只取**数据行内**那个数——与函数级、与打印行里那句口径**同一把尺**，不留第二份判据。"""
+    try:
+        in_rows, _outside, _raw = count_needle(needle)      # 打印与返回都在这一个入口里，不重抄格式
+    except OSError as e:                                     # 读不到介质＝未验，不是"零命中"
+        print(f"[三数同框·未验] 工单取不到（{type(e).__name__}: {e}）⇒ 退 {RC_UNVERIFIED}，**不退 0**")
+        return RC_UNVERIFIED
+    if expect is None:
+        print(f"    退码 {RC_OK}（未给 --expect ⇒ 只报数不判定）")
+        return RC_OK
+    if in_rows == expect:
+        print(f"    判：--expect {expect} ＝ 数据行内 {in_rows} ⇒ 符 ⇒ 退 {RC_OK}")
+        return RC_OK
+    print(f"    判：--expect {expect} ≠ 数据行内 {in_rows} ⇒ 不符 ⇒ 退 {RC_MISMATCH}")
+    return RC_MISMATCH
 
 
 def needle_counts(needle: str, text: str | None = None):
@@ -2319,32 +2343,73 @@ def caliber_violations(new: str, proof: str, spec) -> list:
 
 
 def selfcheck_cli_rc() -> int:
-    r"""第十七条·必红子检查（统括官 9/28 00:3x）：**`--count-needle` 的退码要表示"测过了"，不能恒 1**。
-    与"终端代码页那条"是同一个洞的两个方向：那条管"裸 `import` 时 reconfigure 没生效"，这条管"命令行入口这一段"——
-    **函数级的 `[闸·三数同框]` 四发从不经 CLI 入口，所以它永远照不到这里**。
-    验收打在消费端真正收到的字节上：真起子进程跑一次，断言 ① `rc == 0` ② stdout 含 `[三数同框]` ③ stderr **不再是**那行 `(a, b, c)` repr。"""
-    import subprocess
-    here = str(pathlib.Path(__file__).resolve())
+    r"""第十七条·必红子检查（统括官 9/28 P3 件一）：**验的是"新旧可区分"，不是"现在红了"**。
+    旧行为（CLI 分支 `return count_needle(...)`，元组真值）下**任何 expect 都得 rc=1**；只测"现在 rc=0"证明不了分档存在。
+    所以四发：① 同一枚针、`stdout` 逐字相同、expect 一对（符／不符）⇒ rc 必须 **0 与 2 两样**；
+    ② 不给 expect ⇒ 0（只报数）；③ 工单取不到 ⇒ **5**（未验≠零命中，这条用临时变异件把 WORK 指到不存在的路径造出来）；
+    ④ **把当前件复制成临时变异件、CLI 分支改回旧写法**跑①那一对 ⇒ 两个 rc 必须**相等**（旧的不带信息）。
+    临时件只活在 `.scratch` 里，跑完删目录；**函数级的 `[闸·三数同框]` 那四发从不经 CLI 入口，照不到这一段，所以这条不能省**。"""
+    import shutil, subprocess, tempfile
+    here = pathlib.Path(__file__).resolve()
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
-    impossible = "xyzzy-" + os.urandom(4).hex()          # 按构造不可能在工单里；只活在这一发子进程里，不落任何交付文本
-    bad = []
-    for kind, needle in (("在场串", "三数同框"), ("按构造不在场", impossible)):
-        p = subprocess.run([sys.executable, here, "--count-needle", needle],
-                           capture_output=True, text=True, env=env, cwd=str(REPO),
-                           encoding="utf-8", errors="replace")   # **父侧解码也要点名**：本机 locale 是 gbk，
-        # 不写 encoding 时 reader 线程直接 UnicodeDecodeError、`p.stdout` 变 None ⇒ 这一发自己崩（不是检出红，是装置红）。
-        # 与它同族的"终端代码页"那条子检查管的是子进程崩，这条管的是**父进程读不到**——两个方向都得堵。
-        so, se = p.stdout or "", p.stderr or ""
-        repr_on_stderr = bool(re.fullmatch(r"\(\d+, \d+, \d+\)\s*", se))
-        ok = p.returncode == 0 and "[三数同框]" in so and not repr_on_stderr
-        print(f"   [第十七条·CLI 退码] {kind}：rc={p.returncode}（应 0）｜stdout 有三数行={'[三数同框]' in p.stdout}"
-              f"｜stderr 是退出码 repr={repr_on_stderr}（必须 False）")
-        if not ok:
-            bad.append(kind)
-    if bad:
-        print(f"   ⇒ **{len(bad)} 发不对（{'、'.join(bad)}）**：修之前这三发都退 1，正是这一条要拦住的状态")
-        return 1
-    return 0
+    base = here.read_bytes()
+    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="mut_cli_rc_", dir=str(OUTSIDE_SCRATCH)))
+    # 临时件不在仓里 ⇒ 它自己的 `HERE.parents[3]` 会 IndexError、导进阶段就崩（我上一发就是这么"测"的，那测的是崩溃）。
+    # 所以先由**运行时的真 REPO**把那一行钉成绝对路径，让两枚对照件真能跑到 CLI 分支。
+    def pinned(src: bytes) -> bytes:
+        out = re.sub(rb"^REPO = HERE\.parents\[3\].*$", ("REPO = pathlib.Path(%r)" % str(REPO)).encode(), src, count=1, flags=re.M)
+        out = re.sub(rb"^ROOT = HERE\.parents\[4\].*$", ("ROOT = pathlib.Path(%r)" % str(ROOT)).encode(), out, count=1, flags=re.M)
+        # 两枚都要钉：只钉 REPO 时第 27 行的 `ROOT = HERE.parents[4]` 仍会 IndexError——上一发就死在这里，
+        # 症状是"对照件 rc=1"，看起来像旧行为不带信息，其实是**导入阶段崩了**（崩溃与结论长得很像）。
+        assert b"HERE.parents" not in out.split(b"def ")[0], "还有按层数取父目录的行没钉上 ⇒ 这两发仍是空的"
+        return out
+
+    def run(script: pathlib.Path, args_tail) -> tuple:
+        p = subprocess.run([sys.executable, str(script)] + args_tail, capture_output=True, text=True,
+                           env=env, cwd=str(REPO), encoding="utf-8", errors="replace")  # 父侧解码必须点名（本机 gbk）
+        return p.returncode, (p.stdout or ""), (p.stderr or "")
+
+    needle = "xyzzy-" + os.urandom(4).hex()          # 按构造不在场：只活在这一发里，不落任何交付文本
+    meas = count_needle(needle, quiet=True)[0]
+    r_ok, so_ok, _ = run(here, ["--count-needle", needle, "--expect", str(meas)])
+    r_bad, so_bad, _ = run(here, ["--count-needle", needle, "--expect", str(meas + 7)])
+    r_bare, _, _ = run(here, ["--count-needle", needle])
+    same_stdout = (so_ok.split("needle=")[0][:40] == so_bad.split("needle=")[0][:40]) and ("[三数同框]" in so_ok)
+    good = (r_ok == RC_OK and r_bad == RC_MISMATCH and r_bare == RC_OK and same_stdout)
+    print(f"   [第十七条·分档] 同针同 stdout({same_stdout})：expect={meas} ⇒ rc={r_ok}（应 {RC_OK}）｜"
+          f"expect={meas + 7} ⇒ rc={r_bad}（应 {RC_MISMATCH}）｜不给 expect ⇒ rc={r_bare}（应 {RC_OK}）")
+
+    # ③ 未验档：把 WORK 指到不存在的路径（只改临时件，真件不动）
+    mut5 = tmpdir / "no_work.py"
+    mut5.write_bytes(re.sub(rb'^WORK = REPO / .*$', rb'WORK = REPO / "_no_such_dir" / "_no_such.md"',
+                            pinned(base), count=1, flags=re.M))
+    if b"_no_such" not in mut5.read_bytes():
+        print("   [第十七条·未验档] **未装上**：WORK 那一行的形状没被替换到 ⇒ 这一发没测到")
+        r5 = None
+    else:
+        r5, so5, _ = run(mut5, ["--count-needle", needle, "--expect", "0"])
+        print(f"   [第十七条·未验档] 工单取不到 ⇒ rc={r5}（应 {RC_UNVERIFIED}，**不许 0、也不许拿崩溃的 1 冒充**）｜stdout 含『未验』={'未验' in so5}")
+        good = good and r5 == RC_UNVERIFIED and "未验" in so5
+
+    # ④ 旧写法对照：CLI 分支改回 `return count_needle(...)` ⇒ 同一对 expect 的 rc 必须相等（不带信息）
+    mut1 = tmpdir / "old_style.py"
+    oldsrc = pinned(base).replace("        return count_needle_cli(args.count_needle, getattr(args, \"expect\", None))\r\n".encode(),
+                          "        count_needle(args.count_needle)\r\n        return 1\r\n".encode())
+    if oldsrc == base:
+        print("   [第十七条·旧写法对照] **没装上**：CLI 分支锚没匹配上 ⇒ 这一发没测到")
+        good = False
+    else:
+        mut1.write_bytes(oldsrc)
+        o_ok, _, _ = run(mut1, ["--count-needle", needle, "--expect", str(meas)])
+        o_bad, _, _ = run(mut1, ["--count-needle", needle, "--expect", str(meas + 7)])
+        print(f"   [第十七条·旧写法对照] 旧 CLI：expect={meas} ⇒ rc={o_ok}｜expect={meas + 7} ⇒ rc={o_bad}｜"
+              f"**两 rc 相等={o_ok == o_bad}（旧的不带信息）**｜旧件确实跑到 CLI={'三数同框' in run(mut1, ['--count-needle', needle])[1]}"
+              "（这一句是防『把崩溃当成旧行为』——上一发就空转在这里）")
+        ran_old = '三数同框' in run(mut1, ['--count-needle', needle])[1]
+        good = good and (o_ok == o_bad) and ran_old
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    print(f"   ⇒ {'四发都对 ✓（临时件已自删 = ' + str(not tmpdir.exists()) + '）' if good else '**有发不对 ⇒ 计入非零**'}")
+    return 0 if good else 1
 
 
 def selfcheck_caliber() -> int:
@@ -2446,12 +2511,13 @@ def main() -> int:
                     help="--apply 用：写进指定副本（--all 串链用），不给就新建一个时间戳文件")
     ap.add_argument("--expect-changed", type=int, default=None,
                     help="--apply 用：期望被改段落数，不接等即 INVALID（闸三）")
+    ap.add_argument("--expect", type=int, metavar="N", help="与 --count-needle 同用：期望的「数据行内」命中数。退码 **0**=相符或未给、**2**=不符、**5**=未验（工单取不到）")
     args = ap.parse_args()
     # **只读数、不碰 docx 的模式先分流**（统括官 9/28 00:1x：他在没装 python-docx 的解释器里跑 `--count-needle`
     # 直接崩在库缺失上 ⇒ 一个只读文本的正则凭什么要写作库？这条挪动本身就是那发"要一条必红"的前半。）
     if getattr(args, "count_needle", None):
-        count_needle(args.count_needle)
-        # **只报数、不判定 ⇒ 退码恒 0**（统括官 9/28 00:3x：修之前三发不同结果同一个 rc=1，那退码不带信息，
+        return count_needle_cli(args.count_needle, getattr(args, "expect", None))
+        # **退码按语义分档（0=相符或未声明期望／2=不符／5=未验）**（统括官 9/28 P3 件一：只报数进不了闸门链）；
         # 只会让下一个拿它做闸的人把"跑过了"读成"判不一致"）。判定在函数级做，那边要的是三元组不是退码。
         # **别把 return 改回三元组**：`sys.exit(非 int)` 会把 repr 打到 stderr 再退 1，那行看着像输出、其实不是。
         return 0
