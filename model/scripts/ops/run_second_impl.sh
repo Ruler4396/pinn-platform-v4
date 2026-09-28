@@ -341,7 +341,25 @@ run_body() {
   timeout 300 "$py" "$R2/crosscheck_second_impl.py" --freefem "$REF_CSV" --other "$OUT/second_impl_nodes.csv" \
       --json "$OUT/crosscheck_base.json" 2>&1 | tail -8
   local rc=$?
-  log "crosscheck rc=$rc  PASS=0 FAIL=1 (1% per quantity, three quantities judged separately)"
+  # Why the counts are read from the json and not written here: this line used to print the literal
+  # `PASS=0 FAIL=1` -- a leftover of the 02:34 FAIL frame, so the 08:54 frame said `rc=0` and `FAIL=1`
+  # in the same breath.  A verdict string that cannot vary is not a measurement.  The numbers now come
+  # from crosscheck_base.json, and the printed counts are compared with rc: if they disagree the leg
+  # aborts rather than writing a verdict row.
+  "$py" - "$OUT/crosscheck_base.json" "$rc" <<'PY' || die "the crosscheck verdict could not be read from its own json"
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+Q = ("dp", "Q", "R")
+rows = d["quantities"]
+n_pass = sum(1 for k in Q if rows[k]["pass"])
+print("  " + "  ".join(f"{k} rel={rows[k]['rel_diff']:.4%} {'PASS' if rows[k]['pass'] else 'FAIL'}" for k in Q))
+if (int(sys.argv[2]) == 0) != (n_pass == len(Q)):
+    print(f"[ABORT] rc={sys.argv[2]} but its own json says PASS={n_pass} FAIL={len(Q) - n_pass}"
+          " -- the two disagree, no verdict row")
+    sys.exit(5)
+print(f"crosscheck rc={sys.argv[2]}  PASS={n_pass} FAIL={len(Q) - n_pass} "
+      f"(limit {d['rel_limit']:.0%} per quantity, three quantities judged separately)")
+PY
   seg_end "$([ $rc -eq 0 ] && echo DONE || echo RED)" "rc=$rc"
 }
 
