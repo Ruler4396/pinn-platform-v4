@@ -357,17 +357,33 @@ def c10(workdir: Path, mesh_xy, preamble: str, reynolds=10.0, alpha=1.0) -> int:
 
 
 def run_case(args, truth_rows, obs, outdir: Path, workdir: Path, mesh_xy, preamble: str) -> dict:
-    pts = [(o[0], o[1]) for o in obs]
-    cu, cond_u = rbf_complete(pts, [o[2] for o in obs], mesh_xy)
-    cv, cond_v = rbf_complete(pts, [o[3] for o in obs], mesh_xy)
     stem = "assim_%s_%s_%s" % (args.case, args.quota, args.equation)
     pred = outdir / (stem + "_pred.csv")
     convection = 1.0 if args.equation == "ns" else 0.0
+    if args.quota == "full":
+        # C9：观测集就是全部顶点 ⇒ **不需要补全**，直接按坐标把真值速度搬到 dof 序上
+        # （拿 1689 个点去做多二次 RBF 会得到条件数 1e20 的矩阵，我的条件数闸当场拒了——那是装置体检，
+        #  不是方法失败；RBF 这条路本身由 C10 用 63 点的已知答案核）。
+        tmap = {_coord_key(r["x_star"], r["y_star"]): (float(r["u_star"]), float(r["v_star"]))
+                for r in truth_rows}
+        miss = [c for c in mesh_xy if _coord_key(c[0], c[1]) not in tmap]
+        if miss:
+            raise SystemExit(f"[FAIL] C9：{len(miss)} 个网格顶点在真值场里没有对应点（例 {miss[0]}）")
+        pairs = [tmap[_coord_key(c[0], c[1])] for c in mesh_xy]
+        cu = [a for a, _ in pairs]
+        cv = [b for _, b in pairs]
+        cond = 1.0
+        print("C9-RBF-SKIP 全部顶点直接搬 dof 序（%d 点）" % len(pairs), flush=True)
+    else:
+        pts = [(o[0], o[1]) for o in obs]
+        cu, cond_u = rbf_complete(pts, [o[2] for o in obs], mesh_xy)
+        cv, cond_v = rbf_complete(pts, [o[3] for o in obs], mesh_xy)
+        cond = max(cond_u, cond_v)
     rows = solve_chain(workdir, stem, preamble=preamble, reynolds=args.reynolds,
                        convection=convection, cu=cu, cv=cv, pred=pred)
     res = score(rows, truth_rows, mesh_xy)
     res.update(case=args.case, quota=args.quota, equation=args.equation, reynolds=args.reynolds,
-               n_obs=len(obs), rbf_cond=max(cond_u, cond_v), pred_csv=str(pred))
+               n_obs=len(obs), rbf_cond=cond, pred_csv=str(pred))
     return res
 
 
