@@ -134,7 +134,7 @@ def dump_mesh_order(workdir: Path, beta: float) -> list[tuple[float, float]]:
     nodes = workdir / ("mesh_nodes_beta%s.csv" % beta)
     if not nodes.exists():
         edp = build_nodes_edp(workdir, beta, nodes)
-        run_freefem(edp, workdir / "nodes_dump.log")
+        run_freefem(edp, workdir / "nodes_dump.log", marker="NODES-OK")
         print("MESH-ORDER dumped -> %s" % nodes, flush=True)
     else:
         print("MESH-ORDER reuse %s" % nodes.name, flush=True)
@@ -236,13 +236,12 @@ def build_edp(workdir: Path, case: str, beta: float, reynolds: float, convection
     return edp
 
 
-def run_freefem(edp: Path, log: Path) -> str:
+def run_freefem(edp: Path, log: Path, marker: str = "ASSIM-OK") -> str:
     proc = subprocess.run(["FreeFem++", "-nw", str(edp)], capture_output=True, text=True, timeout=900)
     log.write_text((proc.stdout or "") + "\n=== STDERR ===\n" + (proc.stderr or ""),
                    encoding="utf-8", newline="\n")
-    if proc.returncode != 0 or "ASSIM-OK" not in (proc.stdout or ""):
-        raise SystemExit("[FAIL] FreeFEM 基线求解没给出 ASSIM-OK 行（rc=%s），日志见 %s"
-                         % (proc.returncode, log))
+    if proc.returncode != 0 or marker not in (proc.stdout or ""):
+        raise SystemExit("[FAIL] FreeFEM 没打印 %s（rc=%s），日志见 %s" % (marker, proc.returncode, log))
     return proc.stdout
 
 
