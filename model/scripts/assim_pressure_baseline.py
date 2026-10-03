@@ -420,7 +420,14 @@ def main() -> int:
         raise SystemExit("[FAIL] 常规模式要 --case")
     cdir = root / "model" / "cases" / "contraction_2d" / "data" / a.case
     truth = read_truth(cdir / "field_dense.csv")
-    obs = read_obs_velocity_only(cdir / ("obs_sparse_%s_velocity_only.csv" % a.quota))
+    if a.quota == "full":
+        # C9 上限对照：这一档**故意**读完整稠密真值速度（等价配额→100%），用来证明装置本身能做到。
+        # 它不是对照臂的读数，只是装置的体检；quota 字段会原样落进产物名，读者一眼能分。
+        obs = [(float(r["x_star"]), float(r["y_star"]),
+                float(r["u_star"]), float(r["v_star"])) for r in truth]
+        print("C9-FULL 用完整稠密真值速度（%d 点）喂装置；这不是基线臂，是装置体检" % len(obs), flush=True)
+    else:
+        obs = read_obs_velocity_only(cdir / ("obs_sparse_%s_velocity_only.csv" % a.quota))
     res = run_case(a, truth, obs, outdir, workdir, mesh_xy)
     print("BASELINE " + " ".join("%s=%s" % (k, v) for k, v in res.items()))
     return 0
