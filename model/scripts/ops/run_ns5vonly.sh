@@ -98,7 +98,7 @@ phase_selftests() {
   step v_verdict fatal python3 "$S/ns5_verdict.py" --selftest
   step v_rbf fatal python3 "$S/assim_pressure_baseline.py" --rbf-check --outdir "$LOGD"
   step v_c7 fatal python3 "$S/train_velocity_pressure_independent_ns_vonly.py" --vonly-selftest
-  step v_c10 fatal python3 "$S/assim_pressure_baseline.py" --selftest --reynolds 10 --outdir "$LOGD"
+  step v_c10 fatal python3 "$S/assim_pressure_baseline.py" --selftest --case C-base_ns_re10 --reynolds 10 --outdir "$LOGD"
 }
 
 phase_c6() {
@@ -181,18 +181,18 @@ PY
 
 phase_matrix() {
   log "PHASE=matrix"
-  local TSV="$LOGD/matrix_runs.tsv" L Q A S BLK TC
+  local TSV="$LOGD/matrix_runs.tsv" L Q A sd BLK TC
   [ -f "$TSV" ] || printf 'wall_line\n' > "$TSV"
   for L in $LEVELS; do
     TC=$(join_cases "$L" $TRAIN_BASES)
     for Q in $QUOTAS; do
       for A in ns stokes; do
-        for S in $SEEDS; do run_cell "$L" "$Q" "$A" "$S" main "$TC"; done
+        for sd in $SEEDS; do run_cell "$L" "$Q" "$A" "$sd" main "$TC"; done
       done
     done
     local SOLO; SOLO=$(join_cases "$L" $VAL_BASE)
     for A in ns stokes; do
-      for S in $SEEDS; do run_cell "$L" 5pct "$A" "$S" solo "$SOLO"; done
+      for sd in $SEEDS; do run_cell "$L" 5pct "$A" "$sd" solo "$SOLO"; done
     done
   done
 }

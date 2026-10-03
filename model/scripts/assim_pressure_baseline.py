@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -89,29 +90,20 @@ def rbf_complete(pts, vals, targets, eps=RBF_EPS):
     return dt @ sol[:n] + np.hstack([np.ones((len(T), 1)), T]) @ sol[n:], cond
 
 
-EDP_NODES_TEMPLATE = """// 节点顺序导出（由 assim_pressure_baseline.py 生成）——网格与真值 .edp 同一 buildmesh 参数
-real beta = {beta};
-real Lin = 4;
-real Lc = 4;
-real Lout = 8;
-real Ltot = 16;
-int labIn = 1;
-int labOut = 2;
-int labWall = 3;
-func real smoothstep5(real s) {{ return 6.0*s^5 - 15.0*s^4 + 10.0*s^3; }}
-func real channelWidth(real xx) {{
-  if (xx <= Lin) return 1.0;
-  if (xx >= Lin + Lc) return beta;
-  real s = (xx - Lin) / Lc;
-  return 1.0 - (1.0 - beta) * smoothstep5(s);
-}}
-func real yTop(real xx) {{ return 0.5 * channelWidth(xx); }}
-func real yBot(real xx) {{ return -0.5 * channelWidth(xx); }}
-border bottomWall(t=0, 1) {{ x = Ltot*t; y = yBot(x); label = labWall; }}
-border outletEdge(t=0, 1) {{ x = Ltot; y = yBot(Ltot)+(yTop(Ltot)-yBot(Ltot))*t; label = labOut; }}
-border topWall(t=0, 1) {{ x = Ltot*(1.0-t); y = yTop(x); label = labWall; }}
-border inletEdge(t=0, 1) {{ x = 0.0; y = yTop(0.0)+(yBot(0.0)-yTop(0.0))*t; label = labIn; }}
-mesh Th = buildmesh(bottomWall(180) + outletEdge(28) + topWall(180) + inletEdge(40));
+def mesh_preamble(cfd_edp: Path) -> str:
+    """网格前段**逐字符取自该工况自己的求解件**（到 `mesh Th = buildmesh(...);` 为止）。
+    硬编过一次就出过事：收缩比 beta 是逐工况不同的，拿 C-base 的 beta 去解 C-val 会造出另一张网格。"""
+    text = cfd_edp.read_text(encoding="utf-8", errors="replace")
+    lines, keep = text.split("\n"), []
+    for ln in lines:
+        keep.append(ln)
+        if ln.strip().startswith("mesh Th") and ln.strip().endswith(";"):
+            return "\n".join(keep) + "\n"
+    raise SystemExit(f"[FAIL] {cfd_edp} 里找不到 `mesh Th = buildmesh(...);` 这一行，无法复用同一张网格")
+
+
+EDP_NODES_TEMPLATE = """// 节点顺序导出（由 assim_pressure_baseline.py 生成）——网格前段取自该工况自己的 .edp
+{preamble}
 ofstream fo("{nodes}");
 fo << "dof,x,y" << endl;
 for (int i = 0; i < Th.nv; ++i) {{
@@ -121,23 +113,26 @@ cout << "NODES-OK nv=" << Th.nv << endl;
 """
 
 
-def build_nodes_edp(workdir: Path, beta: float, nodes_path: Path) -> Path:
+def build_nodes_edp(workdir: Path, preamble: str, nodes_path: Path) -> Path:
     edp = workdir / "nodes_dump.edp"
-    edp.write_text(EDP_NODES_TEMPLATE.format(beta=beta, nodes=str(nodes_path)),
+    edp.write_text(EDP_NODES_TEMPLATE.format(preamble=preamble, nodes=str(nodes_path)),
                    encoding="utf-8", newline="\n")
     return edp
 
 
-def dump_mesh_order(workdir: Path, beta: float) -> list[tuple[float, float]]:
+def dump_mesh_order(workdir: Path, preamble: str) -> list[tuple[float, float]]:
     """节点顺序必须由 FreeFEM 自己说；两臂之间唯一的接口是"按 dof 下标赋值"，所以顺序错了就是错的。
-    同一 beta 的网格是确定性的 ⇒ 文件名里带 beta，换 beta 不可能静默复用旧清单。"""
-    nodes = workdir / ("mesh_nodes_beta%s.csv" % beta)
+    缓存名取网格前段的 sha16 ⇒ 换工况（换收缩比）不可能静默复用旧清单。"""
+    import hashlib
+
+    tag = hashlib.sha256(preamble.encode("utf-8")).hexdigest()[:16]
+    nodes = workdir / ("mesh_nodes_%s.csv" % tag)
     if not nodes.exists():
-        edp = build_nodes_edp(workdir, beta, nodes)
-        run_freefem(edp, workdir / "nodes_dump.log", marker="NODES-OK")
-        print("MESH-ORDER dumped -> %s" % nodes, flush=True)
+        edp = build_nodes_edp(workdir, preamble, nodes)
+        run_freefem(edp, workdir / ("nodes_dump_%s.log" % tag), marker="NODES-OK")
+        print("MESH-ORDER dumped -> %s (网格前段 sha16=%s)" % (nodes.name, tag), flush=True)
     else:
-        print("MESH-ORDER reuse %s" % nodes.name, flush=True)
+        print("MESH-ORDER reuse %s (网格前段 sha16=%s)" % (nodes.name, tag), flush=True)
     with open(nodes, encoding="utf-8", newline="") as fh:
         rows = list(csv.DictReader(fh))
     out = []
@@ -158,30 +153,7 @@ def _literal(name: str, values) -> str:
 
 
 EDP_TEMPLATE = """// 经典压力重建（Stage 5 基线）——由 assim_pressure_baseline.py 生成，不要手改
-real beta = {beta};
-real Lin = 4;
-real Lc = 4;
-real Lout = 8;
-real Ltot = 16;
-int labIn = 1;
-int labOut = 2;
-int labWall = 3;
-
-func real smoothstep5(real s) {{ return 6.0*s^5 - 15.0*s^4 + 10.0*s^3; }}
-func real channelWidth(real xx) {{
-  if (xx <= Lin) return 1.0;
-  if (xx >= Lin + Lc) return beta;
-  real s = (xx - Lin) / Lc;
-  return 1.0 - (1.0 - beta) * smoothstep5(s);
-}}
-func real yTop(real xx) {{ return 0.5 * channelWidth(xx); }}
-func real yBot(real xx) {{ return -0.5 * channelWidth(xx); }}
-border bottomWall(t=0, 1) {{ x = Ltot*t; y = yBot(x); label = labWall; }}
-border outletEdge(t=0, 1) {{ x = Ltot; y = yBot(Ltot)+(yTop(Ltot)-yBot(Ltot))*t; label = labOut; }}
-border topWall(t=0, 1) {{ x = Ltot*(1.0-t); y = yTop(x); label = labWall; }}
-border inletEdge(t=0, 1) {{ x = 0.0; y = yTop(0.0)+(yBot(0.0)-yTop(0.0))*t; label = labIn; }}
-mesh Th = buildmesh(bottomWall(180) + outletEdge(28) + topWall(180) + inletEdge(40));
-
+{preamble}
 fespace Qh(Th, P1);
 Qh uh, vh, lapU, lapV, convU, convV, f1, f2, p, q;
 int NOD = Th.nv;
@@ -226,9 +198,9 @@ cout << "ASSIM-OK nv=" << Th.nv << " re=" << Reff << " cf=" << cf << endl;
 """
 
 
-def build_edp(workdir: Path, case: str, beta: float, reynolds: float, convection: float,
+def build_edp(workdir: Path, case: str, preamble: str, reynolds: float, convection: float,
               u_vals, v_vals, pred: Path) -> Path:
-    text = EDP_TEMPLATE.format(beta=beta, reynolds=reynolds, convection=convection,
+    text = EDP_TEMPLATE.format(preamble=preamble, reynolds=reynolds, convection=convection,
                                n_nodes=len(u_vals), au_lit=_literal("au", u_vals),
                                av_lit=_literal("av", v_vals), pred=str(pred))
     edp = workdir / ("assim_%s.edp" % case)
@@ -331,15 +303,15 @@ def rbf_selftest() -> int:
     return 0
 
 
-def solve_chain(workdir: Path, stem: str, beta: float, reynolds: float, convection: float,
+def solve_chain(workdir: Path, stem: str, preamble: str, reynolds: float, convection: float,
                 cu, cv, pred: Path) -> list[dict]:
-    edp = build_edp(workdir, stem, beta=beta, reynolds=reynolds, convection=convection,
+    edp = build_edp(workdir, stem, preamble=preamble, reynolds=reynolds, convection=convection,
                     u_vals=cu, v_vals=cv, pred=pred)
     run_freefem(edp, workdir / (stem + ".log"))
     return read_pred(pred)
 
 
-def c10(workdir: Path, mesh_xy, reynolds=10.0, alpha=1.0) -> int:
+def c10(workdir: Path, mesh_xy, preamble: str, reynolds=10.0, alpha=1.0) -> int:
     """已知答案正对照 + 一条必红控制。解析取 u=(αx,−αy)：散度自由、∇²u=0 ⇒ f=−Re·α²(x,y)
     ⇒ p = −Re·α²(x²+y²)/2（差一个常数，正好是被去掉的那个）。"""
     import random
@@ -356,8 +328,8 @@ def c10(workdir: Path, mesh_xy, reynolds=10.0, alpha=1.0) -> int:
         cu, _ = rbf_complete(obs, [alpha * x for x, _ in obs], mesh_xy)
         cv, _ = rbf_complete(obs, [-alpha * y for _, y in obs], mesh_xy)
         pred = workdir / ("c10_pred_%s.csv" % ("ok" if want_pass else "red"))
-        rows = solve_chain(workdir, "c10" + tag, beta=0.7, reynolds=reynolds, convection=convection,
-                           cu=cu, cv=cv, pred=pred)
+        rows = solve_chain(workdir, "c10" + tag, preamble=preamble, reynolds=reynolds,
+                           convection=convection, cu=cu, cv=cv, pred=pred)
         pm = np.array([float(r["p_star"]) for r in rows])
         pm = pm - pm.mean()
         rel = float(np.linalg.norm(pm - p_true) / (np.linalg.norm(p_true) + 1e-12))
@@ -373,14 +345,14 @@ def c10(workdir: Path, mesh_xy, reynolds=10.0, alpha=1.0) -> int:
     return 1 if fails else 0
 
 
-def run_case(args, truth_rows, obs, outdir: Path, workdir: Path, mesh_xy) -> dict:
+def run_case(args, truth_rows, obs, outdir: Path, workdir: Path, mesh_xy, preamble: str) -> dict:
     pts = [(o[0], o[1]) for o in obs]
     cu, cond_u = rbf_complete(pts, [o[2] for o in obs], mesh_xy)
     cv, cond_v = rbf_complete(pts, [o[3] for o in obs], mesh_xy)
     stem = "assim_%s_%s_%s" % (args.case, args.quota, args.equation)
     pred = outdir / (stem + "_pred.csv")
     convection = 1.0 if args.equation == "ns" else 0.0
-    rows = solve_chain(workdir, stem, beta=args.beta, reynolds=args.reynolds,
+    rows = solve_chain(workdir, stem, preamble=preamble, reynolds=args.reynolds,
                        convection=convection, cu=cu, cv=cv, pred=pred)
     res = score(rows, truth_rows, mesh_xy)
     res.update(case=args.case, quota=args.quota, equation=args.equation, reynolds=args.reynolds,
@@ -395,7 +367,6 @@ def main() -> int:
     ap.add_argument("--quota", default="5pct")
     ap.add_argument("--equation", choices=("ns", "stokes"), default="ns")
     ap.add_argument("--reynolds", type=float, default=10.0)
-    ap.add_argument("--beta", type=float, default=0.7)
     ap.add_argument("--selftest", action="store_true", help="C10 已知答案正对照 + 必红（需 FreeFEM）")
     ap.add_argument("--rbf-check", action="store_true", help="只核 RBF 那一半（需 numpy，不需 FreeFEM）")
     ap.add_argument("--outdir", default="")
@@ -408,19 +379,24 @@ def main() -> int:
 
     if a.rbf_check:
         return rbf_selftest()
+    if not a.case:
+        raise SystemExit("[FAIL] 要 --case：网格前段必须取自该工况自己的 .edp（收缩比逐工况不同）")
+    cdir = root / "model" / "cases" / "contraction_2d" / "data" / a.case
+    base = re.sub(r"_ns_re[0-9][0-9eE.\-]*$", "", a.case)
+    cfd_edp = root / "model" / "cases" / "contraction_2d" / "cfd" / base / ("%s_stokes.edp" % base)
+    if not cfd_edp.exists():
+        raise SystemExit(f"[FAIL] 找不到该工况的求解件 {cfd_edp}，没有它就无法复用同一张网格")
+    preamble = mesh_preamble(cfd_edp)
 
-    # 网格顺序先取（C10 与常规格都靠它；文件名带 beta，换几何不可能静默复用旧清单）
-    mesh_xy = dump_mesh_order(workdir, a.beta)
+    # 网格顺序先取（C10 与常规格都靠它；缓存名是网格前段的 sha16，换工况不会静默复用）
+    mesh_xy = dump_mesh_order(workdir, preamble)
 
     if a.selftest:
         rc = rbf_selftest()
         if rc:
             return rc
-        return c10(workdir, mesh_xy, reynolds=a.reynolds)
+        return c10(workdir, mesh_xy, preamble, reynolds=a.reynolds)
 
-    if not a.case:
-        raise SystemExit("[FAIL] 常规模式要 --case")
-    cdir = root / "model" / "cases" / "contraction_2d" / "data" / a.case
     truth = read_truth(cdir / "field_dense.csv")
     if a.quota == "full":
         # C9 上限对照：这一档**故意**读完整稠密真值速度（等价配额→100%），用来证明装置本身能做到。
@@ -430,7 +406,7 @@ def main() -> int:
         print("C9-FULL 用完整稠密真值速度（%d 点）喂装置；这不是基线臂，是装置体检" % len(obs), flush=True)
     else:
         obs = read_obs_velocity_only(cdir / ("obs_sparse_%s_velocity_only.csv" % a.quota))
-    res = run_case(a, truth, obs, outdir, workdir, mesh_xy)
+    res = run_case(a, truth, obs, outdir, workdir, mesh_xy, preamble)
     print("BASELINE " + " ".join("%s=%s" % (k, v) for k, v in res.items()))
     return 0
 
