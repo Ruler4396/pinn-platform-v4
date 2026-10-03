@@ -203,7 +203,7 @@ def _literal(name: str, values) -> str:
 EDP_TEMPLATE = """// 经典压力重建（Stage 5 基线）——由 assim_pressure_baseline.py 生成，不要手改
 {preamble}
 fespace Qh(Th, P1);
-Qh p, q;
+Qh p, q, f1, f2;
 int NOD = Th.nv;
 if (NOD != {n_nodes}) {{
   cout << "NODE-MISMATCH nv=" << NOD << " want={n_nodes}" << endl;
@@ -213,7 +213,9 @@ real[int] fv1(NOD);
 real[int] fv2(NOD);
 {f1_lit}
 {f2_lit}
-solve pP(p, q) = int2d(Th)(dx(p)*dx(q) + dy(p)*dy(q) + 1.0e-10*p*q) - int2d(Th)(fv1*dx(q) + fv2*dy(q));
+f1[] = fv1;
+f2[] = fv2;
+solve pP(p, q) = int2d(Th)(dx(p)*dx(q) + dy(p)*dy(q) + 1.0e-10*p*q) - int2d(Th)(f1*dx(q) + f2*dy(q));
 
 int[int] vTag(Th.nv);
 for (int i = 0; i < Th.nv; ++i) vTag[i] = 0;
