@@ -29,8 +29,9 @@ LEVELS = ("10", "50")
 QUOTAS = ("1pct", "5pct", "15pct")
 REF_QUOTA = "15pct"
 ARMS = ("ns", "stokes")
-BLOCKS = ("main", "solo", "sens")   # main＝6 工况联合训练；solo＝只用被评的那一个工况训练（数据池优势要分开）；
-                                    # sens＝尺度敏感性对照（压力回退尺度取 1.0 而非 ‖观测速度std‖），不进登记判决
+BLOCKS = ("main", "solo", "sens", "fix")   # main＝6 工况联合训练；solo＝只用被评的那一个工况训练（数据池优势要分开）；
+                                    # sens＝尺度敏感性对照（压力回退尺度取 1.0 而非 ‖观测速度std‖），不进登记判决；
+                                    # fix＝对流项符号修正后重跑的 NS 臂（读数件 §追加：旧符号使 corr(p)=−0.83）
 METRICS = ("rel_l2_p_meanfree", "pressure_drop_rel_error", "rel_l2_speed")
 JUDGE_METRICS = ("rel_l2_p_meanfree", "pressure_drop_rel_error")
 
@@ -108,14 +109,17 @@ def pinn_score(res_root: Path, out_tsv: Path) -> int:
     hdr = ["level", "quota", "arm", "seed", "block"] + list(METRICS) + ["pred_csv", "n_points"]
     lines, n_ok = ["\t".join(hdr)], 0
     for run in sorted(p.name for p in res_root.iterdir() if p.is_dir()):
-        if not run.startswith(("ns5_", "ns5solo_", "ns5sens_")):
+        if not run.startswith(("ns5_", "ns5solo_", "ns5sens_", "ns5fix_")):
             continue
         parts = run.split("_")
         if len(parts) < 5:
             print(f"SKIP {run}: run 名不符 ns5[_solo]<档>_<配额>_<臂>_s<种子>")
             continue
         lvl, quota, arm, seed = parts[1], parts[2], parts[3], parts[4]
-        block = {"ns5": "main", "ns5solo": "solo", "ns5sens": "sens"}.get(parts[0], "main")
+        block = {"ns5": "main", "ns5solo": "solo", "ns5sens": "sens", "ns5fix": "fix"}.get(parts[0])
+        if block is None:          # 前缀认不全就跳过并喊出来，绝不默认成 main（那会把新块混进登记判决）
+            print(f"SKIP {run}: 未知前缀 {parts[0]!r}")
+            continue
         f = res_root / run / "predictions" / f"C-val_ns_re{lvl}_predictions.csv"
         if not f.exists():
             print(f"SKIP {run}: 没有 {f.name}")

@@ -255,6 +255,23 @@ phase_sens() {
   done
 }
 
+phase_matrixfix() {
+  log "PHASE=matrixfix（对流项符号修正后重跑的 NS 臂：Re{10,50}×3 种子，5pct）"
+  local L sd TC
+  for L in $LEVELS; do
+    TC=$(join_cases "$L" $TRAIN_BASES)
+    for sd in $SEEDS; do
+      local name="ns5fix_${L}_5pct_ns_s${sd}"
+      [ -f "$RES/$name/metrics.json" ] && { log "CELL $name [skip]"; continue; }
+      step "cell_${name}" nonfatal python3 "$S/train_velocity_pressure_independent_ns_vonly.py" \
+        --base-script strict-sparse --reynolds "$L" --family contraction_2d \
+        --train-cases "$TC" --val-cases "$(join_cases "$L" $VAL_BASE)" \
+        --run-name "$name" --seed "$sd" $SP_ARGS $(src_flags 5pct)
+      check_sources "$name" 5pct >>"$LOGD/cell_${name}.log" 2>&1 || log "FATAL SOURCE-MISMATCH $name"
+    done
+  done
+}
+
 phase_score() {
   log "PHASE=score"
   step score fatal python3 "$S/ns5_verdict.py" --pinn-score --root "$WS" --out "$LOGD"
@@ -274,6 +291,7 @@ case "${1:-}" in
   matrix) phase_matrix;;
   baseline) phase_baseline;;
   sens) phase_sens;;
+  matrixfix) phase_matrixfix;;
   score) phase_score;;
   judge) phase_judge;;
   all) phase_preflight; phase_selftests; phase_obs; phase_c6; phase_smoke; phase_matrix;

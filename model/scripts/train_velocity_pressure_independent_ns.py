@@ -95,6 +95,24 @@ def 对流项(u, v, u_x, u_y, v_x, v_y, reynolds, velocity_scale):
     return reynolds * cu, reynolds * cv
 
 
+# 真值侧的弱形式（gen_ns_re_edp.py:184，逐字符取自出厂 Stokes 件 + 这一行）是
+#     ∫∇u:∇ut − p ∇·ut + Re∫(u0·∇u)·ut = 0   ⇒  强形式  −Δu + ∇p + Re(u·∇)u = 0。
+# 网络里的残差要跟它同号。主线 Re=0 那版写的是 `Δu − ∇p`（= 上式乘 −1），
+# 所以对流项进来时必须带 **负号**：Δu − ∇p − Re·C ≡ −(−Δu + ∇p + Re·C)。
+# 我第一版写成 `+ Re·C`，那是在解"回流"版本，压力被推到真值的反方向
+# （实例实测 corr(p_pred, p_true) = −0.83 才发现；见 paper-route2/速度推压力-读数 §追加）。
+CONV_SIGN = -1.0
+
+
+def 动量残差分量(u, v, u_x, u_y, v_x, v_y, p_x, p_y, u_xx, u_yy, v_xx, v_yy,
+                reynolds, velocity_scale, pressure_scale, conv_sign=CONV_SIGN):
+    """纯算术：把三处的相对符号钉在这一处，好让已知答案控制能脱离 autograd 单独核（--ns-sign-selftest）。"""
+    cu, cv = 对流项(u, v, u_x, u_y, v_x, v_y, reynolds, velocity_scale)
+    mu = u_xx / velocity_scale + u_yy / velocity_scale - p_x / pressure_scale + conv_sign * cu
+    mv = v_xx / velocity_scale + v_yy / velocity_scale - p_y / pressure_scale + conv_sign * cv
+    return mu, mv
+
+
 def _物理点索引(dense_split, max_physics_points):
     interior_idx = (dense_split.boundary_type == "interior").nonzero()[0] \
         if hasattr(dense_split.boundary_type, "nonzero") else __import__("numpy").where(dense_split.boundary_type == "interior")[0]
@@ -148,15 +166,42 @@ def 方程耦合损失_NS(速度模型, 压力模型, dense_split, 输入标准�
     pressure_scale = torch.tensor(max(p_val, 1.0e-12), dtype=torch.float32, device=device)
 
     continuity = u_x / velocity_scale + v_y / velocity_scale
-    cu, cv = 对流项(u, v, u_x, u_y, v_x, v_y, REYNOLDS, velocity_scale)
-    momentum_u = u_xx / velocity_scale + u_yy / velocity_scale - p_x / pressure_scale + cu
-    momentum_v = v_xx / velocity_scale + v_yy / velocity_scale - p_y / pressure_scale + cv
+    momentum_u, momentum_v = 动量残差分量(u, v, u_x, u_y, v_x, v_y, p_x, p_y,
+                                        u_xx, u_yy, v_xx, v_yy,
+                                        REYNOLDS, velocity_scale, pressure_scale)
     return {
         "连续性": torch.mean(continuity ** 2),
         "动量": torch.mean(momentum_u ** 2) + torch.mean(momentum_v ** 2),
         "平均散度绝对值": torch.mean(torch.abs(continuity)),
         "最大散度绝对值": torch.max(torch.abs(continuity)),
     }
+
+
+def sign_selftest() -> int:
+    """纯 stdlib 的符号控制：拿一个**解析满足 −Δu+∇p+Re(u·∇)u=0 的三元组**，
+    喂进真正的残差算术（动量残差分量），要求残差为 0；再把对流符号翻回来，要求残差明显不为 0。
+    这条控制是我第一版缺的那一条：C3 只核 Re=0 与 1e-9（幅度等价，符号错照样漏），
+    而经典臂的 C10 又管不到网络的损失。尺度这里都取 1.0——被核的是**相对符号**，不是尺度。"""
+    re = 13.0
+    alpha = 0.7
+    pts = [(0.31, -0.17), (1.0, 0.0), (-2.5, 1.9), (7.0, -3.0)]
+    bad = []
+    for conv_sign, want_zero in ((CONV_SIGN, True), (-CONV_SIGN, False)):
+        worst = 0.0
+        for x, y in pts:
+            u, v = alpha * x, -alpha * y
+            u_x, u_y, v_x, v_y = alpha, 0.0, 0.0, -alpha
+            p_x, p_y = -re * alpha * alpha * x, -re * alpha * alpha * y
+            mu, mv = 动量残差分量(u, v, u_x, u_y, v_x, v_y, p_x, p_y,
+                                 0.0, 0.0, 0.0, 0.0, re, 1.0, 1.0, conv_sign=conv_sign)
+            worst = max(worst, abs(mu), abs(mv))
+        if want_zero and worst > 1e-9:
+            bad.append("登记符号 conv_sign=%g 下残差 = %g（应为 0）⇒ 网络在解另一道方程" % (conv_sign, worst))
+        if not want_zero and worst < 1e-3:
+            bad.append("翻号后残差仍是 %g ⇒ 这条控制是恒真断言，不算通过" % worst)
+        print("NS-SIGN conv_sign=%+g ⇒ 最大残差 %.4g（期望 %s）" % (conv_sign, worst, "0" if want_zero else "明显非 0"))
+    print("NS_SIGN_SELFTEST " + ("ALL GREEN" if not bad else "FAILED | " + " | ".join(bad)))
+    return 1 if bad else 0
 
 
 def scale_selftest() -> int:
@@ -408,12 +453,16 @@ def main() -> int:
                     help="只跑第四道闸（纯 stdlib，本机可跑）")
     ap.add_argument("--ns-scale-selftest", action="store_true",
                     help="只跑尺度口径的四条控制（纯 stdlib，本机可跑）")
+    ap.add_argument("--ns-sign-selftest", action="store_true",
+                    help="只跑残差符号的已知答案控制（纯 stdlib，本机可跑）")
     ap.add_argument("--base-script", choices=("mainline", "strict-sparse"), default="mainline",
                     help="挂哪一版主线：mainline＝稠密三阶段（尺度取自真值场）；"
                          "strict-sparse＝论文表5-5/5-6 那版（尺度取自观测点拟合的标准化器）")
     known, rest = ap.parse_known_args()
     if known.ns_scale_selftest:
         return scale_selftest()
+    if known.ns_sign_selftest:
+        return sign_selftest()
     if known.base_script == "strict-sparse":
         BASE_SCRIPT = "train_velocity_pressure_independent_strict_sparse.py"
         SCALE_VARIANT = "scaler"
