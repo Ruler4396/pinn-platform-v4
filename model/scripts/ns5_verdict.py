@@ -251,7 +251,9 @@ def judge(pinn_tsv: Path, base_tsv: Path, out_path: Path) -> int:
         for lvl in LEVELS:
             for arm in ARMS:
                 for tag, getter in (("PINN", lambda q, a: P.get((lvl, q, a, blk))),
-                                    ("经典", lambda q, a: (None if blk == "solo" else Bs.get((lvl, q, a))))):
+                                    ("经典", lambda q, a: (Bs.get((lvl, q, a)) if blk == "main" else None))):
+                    # 经典臂是逐工况确定性求解，与 PINN 的训练块（main/solo/sens）无关；
+                    # 挂在每个块下重复印一遍会让人以为有三份独立读数。
                     ref = getter(REF_QUOTA, arm)
                     if not ref:
                         continue
