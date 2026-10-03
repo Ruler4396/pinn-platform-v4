@@ -172,7 +172,7 @@ def derive_case(cfd: Path, case: str, levels, write: bool, shipped_check: bool):
             checks.append("shipped-same" if have == mine else f"shipped-DIFFER({have}!={mine})")
         status = "OK" if not [c for c in checks if "same" not in c] else "FAIL"
         if write and status == "OK":
-            target.mkdir(parents=True, exist_ok=True)
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(out if out.endswith("\n") else out + "\n", encoding="utf-8")
             (target.parent / "ns_derivation.json").write_text(json.dumps({
                 "derived_by": "model/scripts/derive_ns_case_edp.py",
