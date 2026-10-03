@@ -211,6 +211,69 @@ phase_bc() {
   log "bc rows: $(tail -n +2 "$tsv" | wc -l)"
 }
 
+phase_pilot() {   # §七 A1：两臂 × 两档，w=1.0，seed 42
+  local tsv="$LOGD/matrix_pilot.tsv" L A
+  [ -f "$tsv" ] || printf 'level\tarm\tseed\twall_ms\trun\tmetrics\tpde_weights\n' > "$tsv"
+  for L in $LEVELS; do
+    for A in ns stokes; do
+      run_cell "$L" "$A" 42 "$tsv" _p "--coupling-momentum-weight 1.0" || exit 1
+    done
+  done
+}
+
+phase_calib() {   # §七 选权规则执行 + A3 的 12 格
+  local tsv="$LOGD/matrix_calib.tsv" arm level w r st SEED
+  step calib_choose fatal "python3 model/scripts/ns4_calib.py --run-root '$RES' --prefix ns4 --out '$LOGD/weights.tsv'"
+  [ -f "$tsv" ] || printf 'level\tarm\tseed\twall_ms\trun\tmetrics\tpde_weights\n' > "$tsv"
+  while IFS=$'\t' read -r arm level w r st; do
+    case "$st" in aligned) ;; *) log "SKIP 未对齐 $arm Re=$level ($st) —— 按 §七 不进 J3"; continue;; esac
+    for SEED in $SEEDS; do
+      run_cell "$level" "$arm" "$SEED" "$tsv" _c "--coupling-momentum-weight $w" || exit 1
+    done
+  done < <(tail -n +2 "$LOGD/weights.tsv")
+  log "calib rows: $(tail -n +2 "$tsv" | wc -l)"
+}
+
+phase_eval() {   # §八 B1（同档 test 口径）与 B2（跨档外推），全部走评估器、复用已训好的 run
+  local tsv="$LOGD/eval.tsv" L A S out
+  [ -f "$tsv" ] || printf 'run\ttrain_level\tsplit\tcases\tspeed\tp\tdrop\teval_file\n' > "$tsv"
+  for L in 1 10 50; do
+    for A in ns stokes; do
+      for S in $SEEDS; do
+        [ "$L" = "1" ] && [ "$A" = "stokes" ] && continue
+        out="ns3p_${L}_${A}_s${S}"
+        [ -f "$RES/$out/metrics.json" ] || { log "缺 run $out，跳过"; continue; }
+        run_eval "$out" "$L" test "C-test-1_ns_re${L},C-test-2_ns_re${L}" || exit 1
+      done
+    done
+  done
+  for A in ns stokes; do
+    for S in $SEEDS; do
+      run_eval "ns3p_10_${A}_s${S}" 10 ext50 "C-val_ns_re50,C-test-1_ns_re50,C-test-2_ns_re50" || exit 1
+      run_eval "ns3p_50_${A}_s${S}" 50 ext10 "C-val_ns_re10,C-test-1_ns_re10,C-test-2_ns_re10" || exit 1
+    done
+  done
+}
+
+run_eval() {   # run  train_level  split  cases
+  local name="$1" tl="$2" split="$3" cases="$4" f
+  f="$RES/$name/evaluations/metrics_${split}.json"
+  if [ -f "$f" ]; then log "EVAL $name/$split [skip]"; return 0; fi
+  step "eval_${name}_${split}" fatal "python3 model/scripts/eval_ns_case.py --family contraction_2d --run-name $name --eval-cases $cases --split-name $split"
+  python3 - "$f" "$name" "$tl" "$split" "$cases" "$LOGD/eval.tsv" <<'PY'
+import json, sys
+path, name, tl, split, cases, tsv = sys.argv[1:7]
+d = json.load(open(path, encoding="utf-8"))
+s = d.get("summary", {})
+row = "\t".join([name, tl, split, cases,
+                 str(s.get("mean_rel_l2_speed")), str(s.get("mean_rel_l2_p")),
+                 str(s.get("mean_pressure_drop_rel_error")), path]) + "\n"
+with open(tsv, "a", encoding="utf-8", newline="\n") as fh:
+    fh.write(row)
+print("EVAL-ROW " + row.strip())
+PY
+}
+
 phase_pair() {
   local tsv="${1:-$LOGD/matrix_sparse.tsv}" out="${2:-$LOGD/pair_sparse.tsv}"
   python3 - "$tsv" "$out" <<'PY'
@@ -367,10 +430,18 @@ case "$PH" in
   obs) phase_obs;;
   controls) phase_controls;;
   matrix) phase_matrix;;
+  pilot) phase_pilot;;
+  calib) phase_calib;;
+  eval) phase_eval;;
+  j4tsv)   # J4 要的是"对齐强度的物理臂 vs 无物理"：无物理臂与权重无关，故直接取主批那 6 格拼进来
+    { head -n 1 "$LOGD/matrix_calib.tsv"
+      tail -n +2 "$LOGD/matrix_calib.tsv"
+      tail -n +2 "$LOGD/matrix_sparse.tsv" | awk -F'\t' '$2=="nophy"'; } > "$LOGD/matrix_j4.tsv"
+    wc -l "$LOGD/matrix_j4.tsv";;
   bc) phase_bc;;
   pair) phase_pair "${2:-}" "${3:-}";;
   dump) metrics_dump "${2:-}";;
   parity) phase_parity "${2:-}";;
-  *) log "usage: $0 obs|controls|matrix|pair|parity|dump"; exit 2;;
+  *) log "usage: $0 obs|controls|matrix|pilot|calib|bc|eval|j4tsv|pair [tsv out]|parity|dump"; exit 2;;
 esac
 log "SUMMARY phase=$PH ok=1 logs=$LOGD"
