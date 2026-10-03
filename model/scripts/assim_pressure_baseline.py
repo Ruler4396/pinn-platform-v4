@@ -373,19 +373,22 @@ def c10(workdir: Path, mesh_xy, preamble: str, reynolds=10.0, alpha=1.0) -> int:
     p_true = np.array([-reynolds * alpha * alpha * (x * x + y * y) / 2.0 for x, y in mesh_xy])
     p_true = p_true - p_true.mean()
     fails = []
-    for convection, tag, want_pass in ((1.0, "正对照", True), (-1.0, "必红", False)):
+    # 生成的 .edp 里**只准出现 ASCII**：中文进字符串字面量会把 FreeFEM 的词法器搞断
+    # （实测 "End of String could not be found"，位置就在最后那行 cout）。中文只留在 python 侧打印。
+    for convection, tag, want_pass in ((1.0, "ok", True), (-1.0, "red", False)):
+        label = "正对照" if want_pass else "必红"
         pts = obs
         f1, f2, cond = pressure_rhs(pts, [alpha * x for x, _ in pts], [-alpha * y for _, y in pts],
                                     mesh_xy, reynolds, convection)
-        pred = workdir / ("c10_pred_%s.csv" % ("ok" if want_pass else "red"))
-        rows = solve_chain(workdir, "c10" + tag, preamble=preamble, f1=f1, f2=f2, pred=pred,
-                            tag="%s conv=%+g cond=%.3g" % (tag, convection, cond))
+        pred = workdir / ("c10_pred_%s.csv" % tag)
+        rows = solve_chain(workdir, "c10_" + tag, preamble=preamble, f1=f1, f2=f2, pred=pred,
+                            tag="conv=%+g cond=%.3g" % (convection, cond))
         pm = np.array([float(r["p_star"]) for r in rows])
         pm = pm - pm.mean()
         rel = float(np.linalg.norm(pm - p_true) / (np.linalg.norm(p_true) + 1e-12))
         ok = rel <= C10_TOL
         print("C10 %s: conv=%+g nv=%d 去均值压力相对误差=%.4g 期望=%s -> %s"
-              % (tag, convection, len(rows), rel,
+              % (label, convection, len(rows), rel,
                  ("≤%g" % C10_TOL) if want_pass else (">%g" % C10_RED_TOL),
                  "OK" if ok == want_pass else "BAD"), flush=True)
         if want_pass and not ok:
