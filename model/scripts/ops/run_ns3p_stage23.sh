@@ -102,22 +102,32 @@ phase_cases() {
   done
 }
 
-metrics_dump() {  # metrics_dump <run-name> -> one line of key=value
+metrics_dump() {  # metrics_dump <run-name> -> 一行 key=value
+  # 尺必须点名：metrics.json 里有四段同名键（速度阶段／压力阶段／最终训练／最终验证）。
+  # 冒烟格第一版取"第一个匹配"，抓到的是速度阶段那一段——耦合阶段的对流项根本碰不到它，
+  # 于是两臂逐位相同、闸门把这枚装置缺陷报成"对流项没进损失"。现在只读 最终验证指标，
+  # 压降从 验证工况指标[0] 取（主线自己算的 pressure_drop_rel_error，不另起炉灶）。
   local f="$RES/$1/metrics.json"
   [ -f "$f" ] || { printf 'MISSING'; return; }
   python3 - "$f" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
+sec = d.get("最终验证指标")
+if not isinstance(sec, dict):
+    print("MISSING-SECTION")
+    sys.exit(0)
 want = ["rel_l2_u", "rel_l2_v", "rel_l2_speed", "rel_l2_p"]
-def find(k):
-    if k in d:
-        return d[k]
-    for a in d.values():
-        if isinstance(a, dict) and k in a:
-            return a[k]
-    return None
-print("\t".join(f"{k}={find(k)}" for k in want) + "\tfour_keys=" +
-      ("OK" if all(find(k) is not None for k in want) else "INCOMPLETE"))
+vals = {k: sec.get(k) for k in want}
+rows = d.get("验证工况指标") or []
+first = rows[0] if rows and isinstance(rows[0], dict) else {}
+vals["pressure_drop_rel_error"] = first.get("pressure_drop_rel_error")
+ok = all(vals[k] is not None for k in want)
+print("\t".join(f"{k}={vals[k]}" for k in want + ["pressure_drop_rel_error"])
+      + "\tfour_keys=" + ("OK" if ok else "INCOMPLETE")
+      + "\tsplit=val"
+      + "\tval_case=" + str(first.get("case_id"))
+      + "\tsections_present=" + ",".join(k for k in
+          ("速度阶段验证指标", "压力阶段验证指标", "最终训练指标", "最终验证指标") if k in d))
 PY
 }
 
@@ -132,7 +142,7 @@ phase_smoke() {
     local t0=$(date +%s%N)
     step "smoke_$P" fatal "python3 model/scripts/train_velocity_pressure_independent_ns.py --family contraction_2d --reynolds $re --train-cases $TC --val-cases $VC --seed 42 --run-name $name --velocity-epochs 8 --pressure-epochs 8 --coupling-epochs 8"
     local t1=$(date +%s%N)
-    printf '%s\t%s\t%s\n' "$name" "$(( (t1 - t0) / 1000000 ))" "$(metrics_dump "$name" | tr '\n' ' ')" >> "$tsv"
+    printf '%s\t%s\t%s\n' "$name" "$(( (t1 - t0) / 1000000 ))" "$(metrics_dump "$name" | tr '\t\n' '  ')" >> "$tsv"
   done
   cat "$tsv" | sed "s/^/    S| /"
   local A B
@@ -164,7 +174,7 @@ phase_matrix() {
         name="ns3p_${L}_${P}_s${SEED}"
         if [ -f "$RES/$name/metrics.json" ]; then
           if ! awk -F'\t' -v n="$name" '$5==n{f=1}END{exit !f}' "$tsv"; then
-            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$L" "$P" "$SEED" "already" "$name" "$(metrics_dump "$name" | tr '\n' ' ')" >> "$tsv"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$L" "$P" "$SEED" "already" "$name" "$(metrics_dump "$name" | tr '\t\n' '  ')" >> "$tsv"
             log "CELL $name [skip-train]"
           fi
           continue
@@ -173,7 +183,7 @@ phase_matrix() {
         t0=$(date +%s%N)
         step "cell_${L}_${P}_${SEED}" nonfatal "python3 model/scripts/train_velocity_pressure_independent_ns.py --family contraction_2d --reynolds $re --train-cases $TC --val-cases $VC --seed $SEED --run-name $name"
         t1=$(date +%s%N)
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$L" "$P" "$SEED" "$(( (t1 - t0) / 1000000 ))" "$name" "$(metrics_dump "$name" | tr '\n' ' ')" >> "$tsv"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$L" "$P" "$SEED" "$(( (t1 - t0) / 1000000 ))" "$name" "$(metrics_dump "$name" | tr '\t\n' '  ')" >> "$tsv"
         log "CELL $name wall_ms=$(( (t1 - t0) / 1000000 ))"
       done
     done
@@ -200,11 +210,12 @@ for r in rows:
     if r["phys"] not in ("ns", "stokes") or r["seed"] in ("", None):
         continue
     cell[(r["level"], r["phys"], r["seed"])] = num(r["metrics"])
-METRICS = ("rel_l2_speed", "rel_l2_p")
+METRICS = ("rel_l2_speed", "rel_l2_p")            # 判据里点名的就这两个
+EXTRA = ("pressure_drop_rel_error", "rel_l2_u")   # 只报不判：事前登记的规则里没有它们
 lines = []
 verdicts = {}
 for lvl in ("1", "10", "50", "1e-3"):
-    for m in METRICS:
+    for m in METRICS + EXTRA:
         ds, ns_vals, seeds = [], [], []
         for s in sorted({k[2] for k in cell}):
             a = cell.get((lvl, "stokes", s), {}).get(m)
@@ -215,7 +226,7 @@ for lvl in ("1", "10", "50", "1e-3"):
             ns_vals.append(b)
             seeds.append(s)
         if not ds:
-            lines.append(f"{lvl}\t{m}\tNO-PAIRS")
+            lines.append(f"{lvl}\t0\t{m}\tNO-PAIRS")
             continue
         med = st.median(ds)
         # sd 一把尺 = 样本标准差（ddof=1），与 9/27 定档一致；n=1 时无定义 -> nan，不补 0
@@ -226,9 +237,12 @@ for lvl in ("1", "10", "50", "1e-3"):
         pos = sum(1 for d in ds if d > 0)
         n = len(ds)
         ok = med > 0 and pos >= (2 * n + 2) // 3 and (sd == sd and med >= sd / 3.0)
-        verdicts[(lvl, m)] = ok
+        if m in METRICS:
+            verdicts[(lvl, m)] = ok
         lines.append(f"{lvl}\t{n}\t{m}\tmed_d={med:+.6g}\tmean_d={st.mean(ds):+.6g}"
-                     f"\tns_sd={sd:.4g}\tNSarm_better={pos}/{n}\trule={'MET' if ok else 'not met'}")
+                     f"\tns_sd={sd:.4g}\tNSarm_better={pos}/{n}"
+                     f"\trule={'MET' if ok else 'not met'}"
+                     + ("" if m in METRICS else "  [登记外：不进判决]"))
 print("\n".join(lines))
 gate = all(verdicts.get(k, False) for k in (("10", "rel_l2_speed"), ("10", "rel_l2_p"),
                                             ("50", "rel_l2_speed"), ("50", "rel_l2_p")))
