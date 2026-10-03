@@ -217,19 +217,20 @@ for r in rows:
         pass
 METRICS = ("rel_l2_speed", "rel_l2_p")            # 判据里点名的就这两个
 EXTRA = ("pressure_drop_rel_error", "rel_l2_u")   # 只报不判：事前登记的规则里没有它们
-ALLM = METRICS + EXTRA
-# 先出每臂的 mean±sd（ddof=1，9/27 定档那把尺）与墙钟——正文要的是这一张，配对差是另一张
+# 先出每臂的 mean±sd（ddof=1，9/27 定档那把尺）与墙钟——正文要的是这一张，配对差是另一张。
+# 表头由 cols 生成，行也由 cols 生成：漂移在结构上不可能（第一版表头少写一列，行却印 4 个值）。
+cols = ["rel_l2_speed", "rel_l2_p", "pressure_drop_rel_error", "rel_l2_u"]
 print("== per-arm (mean+-sd over seeds, ddof=1; wall = 训练墙钟 ms，与真值求解不同口径)")
-print("level\tphys\tn\trel_l2_speed\trel_l2_p\tpressure_drop_rel_error\twall_ms_mean")
+print("\t".join(["level", "phys", "n"] + cols + ["wall_ms_mean"]))
 for lvl in ("1", "10", "50", "1e-3"):
     for phys in ("ns", "stokes"):
-        vs = {m: [] for m in ALLM}
+        vs = {m: [] for m in cols}
         for (l, p, s), d in cell.items():
             if l == lvl and p == phys:
-                for m in ALLM:
+                for m in cols:
                     if d.get(m) is not None:
                         vs[m].append(d[m])
-        n = max(len(vs[m]) for m in ALLM)
+        n = max(len(vs[m]) for m in cols)
         if n == 0:
             continue
         def ms(v):
@@ -238,8 +239,10 @@ for lvl in ("1", "10", "50", "1e-3"):
             s = ("+-" + f"{st.stdev(v):.4g}") if len(v) > 1 else "+-NA"
             return f"{st.mean(v):.5g}{s}"
         w = wall.get((lvl, phys), [])
-        print(f"{lvl}\t{phys}\t{n}\t" + "\t".join(ms(vs[m]) for m in ALLM)
-              + ("\t" + f"{st.mean(w):.0f}" if w else "\tNA"))
+        row = [lvl, phys, str(n)] + [ms(vs[m]) for m in cols] \
+            + [(f"{st.mean(w):.0f}" if w else "NA")]
+        assert len(row) == len(cols) + 4, "per-arm 行的列数与表头不一致"
+        print("\t".join(row))
 print()
 print("== paired by seed: d = 误差(stokes残差) - 误差(NS残差)；d>0 = NS 残差那一臂更好")
 lines = []
