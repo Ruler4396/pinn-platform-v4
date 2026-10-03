@@ -398,6 +398,44 @@ def c10(workdir: Path, mesh_xy, preamble: str, reynolds=10.0, alpha=1.0) -> int:
     return 1 if fails else 0
 
 
+def deriv_selftest(reynolds=10.0, n_obs=63, n_tgt=400) -> int:
+    """二阶导数的已知答案正对照（C10 的线性场让 ∇²u 恒为 0，那条路没被走过，所以 C9 错了才发现）。
+    解析取 u=(x²y, −xy²)：散度自由；∇²u=(2y,−2x)；(u·∇)u=(x³y², x²y³) ⇒ f 全解析。"""
+    import random
+
+    import numpy as np
+
+    rng = random.Random(11)
+    pts, tg = [], []
+    while len(pts) < n_obs:
+        x, y = rng.uniform(1.0, 15.0), rng.uniform(-0.4, 0.4)
+        if all((x - a) ** 2 + (y - b) ** 2 > 0.25 ** 2 for a, b in pts):
+            pts.append((x, y))
+    while len(tg) < n_tgt:
+        x, y = rng.uniform(2.0, 14.0), rng.uniform(-0.3, 0.3)
+        if all((x - a) ** 2 + (y - b) ** 2 > 0.15 ** 2 for a, b in tg):
+            tg.append((x, y))
+    obs_u = [x * x * y for x, y in pts]
+    obs_v = [-x * y * y for x, y in pts]
+    f1, f2, cond = pressure_rhs(pts, obs_u, obs_v, tg, reynolds, 1.0)
+    a1 = np.array([2 * y - reynolds * x ** 3 * y ** 2 for x, y in tg])
+    a2 = np.array([-2 * x - reynolds * x ** 2 * y ** 3 for x, y in tg])
+    e1 = float(np.max(np.abs(f1 - a1)) / (np.max(np.abs(a1)) + 1e-12))
+    e2 = float(np.max(np.abs(f2 - a2)) / (np.max(np.abs(a2)) + 1e-12))
+    # 只核拉普拉斯那一项单独对不对（把对流项的误差与二阶导的误差分开）
+    wu = _rbf_solve(pts, obs_u)
+    wv = _rbf_solve(pts, obs_v)
+    _, _, _, uxx, uyy = rbf_eval(pts, wu[0], wu[1], tg, want_deriv=True)
+    _, _, _, vxx, vyy = rbf_eval(pts, wv[0], wv[1], tg, want_deriv=True)
+    lap_err = float(max(np.max(np.abs(uxx + uyy - 2 * np.array([y for _, y in tg]))) / 0.8,
+                        np.max(np.abs(vxx + vyy + 2 * np.array([x for x, _ in tg]))) / 14.0))
+    print("DERIV-CHECK cond=%.3g f1 最大相对误差=%.4g f2 最大相对误差=%.4g 纯拉普拉斯项相对误差=%.4g"
+          % (cond, e1, e2, lap_err), flush=True)
+    bad = [m for m, v in (("f1", e1), ("f2", e2), ("lap", lap_err)) if v > 1e-2]
+    print("DERIV_SELFTEST " + ("ALL GREEN" if not bad else "FAILED | 超界：" + ",".join(bad)))
+    return 1 if bad else 0
+
+
 def run_case(args, truth_rows, obs, outdir: Path, workdir: Path, mesh_xy, preamble: str) -> dict:
     stem = "assim_%s_%s_%s" % (args.case, args.quota, args.equation)
     pred = outdir / (stem + "_pred.csv")
@@ -423,7 +461,8 @@ def main() -> int:
     ap.add_argument("--equation", choices=("ns", "stokes"), default="ns")
     ap.add_argument("--reynolds", type=float, default=10.0)
     ap.add_argument("--selftest", action="store_true", help="C10 已知答案正对照 + 必红（需 FreeFEM）")
-    ap.add_argument("--rbf-check", action="store_true", help="只核 RBF 那一半（需 numpy，不需 FreeFEM）")
+    ap.add_argument("--rbf-check", action="store_true", help="只核插值那一半（需 numpy，不需 FreeFEM）")
+    ap.add_argument("--deriv-check", action="store_true", help="核二阶导数（∇²u）的已知答案，纯 numpy")
     ap.add_argument("--outdir", default="")
     a = ap.parse_args()
     root = Path(a.root)
@@ -434,6 +473,8 @@ def main() -> int:
 
     if a.rbf_check:
         return rbf_selftest()
+    if a.deriv_check:
+        return deriv_selftest(reynolds=a.reynolds)
     if not a.case:
         raise SystemExit("[FAIL] 要 --case：网格前段必须取自该工况自己的 .edp（收缩比逐工况不同）")
     cdir = root / "model" / "cases" / "contraction_2d" / "data" / a.case
@@ -448,6 +489,9 @@ def main() -> int:
 
     if a.selftest:
         rc = rbf_selftest()
+        if rc:
+            return rc
+        rc = deriv_selftest(reynolds=a.reynolds)      # C10 的线性场让 ∇²u≡0，二阶导这条路必须有自己那条
         if rc:
             return rc
         return c10(workdir, mesh_xy, preamble, reynolds=a.reynolds)
