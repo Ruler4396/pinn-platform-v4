@@ -398,23 +398,19 @@ def c10(workdir: Path, mesh_xy, preamble: str, reynolds=10.0, alpha=1.0) -> int:
     return 1 if fails else 0
 
 
-def deriv_selftest(reynolds=10.0, n_obs=63, n_tgt=400) -> int:
+def deriv_selftest(reynolds=10.0) -> int:
     """二阶导数的已知答案正对照（C10 的线性场让 ∇²u 恒为 0，那条路没被走过，所以 C9 错了才发现）。
     解析取 u=(x²y, −xy²)：散度自由；∇²u=(2y,−2x)；(u·∇)u=(x³y², x²y³) ⇒ f 全解析。"""
-    import random
-
     import numpy as np
 
-    rng = random.Random(11)
-    pts, tg = [], []
-    while len(pts) < n_obs:
-        x, y = rng.uniform(1.0, 15.0), rng.uniform(-0.4, 0.4)
-        if all((x - a) ** 2 + (y - b) ** 2 > 0.25 ** 2 for a, b in pts):
-            pts.append((x, y))
-    while len(tg) < n_tgt:
-        x, y = rng.uniform(2.0, 14.0), rng.uniform(-0.3, 0.3)
-        if all((x - a) ** 2 + (y - b) ** 2 > 0.15 ** 2 for a, b in tg):
-            tg.append((x, y))
+    # 点位用**格子**取，不用拒绝采样：定义域 14×0.8 里要塞 63 个"彼此至少 0.25"的点，
+    # 面积上限 11.2 < 所需 12.3 ⇒ 拒绝采样永不终止（上一版就在这儿挂死，pkill 掉的）。
+    xs = [1.0 + i * (14.0 - 1.0) / 8 for i in range(9)]
+    ys = [-0.4 + j * 0.8 / 6 for j in range(7)]
+    pts = [(x, y) for x in xs for y in ys]
+    txs = [2.0 + i * (14.0 - 2.0) / 19 for i in range(20)]
+    tys = [-0.3 + j * 0.6 / 19 for j in range(20)]
+    tg = [(x, y) for x in txs for y in tys]
     obs_u = [x * x * y for x, y in pts]
     obs_v = [-x * y * y for x, y in pts]
     f1, f2, cond = pressure_rhs(pts, obs_u, obs_v, tg, reynolds, 1.0)
@@ -422,15 +418,17 @@ def deriv_selftest(reynolds=10.0, n_obs=63, n_tgt=400) -> int:
     a2 = np.array([-2 * x - reynolds * x ** 2 * y ** 3 for x, y in tg])
     e1 = float(np.max(np.abs(f1 - a1)) / (np.max(np.abs(a1)) + 1e-12))
     e2 = float(np.max(np.abs(f2 - a2)) / (np.max(np.abs(a2)) + 1e-12))
-    # 只核拉普拉斯那一项单独对不对（把对流项的误差与二阶导的误差分开）
+    # 只核拉普拉斯那一项单独对不对（把对流项的误差与二阶导的误差分开；分母用解析式自身的量级）
     wu = _rbf_solve(pts, obs_u)
     wv = _rbf_solve(pts, obs_v)
     _, _, _, uxx, uyy = rbf_eval(pts, wu[0], wu[1], tg, want_deriv=True)
     _, _, _, vxx, vyy = rbf_eval(pts, wv[0], wv[1], tg, want_deriv=True)
-    lap_err = float(max(np.max(np.abs(uxx + uyy - 2 * np.array([y for _, y in tg]))) / 0.8,
-                        np.max(np.abs(vxx + vyy + 2 * np.array([x for x, _ in tg]))) / 14.0))
-    print("DERIV-CHECK cond=%.3g f1 最大相对误差=%.4g f2 最大相对误差=%.4g 纯拉普拉斯项相对误差=%.4g"
-          % (cond, e1, e2, lap_err), flush=True)
+    lap_u_a = np.array([2 * y for _, y in tg])
+    lap_v_a = np.array([-2 * x for x, _ in tg])
+    lap_err = float(max(np.max(np.abs(uxx + uyy - lap_u_a)) / (np.max(np.abs(lap_u_a)) + 1e-12),
+                        np.max(np.abs(vxx + vyy - lap_v_a)) / (np.max(np.abs(lap_v_a)) + 1e-12)))
+    print("DERIV-CHECK n_obs=%d n_tgt=%d cond=%.3g f1 最大相对误差=%.4g f2 最大相对误差=%.4g "
+          "纯拉普拉斯项相对误差=%.4g" % (len(pts), len(tg), cond, e1, e2, lap_err), flush=True)
     bad = [m for m, v in (("f1", e1), ("f2", e2), ("lap", lap_err)) if v > 1e-2]
     print("DERIV_SELFTEST " + ("ALL GREEN" if not bad else "FAILED | 超界：" + ",".join(bad)))
     return 1 if bad else 0
