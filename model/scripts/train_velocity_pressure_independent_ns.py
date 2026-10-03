@@ -13,15 +13,21 @@ star 单位下 W_stem=1、入口平均速度=1、mu=1，弱形式 = 入库 Stoke
 因此本文件的残差与主线逐项同尺度：粘性项与对流项都除 velocity_scale、压力梯度除 pressure_scale，
 在 star 单位（L=W_stem=1）下与真值方程一致。
 
-两道闸（`--ns-selftest`，秒级、需要 torch 因而要在实例上跑）：
-  ① 复算一致性：Re=0 时本文件的 连续性/动量/散度 四项必须与主线 `方程耦合损失` **逐位相同**；
-  ② 系数方向必红：把 Re 写成 1/Re 的误标版，在 Re=10 的对流值上必须与正解差出一个 Re² 倍——
-     这条控制用来证明"乘 Re"是被测的，不是抄来的。
+四道闸（`--ns-selftest`）：
+  ① 解析对照 (u·∇)u=(x,y)；② 1/Re 误标版必红（证明"乘 Re"是被测的，不是抄来的）；
+  ③ Re=0／无内部点两分支均 return 主线函数（同一段代码，不是复刻）；
+  ④ NS 档工况名挂表：非 NS 名不许动、缺 dense 件必须拒、临时目录里走成功路并核几何逐字段继承。
+①②③ 要 torch（实例上跑）；④ 纯 stdlib，单独入口 `--ns-registry-selftest` 在本机就能跑，
+所以"注册这一半"不必等到占机时才第一次执行——上一轮就是没覆盖写路径才让 mkdir 缺陷漏到实例上。
+端到端（真网上动量随 Re 变化、四项键齐全）仍不在自检覆盖内，留给实例侧 8-epoch 冒烟格。
 """
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import importlib
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -134,7 +140,118 @@ def 方程耦合损失_NS(速度模型, 压力模型, dense_split, 输入标准�
     }
 
 
-# ---------------------------------------------------------------------------- 三道闸
+# ---------------------------------------------------- 运行期把 NS 档挂进收缩族工况表
+# 为什么必须挂：`train_supervised` 在按路径取数据之前先过 `src.data.contraction_cases.get_case`
+# （实例上实测：`KeyError: Unknown contraction case 'C-base_ns_re10'`）。设计件 §二.1 原先只读了
+# `load_case_source` 就断言"新建目录不需要动注册表"——那句被这一跑否证了，改在这里补。
+# 为什么在运行期挂而不是改那枚文件：主线的工况条目数是被别处读的对象，加 36 条会连带动到别人的账。
+NS_CASE_RE = re.compile(r"^(C-[A-Za-z0-9.\-]+?)_ns_re([0-9][0-9eE.\-]*)$")
+
+
+def the_registry():
+    """取主线**同一个** contraction_cases 模块对象；取不到就明说，不许静默注册到一份副本上。"""
+    model_root = SCRIPT_DIR.parents[0]
+    if str(model_root) not in sys.path:
+        sys.path.insert(0, str(model_root))
+    try:
+        return importlib.import_module("src.data.contraction_cases")
+    except Exception as exc:                                # noqa: BLE001
+        raise SystemExit(f"[FAIL] 取不到收缩族工况表模块（注册到副本上等于没注册）：{exc!r}")
+
+
+def 从argv取工况(argv):
+    ids = []
+    for i, a in enumerate(argv):
+        for flag in ("--train-cases", "--val-cases"):
+            if a == flag and i + 1 < len(argv):
+                ids += [s.strip() for s in argv[i + 1].split(",") if s.strip()]
+            elif a.startswith(flag + "="):
+                ids += [s.strip() for s in a.split("=", 1)[1].split(",") if s.strip()]
+    return ids
+
+
+def 注册NS工况(case_ids, data_root=None):
+    """把 `<base>_ns_re<lvl>` 挂进工况表：几何逐项继承 base，只有 case_id 与 note 变。
+    dense 件必须已经在位——否则宁可停下，也不让它悄悄回落到 Stokes 那一格。"""
+    root = Path(data_root) if data_root else SCRIPT_DIR.parents[0] / "cases" / "contraction_2d" / "data"
+    mod = the_registry()
+    done = []
+    for cid in case_ids:
+        m = NS_CASE_RE.match(cid)
+        if not m:
+            continue
+        base_id, lvl = m.group(1), m.group(2)
+        if cid not in mod._CASE_LIBRARY:
+            try:
+                b = mod.get_case(base_id)
+            except KeyError as exc:
+                raise SystemExit(f"[FAIL] NS 档 {cid} 的基准工况 {base_id} 不在收缩族表里：{exc}")
+            mod._CASE_LIBRARY[cid] = dataclasses.replace(
+                b, case_id=cid,
+                note=f"NS 档 Re={lvl}：与 {base_id} 同几何同网格，只有 u/v/p 取该档定常 Navier-Stokes 解")
+        dense = root / cid / "field_dense.csv"
+        if not dense.is_file():
+            raise SystemExit(f"[FAIL] NS 档 {cid} 的 dense 件不存在：{dense} —— 先用 make_ns_case.py 造这一格，"
+                             f"不能让它悄悄回落到 {base_id}（那会把 Stokes 值当成 Re={lvl} 的真值来训）")
+        done.append(cid)
+    return done
+
+
+def registry_selftest() -> int:
+    """三条控制：非 NS 名不许动、缺 dense 件必须拒、给了临时目录就走成功路并核几何继承。纯 stdlib，
+    所以这条在本机也能跑（`--ns-registry-selftest`）——不占机时把写路径以外的分支全覆盖掉。"""
+    import tempfile
+    fails = []
+    mod = the_registry()
+    n_before = len(mod._CASE_LIBRARY)
+    ids = 从argv取工况(["--family", "contraction_2d", "--train-cases",
+                       "C-base_ns_re10,C-train-1_ns_re10", "--val-cases=C-val_ns_re10", "--seed", "42"])
+    good_parse = ids == ["C-base_ns_re10", "C-train-1_ns_re10", "C-val_ns_re10"]
+    print("[%s] argv 取工况：%s" % ("PASS" if good_parse else "FAIL", ids))
+    if not good_parse:
+        fails.append("argv 解析少了格")
+    untouched = 注册NS工况(["C-base", "B-val"])
+    clean = (untouched == [] and len(mod._CASE_LIBRARY) == n_before)
+    print("[%s] 主线工况名与 bend 族名一律不注册（返回 %s，表大小不变）"
+          % ("PASS" if clean else "FAIL", untouched))
+    if not clean:
+        fails.append("非 NS 名被动了")
+    try:
+        注册NS工况(["C-train-9_ns_re7"])
+        fails.append("基准工况不存在却没拒")
+        print("[FAIL] 未知基准 C-train-9 被挂上了表")
+    except SystemExit as exc:
+        live = "不在收缩族表里" in str(exc)
+        print("[%s] NS 名但基准工况不存在 → 被拒（报文：%s）" % ("PASS" if live else "FAIL", str(exc)[:48]))
+        if not live:
+            fails.append("拒是拒了，但报的不是这条原因")
+    try:
+        注册NS工况(["C-base_ns_re10"])
+        fails.append("缺 dense 件却没拒")
+        print("[FAIL] 临时目录之外注册了没有 dense 件的 NS 档： precondition 没执法")
+    except SystemExit as exc:
+        live = "dense 件不存在" in str(exc)
+        print("[%s] 缺 dense 件的 NS 档被拒（报文：%s）" % ("PASS" if live else "FAIL", str(exc)[:60]))
+        if not live:
+            fails.append("拒是拒了，但报的不是这条原因")
+    with tempfile.TemporaryDirectory() as td:
+        (Path(td) / "C-base_ns_re10").mkdir(parents=True)
+        (Path(td) / "C-base_ns_re10" / "field_dense.csv").write_text("x\n1\n", encoding="utf-8")
+        got = 注册NS工况(["C-base_ns_re10"], data_root=td)
+        c = mod.get_case("C-base_ns_re10")
+        b = mod.get_case("C-base")
+        ok = got == ["C-base_ns_re10"] and c.beta == b.beta and c.lc_over_w == b.lc_over_w \
+            and c.case_id == "C-base_ns_re10" and "NS 档" in c.note
+        print("[%s] 挂上之后：beta/lc_over_w 逐字段继承 %s→%s，note 写明是 NS 档"
+              % ("PASS" if ok else "FAIL", b.beta, c.beta))
+        if not ok:
+            fails.append("成功路没走通")
+        mod._CASE_LIBRARY.pop("C-base_ns_re10", None)
+    print("REGISTRY_SELFTEST " + ("ALL GREEN" if not fails else "FAILED | " + " | ".join(fails)))
+    return 1 if fails else 0
+
+
+# ---------------------------------------------------------------------------- 四道闸
 def ns_selftest() -> int:
     """只核"对流项本身"与"Re=0 是否交回主线"。端到端（真网上动量随 Re 变化、四项键齐全）
     不在这条自检的覆盖范围内——它要 torch 与真数据，写在实例侧的 8-epoch 冒烟格里，见设计件。"""
@@ -169,8 +286,10 @@ def ns_selftest() -> int:
         fails.append("Re=0 未交回主线")
 
     print("[SCOPE] 本自检不覆盖端到端：真网上'动量随 Re 变化'与四项键齐全留给实例侧 8-epoch 冒烟格")
-    print("NS_SELFTEST " + ("ALL GREEN" if not fails else "FAILED | " + " | ".join(fails)))
-    return 1 if fails else 0
+    rc_reg = registry_selftest()
+    print("NS_SELFTEST " + ("ALL GREEN" if not fails and rc_reg == 0 else "FAILED")
+          + ("" if not fails else " | " + " | ".join(fails)))
+    return 1 if (fails or rc_reg) else 0
 
 
 def main() -> int:
@@ -179,11 +298,19 @@ def main() -> int:
     ap.add_argument("--reynolds", type=float, default=None,
                     help="对流项系数（真值同族 star 单位下即 Re）；不给则 0＝纯 Stokes 复算")
     ap.add_argument("--ns-selftest", action="store_true")
+    ap.add_argument("--ns-registry-selftest", action="store_true",
+                    help="只跑第四道闸（纯 stdlib，本机可跑）")
     known, rest = ap.parse_known_args()
     if known.ns_selftest:
         return ns_selftest()
+    if known.ns_registry_selftest:
+        return registry_selftest()
     REYNOLDS = 0.0 if known.reynolds is None else float(known.reynolds)
     bm = the_base()
+    registered = 注册NS工况(从argv取工况(rest))
+    for cid in registered:
+        print(f"[NS-case] {cid} 已按同几何注册进收缩族工况表（运行期，不改 model/src/data/contraction_cases.py）",
+              flush=True)
     if REYNOLDS != 0.0:
         bm.方程耦合损失 = 方程耦合损失_NS
         if bm.方程耦合损失 is not 方程耦合损失_NS:                 # 猴补丁没落上就是假绿，宁可红
