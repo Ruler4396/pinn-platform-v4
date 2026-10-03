@@ -237,6 +237,21 @@ print("C9 PASS")
 PY
 }
 
+phase_sens() {
+  log "PHASE=sens（压力回退尺度=1.0 的敏感性对照；不进登记判决）"
+  local L TC
+  for L in $LEVELS; do
+    TC=$(join_cases "$L" $TRAIN_BASES)
+    step "cell_ns5sens_${L}_5pct_ns_s42" nonfatal python3 "$S/train_velocity_pressure_independent_ns_vonly.py" \
+      --base-script strict-sparse --reynolds "$L" --family contraction_2d \
+      --train-cases "$TC" --val-cases "$(join_cases "$L" $VAL_BASE)" \
+      --run-name "ns5sens_${L}_5pct_ns_s42" --seed 42 --vonly-pressure-scale one \
+      $SP_ARGS $(src_flags 5pct)
+    check_sources "ns5sens_${L}_5pct_ns_s42" 5pct >>"$LOGD/cell_ns5sens_${L}_5pct_ns_s42.log" 2>&1 \
+      || log "FATAL SOURCE-MISMATCH ns5sens_${L}_5pct_ns_s42"
+  done
+}
+
 phase_score() {
   log "PHASE=score"
   step score fatal python3 "$S/ns5_verdict.py" --pinn-score --root "$WS" --out "$LOGD"
@@ -255,11 +270,12 @@ case "${1:-}" in
   smoke) phase_smoke;;
   matrix) phase_matrix;;
   baseline) phase_baseline;;
+  sens) phase_sens;;
   score) phase_score;;
   judge) phase_judge;;
   all) phase_preflight; phase_selftests; phase_obs; phase_c6; phase_smoke; phase_matrix;
-       phase_baseline; phase_score; phase_judge;;
-  *) echo "usage: $0 {preflight|obs|selftests|c6|smoke|matrix|baseline|score|judge|all}"; exit 2;;
+       phase_baseline; phase_sens; phase_score; phase_judge;;
+  *) echo "usage: $0 {preflight|obs|selftests|c6|smoke|matrix|baseline|sens|score|judge|all}"; exit 2;;
 esac
 RC=$?
 log "SUMMARY phase=${1:-all} ok=$((1 - (RC > 0))) rc=$RC logs=$LOGD"
