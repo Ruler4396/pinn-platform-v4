@@ -206,12 +206,42 @@ def num(s):
                 pass
     return out
 cell = {}
+wall = {}
 for r in rows:
     if r["phys"] not in ("ns", "stokes") or r["seed"] in ("", None):
         continue
     cell[(r["level"], r["phys"], r["seed"])] = num(r["metrics"])
+    try:
+        wall[(r["level"], r["phys"])] = wall.get((r["level"], r["phys"]), []) + [float(r["wall_ms"])]
+    except (TypeError, ValueError):
+        pass
 METRICS = ("rel_l2_speed", "rel_l2_p")            # 判据里点名的就这两个
 EXTRA = ("pressure_drop_rel_error", "rel_l2_u")   # 只报不判：事前登记的规则里没有它们
+ALLM = METRICS + EXTRA
+# 先出每臂的 mean±sd（ddof=1，9/27 定档那把尺）与墙钟——正文要的是这一张，配对差是另一张
+print("== per-arm (mean+-sd over seeds, ddof=1; wall = 训练墙钟 ms，与真值求解不同口径)")
+print("level\tphys\tn\trel_l2_speed\trel_l2_p\tpressure_drop_rel_error\twall_ms_mean")
+for lvl in ("1", "10", "50", "1e-3"):
+    for phys in ("ns", "stokes"):
+        vs = {m: [] for m in ALLM}
+        for (l, p, s), d in cell.items():
+            if l == lvl and p == phys:
+                for m in ALLM:
+                    if d.get(m) is not None:
+                        vs[m].append(d[m])
+        n = max(len(vs[m]) for m in ALLM)
+        if n == 0:
+            continue
+        def ms(v):
+            if not v:
+                return "NA"
+            s = ("+-" + f"{st.stdev(v):.4g}") if len(v) > 1 else "+-NA"
+            return f"{st.mean(v):.5g}{s}"
+        w = wall.get((lvl, phys), [])
+        print(f"{lvl}\t{phys}\t{n}\t" + "\t".join(ms(vs[m]) for m in ALLM)
+              + ("\t" + f"{st.mean(w):.0f}" if w else "\tNA"))
+print()
+print("== paired by seed: d = 误差(stokes残差) - 误差(NS残差)；d>0 = NS 残差那一臂更好")
 lines = []
 verdicts = {}
 for lvl in ("1", "10", "50", "1e-3"):
@@ -240,8 +270,8 @@ for lvl in ("1", "10", "50", "1e-3"):
         if m in METRICS:
             verdicts[(lvl, m)] = ok
         lines.append(f"{lvl}\t{n}\t{m}\tmed_d={med:+.6g}\tmean_d={st.mean(ds):+.6g}"
-                     f"\tns_sd={sd:.4g}\tNSarm_better={pos}/{n}"
-                     f"\trule={'MET' if ok else 'not met'}"
+                     f"\tns_sd={sd:.4g}\tNSarm_better={pos}/{n}\tseedwise=["
+                     + ",".join(f"{d:+.5g}" for d in ds) + f"]\trule={'MET' if ok else 'not met'}"
                      + ("" if m in METRICS else "  [登记外：不进判决]"))
 print("\n".join(lines))
 gate = all(verdicts.get(k, False) for k in (("10", "rel_l2_speed"), ("10", "rel_l2_p"),
