@@ -22,6 +22,10 @@ SEEDS="42 43 44"
 # strict-sparse 档位照抄 sweep_lib.sh 的 train_dual()，只额外加 --base-script/--reynolds/--seed
 SP_ARGS="--feature-mode geometry --drop-features '' --velocity-hidden-layers 128,128,128 --pressure-hidden-layers 128,128,128 --activation silu --velocity-epochs 200 --pressure-epochs 200 --coupling-epochs 80 --velocity-lr 6e-4 --pressure-lr 6e-4 --coupling-velocity-lr 1e-4 --coupling-pressure-lr 1e-4 --wall-weight 0.0 --inlet-flux-weight 0.0 --continuity-weight 0.1 --velocity-stage-continuity-weight 0.3 --velocity-stage-momentum-weight 0.0 --outlet-pressure-weight 0.0 --pressure-drop-weight 0.0 --pressure-stage-momentum-weight 0.5 --velocity-wall-mode hard --hard-wall-sharpness 12 --coupling-momentum-weight 10.0 --coupling-continuity-weight 0.1 --coupling-velocity-supervision-weight 1.0 --coupling-pressure-supervision-weight 1.0 --max-physics-points 512 --print-every 40 --strict-sparse-scalers --max-retries 1"
 NOPHY="--coupling-momentum-weight 0.0 --coupling-continuity-weight 0.0 --velocity-stage-continuity-weight 0.0 --pressure-stage-momentum-weight 0.0"
+# 机制对照用：strict-sparse 档位把入口流量/出口压力/压降三项设成 0（为了避免稠密真值泄漏进稀疏训练），
+# 于是那一版里的 PDE 项是**没有边界条件配套**的。加回主线稠密档的取值才能分清"物理项没用"与
+# "没有边界条件的物理项没用"。取值照抄 sweep_lib.sh 的 mainline-dense 档：0.5 / 1e-4 / 1.0。
+BC_ARGS="--inlet-flux-weight 0.5 --outlet-pressure-weight 1e-4 --pressure-drop-weight 1.0"
 mkdir -p "$LOGD"
 export PYTHONPATH="$WS/pylibs:${PYTHONPATH:-}"
 
@@ -152,20 +156,22 @@ phase_matrix() {
 }
 
 run_cell() {
-  local L="$1" A="$2" SEED="$3" tsv="$4" re=10 extra="" name TC VC t0 t1 w
+  local L="$1" A="$2" SEED="$3" tsv="$4" TAG="${5:-}" EXTRA="${6:-}"
+  local re=10 extra="" name TC VC t0 t1 w
   case "$A" in
     ns) re="$L" ;;
     stokes) re=0 ;;
     nophy) re=0; extra="$NOPHY" ;;
     *) log "未知臂 $A"; return 1 ;;
   esac
-  name="ns4_${L}_${A}_s${SEED}"
+  [ -n "$EXTRA" ] && extra="$extra $EXTRA"
+  name="ns4${TAG}_${L}_${A}_s${SEED}"
   if [ -f "$RES/$name/metrics.json" ] && awk -F'\t' -v n="$name" '$5==n{f=1}END{exit !f}' "$tsv"; then
     log "CELL $name [skip]"; return 0
   fi
   TC=$(join_cases "$L" $TRAIN_BASES); VC=$(join_cases "$L" C-val)
   t0=$(date +%s%N)
-  step "cell_${L}_${A}_${SEED}" nonfatal "python3 model/scripts/train_velocity_pressure_independent_ns.py --base-script strict-sparse --reynolds $re --family contraction_2d --train-cases $TC --val-cases $VC --run-name $name --seed $SEED $SP_ARGS $extra"
+  step "cell_${TAG}_${L}_${A}_${SEED}" nonfatal "python3 model/scripts/train_velocity_pressure_independent_ns.py --base-script strict-sparse --reynolds $re --family contraction_2d --train-cases $TC --val-cases $VC --run-name $name --seed $SEED $SP_ARGS $extra"
   t1=$(date +%s%N)
   w=$(python3 - "$RES/$name/config.json" <<'PY'
 import json, sys
@@ -191,8 +197,23 @@ PY
   log "CELL $name wall_ms=$(( (t1 - t0) / 1000000 )) pde[$w]"
 }
 
+phase_bc() {
+  # 机制对照（不是新的判决）：strict-sparse 档位把 入口流量/出口压力/压降 三项权重全设成 0，
+  # 于是 PDE 项是**没有边界条件配套**的欠约束项。matrix_sparse 里"带物理反而更差"最可能来自这里。
+  # 这一批把那三项按主线稠密档的取值加回来，三臂同口径重跑 Re=10 三种子——比较的仍是同一条管线内的臂。
+  local tsv="$LOGD/matrix_bc.tsv" A SEED
+  [ -f "$tsv" ] || printf 'level\tarm\tseed\twall_ms\trun\tmetrics\tpde_weights\n' > "$tsv"
+  for A in ns stokes nophy; do
+    for SEED in $SEEDS; do
+      run_cell 10 "$A" "$SEED" "$tsv" _bc "$BC_ARGS" || { log "bc 中断于 arm=$A seed=$SEED"; exit 1; }
+    done
+  done
+  log "bc rows: $(tail -n +2 "$tsv" | wc -l)"
+}
+
 phase_pair() {
-  python3 - "$LOGD/matrix_sparse.tsv" "$LOGD/pair_sparse.tsv" <<'PY'
+  local tsv="${1:-$LOGD/matrix_sparse.tsv}" out="${2:-$LOGD/pair_sparse.tsv}"
+  python3 - "$tsv" "$out" <<'PY'
 import csv, statistics as st, sys
 rows = list(csv.DictReader(open(sys.argv[1], encoding="utf-8"), delimiter="\t"))
 def num(s):
@@ -346,7 +367,8 @@ case "$PH" in
   obs) phase_obs;;
   controls) phase_controls;;
   matrix) phase_matrix;;
-  pair) phase_pair;;
+  bc) phase_bc;;
+  pair) phase_pair "${2:-}" "${3:-}";;
   dump) metrics_dump "${2:-}";;
   parity) phase_parity "${2:-}";;
   *) log "usage: $0 obs|controls|matrix|pair|parity|dump"; exit 2;;
