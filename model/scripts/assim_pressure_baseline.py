@@ -89,10 +89,71 @@ def rbf_complete(pts, vals, targets, eps=RBF_EPS):
     return dt @ sol[:n] + np.hstack([np.ones((len(T), 1)), T]) @ sol[n:], cond
 
 
-def write_dat(path: Path, xy, values) -> None:
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        for (x, y), w in zip(xy, values):
-            fh.write("%.6f %.6f %.8g\n" % (x, y, float(w)))
+EDP_NODES_TEMPLATE = """// 节点顺序导出（由 assim_pressure_baseline.py 生成）——网格与真值 .edp 同一 buildmesh 参数
+real beta = {beta};
+real Lin = 4;
+real Lc = 4;
+real Lout = 8;
+real Ltot = 16;
+int labIn = 1;
+int labOut = 2;
+int labWall = 3;
+func real smoothstep5(real s) {{ return 6.0*s^5 - 15.0*s^4 + 10.0*s^3; }}
+func real channelWidth(real xx) {{
+  if (xx <= Lin) return 1.0;
+  if (xx >= Lin + Lc) return beta;
+  real s = (xx - Lin) / Lc;
+  return 1.0 - (1.0 - beta) * smoothstep5(s);
+}}
+func real yTop(real xx) {{ return 0.5 * channelWidth(xx); }}
+func real yBot(real xx) {{ return -0.5 * channelWidth(xx); }}
+border bottomWall(t=0, 1) {{ x = Ltot*t; y = yBot(x); label = labWall; }}
+border outletEdge(t=0, 1) {{ x = Ltot; y = yBot(Ltot)+(yTop(Ltot)-yBot(Ltot))*t; label = labOut; }}
+border topWall(t=0, 1) {{ x = Ltot*(1.0-t); y = yTop(x); label = labWall; }}
+border inletEdge(t=0, 1) {{ x = 0.0; y = yTop(0.0)+(yBot(0.0)-yTop(0.0))*t; label = labIn; }}
+mesh Th = buildmesh(bottomWall(180) + outletEdge(28) + topWall(180) + inletEdge(40));
+ofstream fo("{nodes}");
+fo << "dof,x,y" << endl;
+for (int i = 0; i < Th.nv; ++i) {{
+  fo << i << "," << Th(i).x << "," << Th(i).y << endl;
+}}
+cout << "NODES-OK nv=" << Th.nv << endl;
+"""
+
+
+def build_nodes_edp(workdir: Path, beta: float, nodes_path: Path) -> Path:
+    edp = workdir / "nodes_dump.edp"
+    edp.write_text(EDP_NODES_TEMPLATE.format(beta=beta, nodes=str(nodes_path)),
+                   encoding="utf-8", newline="\n")
+    return edp
+
+
+def dump_mesh_order(workdir: Path, beta: float) -> list[tuple[float, float]]:
+    """节点顺序必须由 FreeFEM 自己说；两臂之间唯一的接口是"按 dof 下标赋值"，所以顺序错了就是错的。
+    同一 beta 的网格是确定性的 ⇒ 文件名里带 beta，换 beta 不可能静默复用旧清单。"""
+    nodes = workdir / ("mesh_nodes_beta%s.csv" % beta)
+    if not nodes.exists():
+        edp = build_nodes_edp(workdir, beta, nodes)
+        run_freefem(edp, workdir / "nodes_dump.log")
+        print("MESH-ORDER dumped -> %s" % nodes, flush=True)
+    else:
+        print("MESH-ORDER reuse %s" % nodes.name, flush=True)
+    with open(nodes, encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    out = []
+    for i, r in enumerate(rows):
+        if int(r["dof"]) != i:
+            raise SystemExit(f"[FAIL] 节点清单的 dof 不连续（第 {i} 行写着 {r['dof']}）")
+        out.append((float(r["x"]), float(r["y"])))
+    print("MESH-ORDER nv=%d 首点=(%g,%g) 末点=(%g,%g)" % (len(out), out[0][0], out[0][1],
+                                                          out[-1][0], out[-1][1]), flush=True)
+    return out
+
+
+def _literal(name: str, values) -> str:
+    parts = ["%.10g" % float(v) for v in values]
+    chunks = ", ".join(", ".join(parts[i:i + 8]) for i in range(0, len(parts), 8))
+    return "real[int] %s = [ %s ];" % (name, chunks)
 
 
 EDP_TEMPLATE = """// 经典压力重建（Stage 5 基线）——由 assim_pressure_baseline.py 生成，不要手改
@@ -122,8 +183,15 @@ mesh Th = buildmesh(bottomWall(180) + outletEdge(28) + topWall(180) + inletEdge(
 
 fespace Qh(Th, P1);
 Qh uh, vh, lapU, lapV, convU, convV, f1, f2, p, q;
-uh = read("{udat}", Qh);
-vh = read("{vdat}", Qh);
+int NOD = Th.nv;
+if (NOD != {n_nodes}) {{
+  cout << "NODE-MISMATCH nv=" << NOD << " want={n_nodes}" << endl;
+  exit(1);
+}}
+{au_lit}
+{av_lit}
+uh[] = au;
+vh[] = av;
 real Reff = {reynolds};
 real cf = {convection};
 
@@ -156,9 +224,10 @@ cout << "ASSIM-OK nv=" << Th.nv << " re=" << Reff << " cf=" << cf << endl;
 
 
 def build_edp(workdir: Path, case: str, beta: float, reynolds: float, convection: float,
-              udat: Path, vdat: Path, pred: Path) -> Path:
+              u_vals, v_vals, pred: Path) -> Path:
     text = EDP_TEMPLATE.format(beta=beta, reynolds=reynolds, convection=convection,
-                               udat=str(udat), vdat=str(vdat), pred=str(pred))
+                               n_nodes=len(u_vals), au_lit=_literal("au", u_vals),
+                               av_lit=_literal("av", v_vals), pred=str(pred))
     edp = workdir / ("assim_%s.edp" % case)
     edp.write_text(text, encoding="utf-8", newline="\n")
     return edp
@@ -179,34 +248,47 @@ def read_pred(path: Path) -> list[dict]:
         return list(csv.DictReader(fh))
 
 
-def score(pred_rows, truth_rows, labels=(1, 2)) -> dict:
-    """去均值压力相对误差 + 压降相对误差（后者逐字符照 train_supervised.compute_case_metrics:639-640）。"""
+def _coord_key(x, y):
+    return (round(float(x), 5), round(float(y), 5))
+
+
+def score(pred_rows, truth_rows, mesh_xy, labels=(1, 2)) -> dict:
+    """去均值压力相对误差 + 压降相对误差（后者逐字符照 train_supervised.compute_case_metrics:639-640）。
+    基线按 dof 序出、真值按 CSV 行出 ⇒ 对齐靠坐标逐点配对，**配不上就报缺哪几点**，不许改成最近邻。"""
     import numpy as np
 
-    if len(pred_rows) != len(truth_rows):
-        raise SystemExit(f"[FAIL] 顶点数不等：基线 {len(pred_rows)} 真值 {len(truth_rows)}")
+    if len(pred_rows) != len(mesh_xy):
+        raise SystemExit(f"[FAIL] 基线行数 {len(pred_rows)} != 网格顶点数 {len(mesh_xy)}")
     xp = np.array([float(r["x_star"]) for r in pred_rows])
     yp = np.array([float(r["y_star"]) for r in pred_rows])
-    xt = np.array([float(r["x_star"]) for r in truth_rows])
-    yt = np.array([float(r["y_star"]) for r in truth_rows])
-    diff = np.abs(xp - xt) + np.abs(yp - yt)
-    scale = np.maximum(np.abs(xt), np.abs(yt)) + 1.0
-    rel_off = float(np.max(diff / scale))
-    if not rel_off <= 1.0e-5:          # FreeFEM 默认 6 位打印 ⇒ 只能按相对位差核，不许改成最近邻
-        raise SystemExit(f"[FAIL] 基线与真值场不同序/不同网格（最大相对坐标差 {rel_off:.3g}）——"
-                         "评分就废了")
+    xm = np.array([c[0] for c in mesh_xy])
+    ym = np.array([c[1] for c in mesh_xy])
+    rel_off = float(np.max((np.abs(xp - xm) + np.abs(yp - ym)) / (np.maximum(np.abs(xm), np.abs(ym)) + 1.0)))
+    if not rel_off <= 1.0e-5:
+        raise SystemExit(f"[FAIL] 基线打印的坐标与网格清单不符（最大相对差 {rel_off:.3g}）")
+    tmap = {}
+    for r in truth_rows:
+        k = _coord_key(r["x_star"], r["y_star"])
+        if k in tmap:
+            raise SystemExit(f"[FAIL] 真值场里有重复坐标 {k}，对齐尺不唯一")
+        tmap[k] = r
+    order, missing = [], 0
+    for c in mesh_xy:
+        r = tmap.get(_coord_key(c[0], c[1]))
+        if r is None:
+            missing += 1
+            if missing <= 3:
+                print("MISSING 网格顶点 (%.6g,%.6g) 在真值场里没有" % c)
+            continue
+        order.append(r)
+    if missing:
+        raise SystemExit(f"[FAIL] 网格顶点有 {missing} 个不在真值场里（共 {len(mesh_xy)}）——两把尺不同网格")
     p = np.array([float(r["p_star"]) for r in pred_rows])
-    pt = np.array([float(r["p_star"]) for r in truth_rows])
+    pt = np.array([float(r["p_star"]) for r in order])
     bc = np.array([int(r["bc_tag"]) for r in pred_rows])
     # 真值场用的是文字标签（field_dense.csv 的 boundary_type），基线沿用 .edp 的数字标签
     lab = {"inlet": 1, "outlet": 2, "wall": 3}
-    if "bc_tag" in truth_rows[0] and str(truth_rows[0].get("bc_tag") or "").strip().isdigit():
-        bc_t = np.array([int(r["bc_tag"]) for r in truth_rows])
-    else:
-        missing = {t for t in {r["boundary_type"] for r in truth_rows} if t not in lab}
-        if missing:
-            raise SystemExit(f"[FAIL] 真值场出现未知边界标签 {sorted(missing)}，无法与基线对齐")
-        bc_t = np.array([lab[r["boundary_type"]] for r in truth_rows])
+    bc_t = np.array([lab[r["boundary_type"]] for r in order])
     if not np.array_equal(bc, bc_t):
         raise SystemExit("[FAIL] 边界标记不同序（bc_tag 不一致）")
     pm = p - p.mean()
@@ -247,71 +329,61 @@ def rbf_selftest() -> int:
     return 0
 
 
-def c10(workdir: Path, truth_rows, reynolds=10.0, alpha=1.0) -> int:
-    """已知答案正对照 + 一条必红控制。返回 0=绿。"""
-    xy = [(float(r["x_star"]), float(r["y_star"])) for r in truth_rows]
+def solve_chain(workdir: Path, stem: str, beta: float, reynolds: float, convection: float,
+                cu, cv, pred: Path) -> list[dict]:
+    edp = build_edp(workdir, stem, beta=beta, reynolds=reynolds, convection=convection,
+                    u_vals=cu, v_vals=cv, pred=pred)
+    run_freefem(edp, workdir / (stem + ".log"))
+    return read_pred(pred)
+
+
+def c10(workdir: Path, mesh_xy, reynolds=10.0, alpha=1.0) -> int:
+    """已知答案正对照 + 一条必红控制。解析取 u=(αx,−αy)：散度自由、∇²u=0 ⇒ f=−Re·α²(x,y)
+    ⇒ p = −Re·α²(x²+y²)/2（差一个常数，正好是被去掉的那个）。"""
     import random
 
+    import numpy as np
+
     rng = random.Random(0)
-    idx = rng.sample(range(len(xy)), 63)                       # 与观测预算同量级的点数
-    obs = [xy[i] for i in idx]
-    ua = alpha
-    exact = lambda X: -reynolds * ua * ua * (X[0] ** 2 + X[1] ** 2) / 2.0
-    p_true = [exact(c) for c in xy]
+    idx = rng.sample(range(len(mesh_xy)), 63)                   # 与观测预算同量级的点数
+    obs = [mesh_xy[i] for i in idx]
+    p_true = np.array([-reynolds * alpha * alpha * (x * x + y * y) / 2.0 for x, y in mesh_xy])
+    p_true = p_true - p_true.mean()
     fails = []
     for convection, tag, want_pass in ((1.0, "正对照", True), (-1.0, "必红", False)):
-        ux = [ua * x for x, _ in obs]
-        vx = [-ua * y for _, y in obs]
-        cu, _ = rbf_complete(obs, ux, xy)
-        cv, _ = rbf_complete(obs, vx, xy)
-        udat, vdat = workdir / "c10_u.dat", workdir / "c10_v.dat"
-        write_dat(udat, xy, cu)
-        write_dat(vdat, xy, cv)
+        cu, _ = rbf_complete(obs, [alpha * x for x, _ in obs], mesh_xy)
+        cv, _ = rbf_complete(obs, [-alpha * y for _, y in obs], mesh_xy)
         pred = workdir / ("c10_pred_%s.csv" % ("ok" if want_pass else "red"))
-        edp = build_edp(workdir, "c10", beta=0.7, reynolds=reynolds, convection=convection,
-                        udat=udat, vdat=vdat, pred=pred)
-        rows = read_pred(run_freefem_and_read(edp, workdir / ("c10_%s.log" % tag), pred))
-        import numpy as np
-
+        rows = solve_chain(workdir, "c10" + tag, beta=0.7, reynolds=reynolds, convection=convection,
+                           cu=cu, cv=cv, pred=pred)
         pm = np.array([float(r["p_star"]) for r in rows])
         pm = pm - pm.mean()
-        ptm = np.array(p_true)
-        ptm = ptm - ptm.mean()
-        rel = float(np.linalg.norm(pm - ptm) / (np.linalg.norm(ptm) + 1e-12))
+        rel = float(np.linalg.norm(pm - p_true) / (np.linalg.norm(p_true) + 1e-12))
         ok = rel <= C10_TOL
-        print("C10 %s: conv=%+g 去均值压力相对误差=%.4g 期望=%s -> %s"
-              % (tag, convection, rel, ("≤%g" % C10_TOL) if want_pass else (">%g" % C10_RED_TOL),
-                 "OK" if ok == want_pass else "BAD"))
+        print("C10 %s: conv=%+g nv=%d 去均值压力相对误差=%.4g 期望=%s -> %s"
+              % (tag, convection, len(rows), rel,
+                 ("≤%g" % C10_TOL) if want_pass else (">%g" % C10_RED_TOL),
+                 "OK" if ok == want_pass else "BAD"), flush=True)
         if want_pass and not ok:
             fails.append("正对照不过（%.4g > %g）⇒ 装置不可信" % (rel, C10_TOL))
         if (not want_pass) and not (rel > C10_RED_TOL):
-            fails.append("必红控制没红（翻掉对流系数后误差只有 %.4g）⇒ 对流项根本没进装置" % rel)
+            fails.append("必红控制没红（把对流系数翻号后误差只有 %.4g）⇒ 对流项根本没进装置" % rel)
     return 1 if fails else 0
 
 
-def run_case(args, truth_rows, obs, outdir: Path, workdir: Path) -> dict:
-    xy = [(float(r["x_star"]), float(r["y_star"])) for r in truth_rows]
+def run_case(args, truth_rows, obs, outdir: Path, workdir: Path, mesh_xy) -> dict:
     pts = [(o[0], o[1]) for o in obs]
-    cu, cond_u = rbf_complete(pts, [o[2] for o in obs], xy)
-    cv, cond_v = rbf_complete(pts, [o[3] for o in obs], xy)
+    cu, cond_u = rbf_complete(pts, [o[2] for o in obs], mesh_xy)
+    cv, cond_v = rbf_complete(pts, [o[3] for o in obs], mesh_xy)
     stem = "assim_%s_%s_%s" % (args.case, args.quota, args.equation)
-    udat, vdat = workdir / (stem + "_u.dat"), workdir / (stem + "_v.dat")
-    write_dat(udat, xy, cu)
-    write_dat(vdat, xy, cv)
     pred = outdir / (stem + "_pred.csv")
     convection = 1.0 if args.equation == "ns" else 0.0
-    edp = build_edp(workdir, stem, beta=args.beta, reynolds=args.reynolds, convection=convection,
-                    udat=udat, vdat=vdat, pred=pred)
-    rows = read_pred(run_freefem_and_read(edp, workdir / (stem + ".log"), pred))
-    res = score(rows, truth_rows)
+    rows = solve_chain(workdir, stem, beta=args.beta, reynolds=args.reynolds,
+                       convection=convection, cu=cu, cv=cv, pred=pred)
+    res = score(rows, truth_rows, mesh_xy)
     res.update(case=args.case, quota=args.quota, equation=args.equation, reynolds=args.reynolds,
-               rbf_cond=max(cond_u, cond_v), pred_csv=str(pred), edp=str(edp))
+               n_obs=len(obs), rbf_cond=max(cond_u, cond_v), pred_csv=str(pred))
     return res
-
-
-def run_freefem_and_read(edp: Path, log: Path, pred: Path) -> list[dict]:
-    run_freefem(edp, log)
-    return read_pred(pred)
 
 
 def main() -> int:
@@ -335,21 +407,21 @@ def main() -> int:
     if a.rbf_check:
         return rbf_selftest()
 
+    # 网格顺序先取（C10 与常规格都靠它；文件名带 beta，换几何不可能静默复用旧清单）
+    mesh_xy = dump_mesh_order(workdir, a.beta)
+
     if a.selftest:
         rc = rbf_selftest()
         if rc:
             return rc
-        if not a.case:
-            raise SystemExit("[FAIL] C10 也要一枚真网格：--case 必须给")
-        truth = read_truth(root / "model" / "cases" / "contraction_2d" / "data" / a.case / "field_dense.csv")
-        return c10(workdir, truth, reynolds=a.reynolds)
+        return c10(workdir, mesh_xy, reynolds=a.reynolds)
 
     if not a.case:
         raise SystemExit("[FAIL] 常规模式要 --case")
     cdir = root / "model" / "cases" / "contraction_2d" / "data" / a.case
     truth = read_truth(cdir / "field_dense.csv")
     obs = read_obs_velocity_only(cdir / ("obs_sparse_%s_velocity_only.csv" % a.quota))
-    res = run_case(a, truth, obs, outdir, workdir)
+    res = run_case(a, truth, obs, outdir, workdir, mesh_xy)
     print("BASELINE " + " ".join("%s=%s" % (k, v) for k, v in res.items()))
     return 0
 
