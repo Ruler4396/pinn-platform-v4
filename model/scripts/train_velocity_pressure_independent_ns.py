@@ -33,6 +33,28 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REYNOLDS = 0.0
+BASE_SCRIPT = "train_velocity_pressure_independent.py"
+SCALE_VARIANT = "dense"      # dense＝主线稠密版从真值场取比例尺；scaler＝严格稀疏版从标准化器取
+
+# 两版主线的比例尺表达式（逐字符照抄，本件不复用其中一版去套另一版）：
+#   train_velocity_pressure_independent.py:369-376            ← nanmax(√(u²+v²)) ／ nanmax(p)−nanmin(p)
+#   train_velocity_pressure_independent_strict_sparse.py:380-385 ← ‖速度标准化器.std‖ ／ max(压力标准化器.std)
+# 挂错会怎样：稀疏臂里 NS 那一臂就会去读未观测点的真值，两臂差的就不只对流项——Stage 3 之所以站得住，
+# 正因为稠密版的尺度与被替换函数逐字相同（本回合复核过，见 Stage3 读数件 §四）。
+
+
+def 尺度对(variant: str, 速度标准化器, 压力标准化器, dense_split, np):
+    """返回 (velocity_scale, pressure_scale) 两个 float。`np` 作参数传入，是为了让这条
+    "读不读 dense 真值"的差别能在本机用纯 stdlib 测出来（真跑时传的是真 numpy）。"""
+    if variant == "scaler":
+        v = float(np.linalg.norm(np.asarray(速度标准化器.std, dtype=np.float64)))
+        p = float(np.max(np.asarray(压力标准化器.std, dtype=np.float64)))
+        return v, p
+    if variant != "dense":
+        raise SystemExit(f"[FAIL] 未知尺度口径 {variant!r}（只允许 dense／scaler）")
+    v = float(np.nanmax(np.sqrt(dense_split.targets_raw[:, 0] ** 2 + dense_split.targets_raw[:, 1] ** 2)))
+    pv = dense_split.targets_raw[:, 2]
+    return v, float(np.nanmax(pv) - np.nanmin(pv))
 
 
 def load_dep(name: str):
@@ -48,10 +70,10 @@ _base_cache = {}
 
 
 def the_base():
-    """主线模块——延迟加载，这样 `--ns-selftest` 只需要 torch，不需要 numpy/pandas。"""
-    if "m" not in _base_cache:
-        _base_cache["m"] = load_dep("train_velocity_pressure_independent.py")
-    return _base_cache["m"]
+    """被挂的主线模块——延迟加载，这样 `--ns-selftest` 只需要 torch，不需要 numpy/pandas。"""
+    if BASE_SCRIPT not in _base_cache:
+        _base_cache[BASE_SCRIPT] = load_dep(BASE_SCRIPT)
+    return _base_cache[BASE_SCRIPT]
 
 
 class _BaseProxy:
@@ -121,12 +143,9 @@ def 方程耦合损失_NS(速度模型, 压力模型, dense_split, 输入标准�
     u_xx, u_yy = g_ux[:, 0:1] / x_std, g_uy[:, 1:2] / y_std
     v_xx, v_yy = g_vx[:, 0:1] / x_std, g_vy[:, 1:2] / y_std
 
-    velocity_scale = torch.tensor(
-        max(float(np.nanmax(np.sqrt(dense_split.targets_raw[:, 0] ** 2 + dense_split.targets_raw[:, 1] ** 2))), 1.0e-12),
-        dtype=torch.float32, device=device)
-    pv = dense_split.targets_raw[:, 2]
-    pressure_scale = torch.tensor(
-        max(float(np.nanmax(pv) - np.nanmin(pv)), 1.0e-12), dtype=torch.float32, device=device)
+    v_val, p_val = 尺度对(SCALE_VARIANT, 速度标准化器, 压力标准化器, dense_split, np)
+    velocity_scale = torch.tensor(max(v_val, 1.0e-12), dtype=torch.float32, device=device)
+    pressure_scale = torch.tensor(max(p_val, 1.0e-12), dtype=torch.float32, device=device)
 
     continuity = u_x / velocity_scale + v_y / velocity_scale
     cu, cv = 对流项(u, v, u_x, u_y, v_x, v_y, REYNOLDS, velocity_scale)
@@ -138,6 +157,92 @@ def 方程耦合损失_NS(速度模型, 压力模型, dense_split, 输入标准�
         "平均散度绝对值": torch.mean(torch.abs(continuity)),
         "最大散度绝对值": torch.max(torch.abs(continuity)),
     }
+
+
+def scale_selftest() -> int:
+    """`尺度对` 的四条控制，纯 stdlib（np 是注入的假模块）⇒ 本机就能跑，不必等实例。
+    要点是第 ②③ 条：scaler 分支**不许碰** dense 真值，dense 分支**必须碰**——
+    一条只测"不读"的断言可以恒真，所以两条一起写。"""
+    import math
+
+    class _Vec(list):
+        def __pow__(self, e): return _Vec([x ** e for x in self])
+        def __add__(self, o): return _Vec([a + b for a, b in zip(self, o)])
+
+    class _NP:
+        float64 = float
+
+        class linalg:
+            @staticmethod
+            def norm(v): return math.sqrt(sum(float(x) ** 2 for x in v))
+
+        @staticmethod
+        def asarray(x, dtype=None): return list(x)
+
+        @staticmethod
+        def max(v): return max(v)
+
+        @staticmethod
+        def nanmax(v): return max(v)
+
+        @staticmethod
+        def nanmin(v): return min(v)
+
+        @staticmethod
+        def sqrt(v): return _Vec([math.sqrt(x) for x in v])
+
+    class _Boom:
+        def __getattr__(self, name): raise AssertionError("scaler 分支读了 dense_split." + name)
+        def __getitem__(self, key): raise AssertionError("scaler 分支读了 dense 真值")
+
+    class _Cols:
+        def __init__(self, cols): self.cols = cols
+        def __getitem__(self, key): return _Vec(self.cols[key[1]])
+
+    class Split:
+        def __init__(self, cols): self.targets_raw = _Cols(cols)
+
+    class Scaler:
+        def __init__(self, std): self.std = std
+
+    fails = []
+    v, p = 尺度对("scaler", Scaler([3.0, 4.0]), Scaler([0.2, 0.7]), _Boom(), _NP)
+    good1 = abs(v - 5.0) < 1e-12 and abs(p - 0.7) < 1e-12
+    print("[%s] ① scaler 口径：v=‖std‖、p=max(std) 复算 = %g / %g（期望 5 / 0.7）"
+          % ("PASS" if good1 else "FAIL", v, p))
+    fails += [] if good1 else ["scaler 数值错"]
+    try:
+        尺度对("scaler", Scaler([3.0, 4.0]), Scaler([0.2, 0.7]), _Boom(), _NP)
+        touched = False
+    except AssertionError:
+        touched = True
+    good2 = not touched
+    print("[%s] ② scaler 分支在 dense 真值\"一读就抛\"的桩上跑完 ⇒ 它确实不读未观测标签"
+          % ("PASS" if good2 else "FAIL"))
+    fails += [] if good2 else ["scaler 分支读了 dense 真值"]
+    try:
+        尺度对("dense", Scaler([3.0, 4.0]), Scaler([0.2, 0.7]), _Boom(), _NP)
+        raised = False
+    except AssertionError:
+        raised = True
+    good3 = raised
+    print("[%s] ③ 反对照：dense 分支在同一个桩上必须抛（不抛＝②是恒真断言）"
+          % ("PASS" if good3 else "FAIL"))
+    fails += [] if good3 else ["dense 分支没读真值，②就不作数"]
+    v, p = 尺度对("dense", Scaler([1.0]), Scaler([1.0]),
+                  Split([_Vec([3.0, 3.0]), _Vec([4.0, 4.0]), _Vec([10.0, 2.0])]), _NP)
+    good4 = abs(v - 5.0) < 1e-12 and abs(p - 8.0) < 1e-12
+    print("[%s] ④ dense 口径数值复算 = %g / %g（期望 5 / 8）" % ("PASS" if good4 else "FAIL", v, p))
+    fails += [] if good4 else ["dense 数值错"]
+    try:
+        尺度对("whatever", Scaler([1.0]), Scaler([1.0]), _Boom(), _NP)
+        refused = False
+    except SystemExit:
+        refused = True
+    print("[%s] ⑤ 未知口径名被拒（不静默退回默认）%s" % ("PASS" if refused else "FAIL", ""))
+    fails += [] if refused else ["未知口径没拒"]
+    print("SCALE_SELFTEST " + ("ALL GREEN" if not fails else "FAILED | " + " | ".join(fails)))
+    return 1 if fails else 0
 
 
 # ---------------------------------------------------- 运行期把 NS 档挂进收缩族工况表
@@ -286,26 +391,38 @@ def ns_selftest() -> int:
         fails.append("Re=0 未交回主线")
 
     print("[SCOPE] 本自检不覆盖端到端：真网上'动量随 Re 变化'与四项键齐全留给实例侧 8-epoch 冒烟格")
+    rc_scale = scale_selftest()
     rc_reg = registry_selftest()
-    print("NS_SELFTEST " + ("ALL GREEN" if not fails and rc_reg == 0 else "FAILED")
+    print("NS_SELFTEST " + ("ALL GREEN" if not fails and rc_scale == 0 and rc_reg == 0 else "FAILED")
           + ("" if not fails else " | " + " | ".join(fails)))
-    return 1 if (fails or rc_reg) else 0
+    return 1 if (fails or rc_scale or rc_reg) else 0
 
 
 def main() -> int:
-    global REYNOLDS
+    global REYNOLDS, BASE_SCRIPT, SCALE_VARIANT
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--reynolds", type=float, default=None,
                     help="对流项系数（真值同族 star 单位下即 Re）；不给则 0＝纯 Stokes 复算")
     ap.add_argument("--ns-selftest", action="store_true")
     ap.add_argument("--ns-registry-selftest", action="store_true",
                     help="只跑第四道闸（纯 stdlib，本机可跑）")
+    ap.add_argument("--ns-scale-selftest", action="store_true",
+                    help="只跑尺度口径的四条控制（纯 stdlib，本机可跑）")
+    ap.add_argument("--base-script", choices=("mainline", "strict-sparse"), default="mainline",
+                    help="挂哪一版主线：mainline＝稠密三阶段（尺度取自真值场）；"
+                         "strict-sparse＝论文表5-5/5-6 那版（尺度取自观测点拟合的标准化器）")
     known, rest = ap.parse_known_args()
+    if known.ns_scale_selftest:
+        return scale_selftest()
+    if known.base_script == "strict-sparse":
+        BASE_SCRIPT = "train_velocity_pressure_independent_strict_sparse.py"
+        SCALE_VARIANT = "scaler"
     if known.ns_selftest:
         return ns_selftest()
     if known.ns_registry_selftest:
         return registry_selftest()
     REYNOLDS = 0.0 if known.reynolds is None else float(known.reynolds)
+    print("[NS-base] base=%s scale=%s Re=%g" % (BASE_SCRIPT, SCALE_VARIANT, REYNOLDS), flush=True)
     bm = the_base()
     registered = 注册NS工况(从argv取工况(rest))
     for cid in registered:
