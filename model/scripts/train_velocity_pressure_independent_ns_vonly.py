@@ -26,6 +26,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 NS_SCRIPT = "train_velocity_pressure_independent_ns.py"
 
 _FIT_LOG = {"vel_std": None, "fallback_count": 0}
+P_SCALE_MODE = "auto"      # auto＝‖观测速度std‖（预注册 §六.1 的约定）；one＝不归一（敏感性对照）
 
 
 def load_dep(name: str):
@@ -64,6 +65,10 @@ def install_scaler_patch(bm) -> None:
                     "[FAIL] 压力列全空但先前没拟合过速度标准化器——回退尺度无来源。"
                     "顺序假设（速度先、压力后）已不成立，别改这里，去把尺度显式传进来。")
             p_scale = _norm(_FIT_LOG["vel_std"])
+            if P_SCALE_MODE == "one":
+                p_scale = 1.0
+                print("[C7-fallback] 敏感性对照档：压力尺度=1.0（不归一，网络直接输出 p 的量值）；"
+                      "这一档**不是**登记臂，只用来说明回退尺度本身的影响", flush=True)
             if not p_scale > 0:
                 raise SystemExit(f"[FAIL] 回退压力尺度算出来是 {p_scale}，不是正数")
             _FIT_LOG["fallback_count"] += 1
@@ -142,13 +147,19 @@ def vonly_selftest() -> int:
 
 
 def main() -> int:
+    global P_SCALE_MODE
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--vonly-selftest", action="store_true",
                     help="C7 三桩 + 压力监督空目标断言（需 numpy/torch ⇒ 实例上跑）")
+    ap.add_argument("--vonly-pressure-scale", choices=("auto", "one"), default="auto",
+                    help="回退尺度的取法：auto＝‖观测速度std‖（登记臂）；"
+                         "one＝不归一，只作敏感性对照，用完即弃、不进判决")
     ap.add_argument("--base-script", choices=("mainline", "strict-sparse"), default="strict-sparse")
     known, rest = ap.parse_known_args()
     if known.vonly_selftest:
         return vonly_selftest()
+    P_SCALE_MODE = known.vonly_pressure_scale
+    print("[NS-vonly] 压力回退尺度档=%s" % P_SCALE_MODE, flush=True)
 
     nsmod = load_dep(NS_SCRIPT)
     if known.base_script == "strict-sparse":
