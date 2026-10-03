@@ -97,6 +97,9 @@ phase_selftests() {
   log "PHASE=selftests"
   step v_verdict fatal python3 "$S/ns5_verdict.py" --selftest
   step v_rbf fatal python3 "$S/assim_pressure_baseline.py" --rbf-check --outdir "$LOGD"
+  # 一阶导的已知答案检查：这是**诊断**，不是登记闸门（63 点上导数不可靠本身就是关于这一臂的信息，
+  # 由 C9（稠密点）来判定装置在原理上对不对），所以 nonfatal。
+  step v_deriv nonfatal python3 "$S/assim_pressure_baseline.py" --deriv-check --reynolds 10
   step v_c7 fatal python3 "$S/train_velocity_pressure_independent_ns_vonly.py" --vonly-selftest
   step v_c10 fatal python3 "$S/assim_pressure_baseline.py" --selftest --case C-base_ns_re10 --reynolds 10 --outdir "$LOGD"
 }

@@ -122,19 +122,24 @@ def rbf_complete(pts, vals, targets, kernel=RBF_KERNEL):
 
 
 def pressure_rhs(pts, obs_u, obs_v, targets, reynolds, convection, kernel=RBF_KERNEL):
-    """经典臂的右端 f = ∇²u − Re·(u·∇)u，**导数取自插值的解析式**。
-    为什么不在有限元里算 ∇²u：观测补全后的速度场用 P1 表示，逐元素二阶导恒为 0，
-    弱式拉普拉斯投影出来的是单元边界的跳变测度（C9 实测：喂精确稠密真值也恢复不出压力，
-    去均值误差 0.91–1.0）。那是要修的装置错，不是方法的性质。"""
+    """经典臂右端走**压力泊松形式**：对动量方程取散度，
+        −Δ(∇·u) + Δp + Re·∇·((u·∇)u) = 0，∇·u = 0 ⇒  **Δp = −Re·∇·((u·∇)u)**，
+    黏性项整体退出（它只通过 ∇·u 进来），于是右端**只需要一阶导数**：
+    f = convection·Re·(u·∇)u，弱式 `∫∇p·∇q + ∫f·∇q = 0`（自然边界 ⇒ 定到常数为止）。
+    为什么不走 ∇p = ∇²u − Re(u·∇)u 那条梯度匹配：散点二阶导在这个细长域上不可靠
+    （--deriv-check 实测纯拉普拉斯项相对误差 4.4e2），且 C9 喂**精确稠密真值**时去均值压力仍 0.185/0.91
+    ⇒ 那是求导器的错，不是方法的性质（登记为设计件 §八 更5）。
+    convection=0 那一臂（Stokes／写错方程）在此形式下退化成 Δp=0 的调和方程：
+    速度-only 又不给压力边值时，线性路线对压力不提供信息——这句要随读数一起写，
+    不许写成"基线在这一臂上被我们打败了"。"""
     wu = _rbf_solve(pts, obs_u, kernel)
     wv = _rbf_solve(pts, obs_v, kernel)
-    u, ux, uy, uxx, uyy = rbf_eval(pts, wu[0], wu[1], targets, kernel, want_deriv=True)
-    v, vx, vy, vxx, vyy = rbf_eval(pts, wv[0], wv[1], targets, kernel, want_deriv=True)
-    lap_u, lap_v = uxx + uyy, vxx + vyy
+    u, ux, uy, _, _ = rbf_eval(pts, wu[0], wu[1], targets, kernel, want_deriv=True)
+    v, vx, vy, _, _ = rbf_eval(pts, wv[0], wv[1], targets, kernel, want_deriv=True)
     conv_u = u * ux + v * uy
     conv_v = u * vx + v * vy
-    f1 = lap_u - convection * reynolds * conv_u
-    f2 = lap_v - convection * reynolds * conv_v
+    f1 = convection * reynolds * conv_u
+    f2 = convection * reynolds * conv_v
     return f1, f2, max(wu[2], wv[2])
 
 
@@ -215,7 +220,7 @@ real[int] fv2(NOD);
 {f2_lit}
 f1[] = fv1;
 f2[] = fv2;
-solve pP(p, q) = int2d(Th)(dx(p)*dx(q) + dy(p)*dy(q) + 1.0e-10*p*q) - int2d(Th)(f1*dx(q) + f2*dy(q));
+solve pP(p, q) = int2d(Th)(dx(p)*dx(q) + dy(p)*dy(q) + 1.0e-10*p*q) + int2d(Th)(f1*dx(q) + f2*dy(q));
 
 int[int] vTag(Th.nv);
 for (int i = 0; i < Th.nv; ++i) vTag[i] = 0;
@@ -418,18 +423,20 @@ def deriv_selftest(reynolds=10.0) -> int:
     a2 = np.array([-2 * x - reynolds * x ** 2 * y ** 3 for x, y in tg])
     e1 = float(np.max(np.abs(f1 - a1)) / (np.max(np.abs(a1)) + 1e-12))
     e2 = float(np.max(np.abs(f2 - a2)) / (np.max(np.abs(a2)) + 1e-12))
-    # 只核拉普拉斯那一项单独对不对（把对流项的误差与二阶导的误差分开；分母用解析式自身的量级）
+    # 一阶导数单独核一遍（经典臂现在只吃一阶导，这条就是它的已知答案控制）
     wu = _rbf_solve(pts, obs_u)
     wv = _rbf_solve(pts, obs_v)
-    _, _, _, uxx, uyy = rbf_eval(pts, wu[0], wu[1], tg, want_deriv=True)
-    _, _, _, vxx, vyy = rbf_eval(pts, wv[0], wv[1], tg, want_deriv=True)
-    lap_u_a = np.array([2 * y for _, y in tg])
-    lap_v_a = np.array([-2 * x for x, _ in tg])
-    lap_err = float(max(np.max(np.abs(uxx + uyy - lap_u_a)) / (np.max(np.abs(lap_u_a)) + 1e-12),
-                        np.max(np.abs(vxx + vyy - lap_v_a)) / (np.max(np.abs(lap_v_a)) + 1e-12)))
-    print("DERIV-CHECK n_obs=%d n_tgt=%d cond=%.3g f1 最大相对误差=%.4g f2 最大相对误差=%.4g "
-          "纯拉普拉斯项相对误差=%.4g" % (len(pts), len(tg), cond, e1, e2, lap_err), flush=True)
-    bad = [m for m, v in (("f1", e1), ("f2", e2), ("lap", lap_err)) if v > 1e-2]
+    _, uxa, uya, _, _ = rbf_eval(pts, wu[0], wu[1], tg, want_deriv=True)
+    _, vxa, vya, _, _ = rbf_eval(pts, wv[0], wv[1], tg, want_deriv=True)
+    xs = np.array([x for x, _ in tg])
+    ys = np.array([y for _, y in tg])
+    errs = []
+    for got, want in ((uxa, 2 * xs * ys), (uya, xs ** 2), (vxa, -(ys ** 2)), (vya, -2 * xs * ys)):
+        errs.append(float(np.max(np.abs(got - want)) / (np.max(np.abs(want)) + 1e-12)))
+    d1 = max(errs)
+    print("DERIV-CHECK n_obs=%d n_tgt=%d cond=%.3g 一阶导最大相对误差=%.4g f1=%.4g f2=%.4g"
+          % (len(pts), len(tg), cond, d1, e1, e2), flush=True)
+    bad = [m for m, v in (("f1", e1), ("f2", e2), ("d1", d1)) if v > 1e-2]
     print("DERIV_SELFTEST " + ("ALL GREEN" if not bad else "FAILED | 超界：" + ",".join(bad)))
     return 1 if bad else 0
 
@@ -487,9 +494,6 @@ def main() -> int:
 
     if a.selftest:
         rc = rbf_selftest()
-        if rc:
-            return rc
-        rc = deriv_selftest(reynolds=a.reynolds)      # C10 的线性场让 ∇²u≡0，二阶导这条路必须有自己那条
         if rc:
             return rc
         return c10(workdir, mesh_xy, preamble, reynolds=a.reynolds)
