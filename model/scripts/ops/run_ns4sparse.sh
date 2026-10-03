@@ -306,6 +306,7 @@ out = []
 # 动量项的具体值由 weights.tsv 印在读数旁边，读者能看见每臂实际用了多少。
 want_ns = {"耦合连续性": 0.1, "速度阶段连续性": 0.3, "压力阶段动量": 0.5}
 c4_bad, c4_na = [], []
+mom_seen = set()   # 实际检到的动量权重，PASS 那行要把真值印出来，不能写死 10.0
 for key, w in wts.items():
     arm = key[1]
     if w.startswith("NA"):
@@ -323,6 +324,8 @@ for key, w in wts.items():
             c4_bad.append(("三项权重与档位不符", key, got))
         if not got.get("耦合动量", 0) > 0:
             c4_bad.append(("物理臂的动量权重不是正数", key, got))
+        else:
+            mom_seen.add(str(got.get("耦合动量")))
 out.append("== C4 权重核对（读 config.json 的\"权重\"段；无物理臂四项皆 0，两物理臂三项按档位 + 动量项 >0）")
 if c4_bad:
     for b in c4_bad: out.append("C4 = FAIL " + repr(b))
@@ -330,7 +333,8 @@ if c4_bad:
 elif c4_na:
     out.append("C4 = INDETERMINATE（这些格没读到权重：" + ";".join(c4_na[:6]) + "）=> J2 不进判决")
 else:
-    out.append("C4 = PASS（无物理臂四项皆 0；NS/Stokes 两臂 10.0/0.1/0.3/0.5）")
+    mom = "/".join(sorted(mom_seen)) if mom_seen else "无"
+    out.append("C4 = PASS（无物理臂四项皆 0；两物理臂三项 = 0.1/0.3/0.5，动量项实测 " + mom + "）")
 c4_ok = not c4_bad and not c4_na
 out.append("")
 out.append("== per-arm (mean+-sd over seeds, ddof=1; wall = 训练墙钟 ms)")
