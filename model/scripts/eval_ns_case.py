@@ -31,7 +31,7 @@ def load(name: str):
 
 
 def main() -> int:
-    ns = load("train_velocity_pressure_independent_ns")
+    ns = load("train_velocity_pressure_independent_ns.py")
     argv = sys.argv[1:]
     ids: list[str] = []
     for i, a in enumerate(argv):

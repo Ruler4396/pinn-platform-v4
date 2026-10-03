@@ -300,9 +300,11 @@ for r in rows:
 cols = ["rel_l2_speed", "rel_l2_p", "pressure_drop_rel_error", "rel_l2_u", "rel_l2_v"]
 JUD = ("rel_l2_speed", "rel_l2_p")
 out = []
-# C4：无物理臂的四个 PDE 权重必须确为 0，另两臂必须确为 10.0/0.1/0.3/0.5。
-# 读不到权重（NA）时**不默认通过**：J2 直接判"不进判决"，并说明缺哪一件。
-want_ns = {"耦合动量": 10.0, "耦合连续性": 0.1, "速度阶段连续性": 0.3, "压力阶段动量": 0.5}
+# C4：无物理臂的四个 PDE 权重必须确为 0；两物理臂必须是"其余三项按档位、动量项 >0"。
+# **动量权重是对齐批的被试量，不能再钉死成 10.0**（第一版把它写死，于是对齐批一跑就 C4=FAIL，
+# 把 J2 整条判成"未判"——那是检查器的错，不是数据的错）。现在：钉死其余三项 + 动量项要求 >0，
+# 动量项的具体值由 weights.tsv 印在读数旁边，读者能看见每臂实际用了多少。
+want_ns = {"耦合连续性": 0.1, "速度阶段连续性": 0.3, "压力阶段动量": 0.5}
 c4_bad, c4_na = [], []
 for key, w in wts.items():
     arm = key[1]
@@ -318,8 +320,10 @@ for key, w in wts.items():
         if any(abs(v) > 0 for v in got.values()): c4_bad.append(("nophy 权重非 0", key, got))
     else:
         if any(abs(got.get(k, -1) - v) > 1e-9 for k, v in want_ns.items()):
-            c4_bad.append(("两臂权重与档位不符", key, got))
-out.append("== C4 无物理臂的权重核对（读 config.json 的 \"权重\" 段）")
+            c4_bad.append(("三项权重与档位不符", key, got))
+        if not got.get("耦合动量", 0) > 0:
+            c4_bad.append(("物理臂的动量权重不是正数", key, got))
+out.append("== C4 权重核对（读 config.json 的\"权重\"段；无物理臂四项皆 0，两物理臂三项按档位 + 动量项 >0）")
 if c4_bad:
     for b in c4_bad: out.append("C4 = FAIL " + repr(b))
     out.append("=> 装置污染：J2 不进判决，先排查")
