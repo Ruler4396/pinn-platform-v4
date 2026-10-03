@@ -246,7 +246,7 @@ lines = []
 verdicts = {}
 for lvl in ("1", "10", "50", "1e-3"):
     for m in METRICS + EXTRA:
-        ds, ns_vals, seeds = [], [], []
+        ds, ns_vals, stk_vals, seeds = [], [], [], []
         for s in sorted({k[2] for k in cell}):
             a = cell.get((lvl, "stokes", s), {}).get(m)
             b = cell.get((lvl, "ns", s), {}).get(m)
@@ -254,6 +254,7 @@ for lvl in ("1", "10", "50", "1e-3"):
                 continue
             ds.append(a - b)          # >0 means the NS-residual arm is better
             ns_vals.append(b)
+            stk_vals.append(a)
             seeds.append(s)
         if not ds:
             lines.append(f"{lvl}\t0\t{m}\tNO-PAIRS")
@@ -264,13 +265,27 @@ for lvl in ("1", "10", "50", "1e-3"):
             sd = st.stdev(ns_vals)
         except st.StatisticsError:
             sd = float("nan")
+        # 判据第三条的"该臂跨种子 std"这句有歧义：本实现钉死取 **NS 臂**（分母写在下面 ns_sd），
+        # 同时把 Stokes 臂的 sd 也印出来（st_sd），另一种读法读者可自行核，不用重跑。
+        try:
+            st_sd = st.stdev(stk_vals)
+        except st.StatisticsError:
+            st_sd = float("nan")
         pos = sum(1 for d in ds if d > 0)
         n = len(ds)
+        # d_sd = 配对差自己的散布（登记外的诊断量）：判据第三条拿的是"NS 臂跨种子 sd"，
+        # 那把尺里含种子效应；读者要判断"这个 med_d 是不是只是配对噪声"看的是 d_sd。两个都给。
+        try:
+            d_sd = st.stdev(ds)
+        except st.StatisticsError:
+            d_sd = float("nan")
         ok = med > 0 and pos >= (2 * n + 2) // 3 and (sd == sd and med >= sd / 3.0)
         if m in METRICS:
             verdicts[(lvl, m)] = ok
         lines.append(f"{lvl}\t{n}\t{m}\tmed_d={med:+.6g}\tmean_d={st.mean(ds):+.6g}"
-                     f"\tns_sd={sd:.4g}\tNSarm_better={pos}/{n}\tseedwise=["
+                     f"\tns_sd={sd:.4g}\tst_sd={st_sd:.4g}\td_sd={d_sd:.4g}\tmed_d/d_sd="
+                     + (f"{med/d_sd:+.2f}" if d_sd == d_sd and d_sd > 0 else "NA")
+                     + f"\tNSarm_better={pos}/{n}\tseedwise=["
                      + ",".join(f"{d:+.5g}" for d in ds) + f"]\trule={'MET' if ok else 'not met'}"
                      + ("" if m in METRICS else "  [登记外：不进判决]"))
 print("\n".join(lines))
