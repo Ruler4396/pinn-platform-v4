@@ -121,6 +121,30 @@ def rbf_complete(pts, vals, targets, kernel=RBF_KERNEL):
     return rbf_eval(pts, w, pv, targets, kernel), cond
 
 
+def local_deriv(pts, vals, targets, k=10):
+    """邻域二次最小二乘求导（PIV 压力重建里实际在用的做法）。
+    不用整体样条的解析导数：它把量级抹掉了——稠密真值速度喂进来时
+    corr(p_base,p_true)=0.895 但幅度只有真值的 10.6%；63 点的已知答案检查更是一阶导相对误差 21.4。"""
+    import numpy as np
+
+    P = np.asarray(pts, dtype=np.float64)
+    T = np.asarray(targets, dtype=np.float64)
+    y = np.asarray(vals, dtype=np.float64)
+    kk = int(max(6, min(k, len(P))))
+    gx = np.zeros(len(T))
+    gy = np.zeros(len(T))
+    for i in range(len(T)):
+        d2 = ((P - T[i]) ** 2).sum(axis=1)
+        j = np.argpartition(d2, kk - 1)[:kk]
+        dx = P[j, 0] - T[i, 0]
+        dy = P[j, 1] - T[i, 1]
+        A = np.column_stack([np.ones(kk), dx, dy, dx * dx, dy * dy, dx * dy])
+        sol = np.linalg.lstsq(A, y[j], rcond=None)[0]
+        gx[i] = sol[1]
+        gy[i] = sol[2]
+    return gx, gy
+
+
 def pressure_rhs(pts, obs_u, obs_v, targets, reynolds, convection, kernel=RBF_KERNEL):
     """经典臂右端走**压力泊松形式**：对动量方程取散度，
         −Δ(∇·u) + Δp + Re·∇·((u·∇)u) = 0，∇·u = 0 ⇒  **Δp = −Re·∇·((u·∇)u)**，
@@ -129,18 +153,22 @@ def pressure_rhs(pts, obs_u, obs_v, targets, reynolds, convection, kernel=RBF_KE
     为什么不走 ∇p = ∇²u − Re(u·∇)u 那条梯度匹配：散点二阶导在这个细长域上不可靠
     （--deriv-check 实测纯拉普拉斯项相对误差 4.4e2），且 C9 喂**精确稠密真值**时去均值压力仍 0.185/0.91
     ⇒ 那是求导器的错，不是方法的性质（登记为设计件 §八 更5）。
+    导数怎么给：值用薄板样条补全到节点，**导数在补全后的节点场上做邻域二次最小二乘**（local_deriv）。
     convection=0 那一臂（Stokes／写错方程）在此形式下退化成 Δp=0 的调和方程：
     速度-only 又不给压力边值时，线性路线对压力不提供信息——这句要随读数一起写，
     不许写成"基线在这一臂上被我们打败了"。"""
     wu = _rbf_solve(pts, obs_u, kernel)
     wv = _rbf_solve(pts, obs_v, kernel)
-    u, ux, uy, _, _ = rbf_eval(pts, wu[0], wu[1], targets, kernel, want_deriv=True)
-    v, vx, vy, _, _ = rbf_eval(pts, wv[0], wv[1], targets, kernel, want_deriv=True)
+    cond = max(wu[2], wv[2])
+    u = rbf_eval(pts, wu[0], wu[1], targets, kernel)
+    v = rbf_eval(pts, wv[0], wv[1], targets, kernel)
+    ux, uy = local_deriv(targets, u, targets)
+    vx, vy = local_deriv(targets, v, targets)
     conv_u = u * ux + v * uy
     conv_v = u * vx + v * vy
     f1 = convection * reynolds * conv_u
     f2 = convection * reynolds * conv_v
-    return f1, f2, max(wu[2], wv[2])
+    return f1, f2, cond
 
 
 def mesh_preamble(cfd_edp: Path) -> str:
@@ -423,18 +451,18 @@ def deriv_selftest(reynolds=10.0) -> int:
     a2 = np.array([-2 * x - reynolds * x ** 2 * y ** 3 for x, y in tg])
     e1 = float(np.max(np.abs(f1 - a1)) / (np.max(np.abs(a1)) + 1e-12))
     e2 = float(np.max(np.abs(f2 - a2)) / (np.max(np.abs(a2)) + 1e-12))
-    # 一阶导数单独核一遍（经典臂现在只吃一阶导，这条就是它的已知答案控制）
-    wu = _rbf_solve(pts, obs_u)
-    wv = _rbf_solve(pts, obs_v)
-    _, uxa, uya, _, _ = rbf_eval(pts, wu[0], wu[1], tg, want_deriv=True)
-    _, vxa, vya, _, _ = rbf_eval(pts, wv[0], wv[1], tg, want_deriv=True)
+    # 一阶导数单独核一遍：走**臂实际用的那条路**（样条补全值 → 邻域二次最小二乘求导）
+    u_val = rbf_eval(pts, *_rbf_solve(pts, obs_u)[:2], tg)
+    v_val = rbf_eval(pts, *_rbf_solve(pts, obs_v)[:2], tg)
+    uxa, uya = local_deriv(tg, u_val, tg)
+    vxa, vya = local_deriv(tg, v_val, tg)
     xs = np.array([x for x, _ in tg])
     ys = np.array([y for _, y in tg])
     errs = []
     for got, want in ((uxa, 2 * xs * ys), (uya, xs ** 2), (vxa, -(ys ** 2)), (vya, -2 * xs * ys)):
         errs.append(float(np.max(np.abs(got - want)) / (np.max(np.abs(want)) + 1e-12)))
     d1 = max(errs)
-    print("DERIV-CHECK n_obs=%d n_tgt=%d cond=%.3g 一阶导最大相对误差=%.4g f1=%.4g f2=%.4g"
+    print("DERIV-CHECK n_obs=%d n_tgt=%d cond=%.3g 邻域最小二乘一阶导最大相对误差=%.4g f1=%.4g f2=%.4g"
           % (len(pts), len(tg), cond, d1, e1, e2), flush=True)
     bad = [m for m, v in (("f1", e1), ("f2", e2), ("d1", d1)) if v > 1e-2]
     print("DERIV_SELFTEST " + ("ALL GREEN" if not bad else "FAILED | 超界：" + ",".join(bad)))
