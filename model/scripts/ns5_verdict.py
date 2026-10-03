@@ -107,14 +107,14 @@ def pinn_score(res_root: Path, out_tsv: Path) -> int:
     hdr = ["level", "quota", "arm", "seed", "block"] + list(METRICS) + ["pred_csv", "n_points"]
     lines, n_ok = ["\t".join(hdr)], 0
     for run in sorted(p.name for p in res_root.iterdir() if p.is_dir()):
-        if not run.startswith("ns5_"):
+        if not run.startswith(("ns5_", "ns5solo_")):
             continue
         parts = run.split("_")
         if len(parts) < 5:
-            print(f"SKIP {run}: run 名不符 ns5_<档>_<配额>_<臂>_s<种子>[_solo]")
+            print(f"SKIP {run}: run 名不符 ns5[_solo]<档>_<配额>_<臂>_s<种子>")
             continue
         lvl, quota, arm, seed = parts[1], parts[2], parts[3], parts[4]
-        block = "solo" if len(parts) > 5 and parts[5] == "solo" else "main"
+        block = "solo" if parts[0] == "ns5solo" else "main"
         f = res_root / run / "predictions" / f"C-val_ns_re{lvl}_predictions.csv"
         if not f.exists():
             print(f"SKIP {run}: 没有 {f.name}")

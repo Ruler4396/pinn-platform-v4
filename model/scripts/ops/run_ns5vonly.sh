@@ -149,7 +149,10 @@ run_cell() {  # run_cell <lvl> <quota> <arm> <seed> <block> <train_cases>
     --run-name "$name" --seed "$SEED" $SP_ARGS $(src_flags "$Q") $extra
   t1=$(date +%s%N)
   log "CELL $name wall_ms=$(( (t1 - t0) / 1000000 ))"
-  check_sources "$name" "$Q" >>"$LOGD/cell_${name}.log" 2>&1 || log "FATAL SOURCE-MISMATCH $name（观测源没挂上，这一格不进判决）"
+  if ! check_sources "$name" "$Q" >>"$LOGD/cell_${name}.log" 2>&1; then
+    log "FATAL SOURCE-MISMATCH $name —— 观测源没挂上，这一格不进判决，整批停"
+    exit 1
+  fi
 }
 
 phase_smoke() {
@@ -258,4 +261,6 @@ case "${1:-}" in
        phase_baseline; phase_score; phase_judge;;
   *) echo "usage: $0 {preflight|obs|selftests|c6|smoke|matrix|baseline|score|judge|all}"; exit 2;;
 esac
-log "SUMMARY phase=${1:-all} ok=1 logs=$LOGD"
+RC=$?
+log "SUMMARY phase=${1:-all} ok=$((1 - (RC > 0))) rc=$RC logs=$LOGD"
+exit "$RC"

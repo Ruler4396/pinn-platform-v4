@@ -260,9 +260,20 @@ def score(pred_rows, truth_rows, mesh_xy, labels=(1, 2)) -> dict:
     p = np.array([float(r["p_star"]) for r in pred_rows])
     pt = np.array([float(r["p_star"]) for r in order])
     bc = np.array([int(r["bc_tag"]) for r in pred_rows])
-    # 真值场用的是文字标签（field_dense.csv 的 boundary_type），基线沿用 .edp 的数字标签
+    # 真值场用的是文字标签（field_dense.csv 的 boundary_type，含 interior），基线沿用 .edp 的数字标签
     lab = {"inlet": 1, "outlet": 2, "wall": 3}
-    bc_t = np.array([lab[r["boundary_type"]] for r in order])
+    census = {}
+    for r in order:
+        b = r["boundary_type"]
+        census[b] = census.get(b, 0) + 1
+    unmapped = sorted(b for b in census if b not in lab)
+    print("BOUNDARY-CENSUS %s（未映射的按 interior=0 处理，只有 inlet/outlet 进压降）"
+          % " ".join("%s=%d" % (k, v) for k, v in sorted(census.items())), flush=True)
+    for b in unmapped:
+        if census[b] > 0 and b not in ("interior",):
+            raise SystemExit(f"[FAIL] 出现未知边界标签 {b!r}（{census[b]} 个点），"
+                             "不能默认它不参与压降")
+    bc_t = np.array([lab.get(r["boundary_type"], 0) for r in order])
     if not np.array_equal(bc, bc_t):
         raise SystemExit("[FAIL] 边界标记不同序（bc_tag 不一致）")
     pm = p - p.mean()
