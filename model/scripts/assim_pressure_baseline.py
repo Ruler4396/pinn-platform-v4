@@ -151,9 +151,10 @@ def dump_mesh_order(workdir: Path, beta: float) -> list[tuple[float, float]]:
 
 
 def _literal(name: str, values) -> str:
-    parts = ["%.10g" % float(v) for v in values]
-    chunks = ", ".join(", ".join(parts[i:i + 8]) for i in range(0, len(parts), 8))
-    return "real[int] %s = [ %s ];" % (name, chunks)
+    """逐下标赋值：FreeFEM 4.9 的 `real[int] a = [ ... ]` 字面量有 **1024 个参数上限**
+    （本网格 2113 个顶点，一条字面量就编不过：Sorry number of parameters > 1024）。"""
+    parts = ["%s[%d]=%.10g;" % (name, i, float(v)) for i, v in enumerate(values)]
+    return "\n".join(" ".join(parts[i:i + 8]) for i in range(0, len(parts), 8))
 
 
 EDP_TEMPLATE = """// 经典压力重建（Stage 5 基线）——由 assim_pressure_baseline.py 生成，不要手改
@@ -188,6 +189,8 @@ if (NOD != {n_nodes}) {{
   cout << "NODE-MISMATCH nv=" << NOD << " want={n_nodes}" << endl;
   exit(1);
 }}
+real[int] au(NOD);
+real[int] av(NOD);
 {au_lit}
 {av_lit}
 uh[] = au;
