@@ -302,6 +302,23 @@ phase_lrfix() {
   done
 }
 
+phase_amp() {
+  # 诊断二（不是登记臂）：把压力归一化尺度直接设成真值压降的量级（1000 这个数来自真值，
+  # 所以它只能用来定位失败模式——"若只差量级，给对了就该恢复"——绝不进判决、绝不进正文）。
+  log "PHASE=amp（压力尺度=1000 的量级探针：Re{10,50} × seed 42）"
+  local L TC
+  for L in $LEVELS; do
+    TC=$(join_cases "$L" $TRAIN_BASES)
+    local name="ns5amp_${L}_5pct_ns_s42"
+    [ -f "$RES/$name/metrics.json" ] && { log "CELL $name [skip]"; continue; }
+    step "cell_${name}" nonfatal python3 "$S/train_velocity_pressure_independent_ns_vonly.py" \
+      --base-script strict-sparse --reynolds "$L" --family contraction_2d \
+      --train-cases "$TC" --val-cases "$(join_cases "$L" $VAL_BASE)" \
+      --run-name "$name" --seed 42 --vonly-pressure-scale 1000 $SP_ARGS $(src_flags 5pct)
+    check_sources "$name" 5pct >>"$LOGD/cell_${name}.log" 2>&1 || log "FATAL SOURCE-MISMATCH $name"
+  done
+}
+
 phase_score() {
   log "PHASE=score"
   step score fatal python3 "$S/ns5_verdict.py" --pinn-score --root "$WS" --out "$LOGD"
@@ -323,6 +340,7 @@ case "${1:-}" in
   sens) phase_sens;;
   matrixfix) phase_matrixfix;;
   lrfix) phase_lrfix;;
+  amp) phase_amp;;
   score) phase_score;;
   judge) phase_judge;;
   all) phase_preflight; phase_selftests; phase_obs; phase_c6; phase_smoke; phase_matrix;

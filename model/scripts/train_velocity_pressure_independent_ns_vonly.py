@@ -65,10 +65,13 @@ def install_scaler_patch(bm) -> None:
                     "[FAIL] 压力列全空但先前没拟合过速度标准化器——回退尺度无来源。"
                     "顺序假设（速度先、压力后）已不成立，别改这里，去把尺度显式传进来。")
             p_scale = _norm(_FIT_LOG["vel_std"])
-            if P_SCALE_MODE == "one":
-                p_scale = 1.0
-                print("[C7-fallback] 敏感性对照档：压力尺度=1.0（不归一，网络直接输出 p 的量值）；"
-                      "这一档**不是**登记臂，只用来说明回退尺度本身的影响", flush=True)
+            if P_SCALE_MODE not in ("auto",):
+                # 诊断档用别的数：one＝1.0；数字＝直接当尺度用。
+                # 注意：填 1000 这一档的量级是**从真值压降知道的**，所以它只能用来定位失败模式
+                # （"如果只差量级，给它正确量级就该恢复"），绝不进任何判决、绝不进正文。
+                p_scale = 1.0 if P_SCALE_MODE == "one" else float(P_SCALE_MODE)
+                print("[C7-fallback] 诊断档：压力尺度=%g（模式=%s）；这一档的量级不是从观测推的，只作失败定位用"
+                      % (p_scale, P_SCALE_MODE), flush=True)
             if not p_scale > 0:
                 raise SystemExit(f"[FAIL] 回退压力尺度算出来是 {p_scale}，不是正数")
             _FIT_LOG["fallback_count"] += 1
@@ -151,14 +154,20 @@ def main() -> int:
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--vonly-selftest", action="store_true",
                     help="C7 三桩 + 压力监督空目标断言（需 numpy/torch ⇒ 实例上跑）")
-    ap.add_argument("--vonly-pressure-scale", choices=("auto", "one"), default="auto",
-                    help="回退尺度的取法：auto＝‖观测速度std‖（登记臂）；"
-                         "one＝不归一，只作敏感性对照，用完即弃、不进判决")
+    ap.add_argument("--vonly-pressure-scale", default="auto",
+                    help="回退尺度的取法：auto＝‖观测速度std‖（登记臂）；one＝不归一；"
+                         "数字＝直接指定（诊断用，不进判决）。只接受这三种形状，写错就红")
     ap.add_argument("--base-script", choices=("mainline", "strict-sparse"), default="strict-sparse")
     known, rest = ap.parse_known_args()
     if known.vonly_selftest:
         return vonly_selftest()
     P_SCALE_MODE = known.vonly_pressure_scale
+    if P_SCALE_MODE not in ("auto", "one"):
+        try:
+            if not float(P_SCALE_MODE) > 0:
+                raise ValueError("不是正数")
+        except ValueError as exc:
+            raise SystemExit(f"[FAIL] --vonly-pressure-scale 只接受 auto/one/正数，收到 {P_SCALE_MODE!r}（{exc}）")
     print("[NS-vonly] 压力回退尺度档=%s" % P_SCALE_MODE, flush=True)
 
     nsmod = load_dep(NS_SCRIPT)
