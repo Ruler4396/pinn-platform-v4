@@ -69,7 +69,13 @@ phase_obs() {
   local L b stem
   for L in $LEVELS; do
     for b in $TRAIN_BASES $VAL_BASE; do
-      step "obs_${b}_${L}_5pct" fatal python3 "$S/make_ns_obs.py" --root "$WS" --base "$b" --level "$L" --obs-stem "$VOBS"
+      # 5pct 那批 Stage 2 就造过（同点位、NS 取值），存在就跳过；make_ns_obs.py 对已存在的目标件是
+      # **拒绝覆盖**的，不跳过就会把这一步变成假红。
+      if [ -f "$DATA/${b}_ns_re${L}/obs_sparse_5pct.csv" ]; then
+        log "obs ${b}_ns_re${L}/5pct [skip]"
+      else
+        step "obs_${b}_${L}_5pct" fatal python3 "$S/make_ns_obs.py" --root "$WS" --base "$b" --level "$L" --obs-stem "$VOBS"
+      fi
       for stem in obs_sparse_1pct obs_sparse_15pct; do
         if [ -f "$DATA/${b}_ns_re${L}/${stem}.csv" ]; then log "obs ${b}_ns_re${L}/${stem} [skip]"; continue; fi
         step "obs_${b}_${L}_${stem}" fatal python3 "$S/make_ns_obs.py" --root "$WS" --base "$b" --level "$L" --obs-stem "$stem"
