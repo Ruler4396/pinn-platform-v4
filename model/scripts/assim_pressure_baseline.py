@@ -3,14 +3,16 @@ paper-route2/速度推压力-经典基线同框-预注册设计-20261003.md §�
 
 做法（稳态不可压动量方程的直接读法，PIV 压力重建里的标准一族，不需要任何压力测量、没有可调配的超参）：
     ∇p = ∇²u − Re·(u·∇)u          （star 单位，ν=1，对流系数取 Re——与真值 .edp 同一约定，R2-7 已否掉除法版）
-  1) 用观测点上的速度做多二次 RBF 补全（ε=1.0 写死，带一次多项式尾巴）到网格全部顶点；
-  2) 顶点值交给 FreeFEM 的 P1 空间，弱式拉普拉斯投影得 ∇²u、弱式投影得 (u·∇)u；
-  3) 梯度匹配最小二乘解压力：∫∇p·∇q = +∫f·∇q（自然边界条件 ⇒ 定到常数为止，去均值后评分）；
+  1) 用观测点上的速度做**薄板样条**补全（φ=r²ln r + 一次多项式尾巴；尺度无关 ⇒ 没有核参数可调）；
+  2) 同一核的解析导数直接给出右端 f = ∇²u − Re·(u·∇)u（不在有限元里算 ∇²u：P1 场逐元素二阶导恒为 0，
+     弱式投影出来的是单元边界跳变——C9 用它喂精确稠密真值时去均值误差 0.91–1.0，那是装置错不是方法性质。
+     也不用多二次核：1689 点条件数 1.1e20，被自己的条件数闸拒）；
+  3) 右端按 dof 序交给 FreeFEM 的 P1 空间，解梯度匹配最小二乘 ∫∇p·∇q = +∫f·∇q（自然边界 ⇒ 定到常数为止）；
   4) 按真值 .edp 那个打印循环逐顶点输出 x,y,p,bc_tag ⇒ 与 field_dense.csv 逐点同序，用同一把尺评。
 
 C 档：
   C10 已知答案正对照——解析取 u=(αx, −αy)（散度自由、∇²u=0）⇒ f = −Re·α²(x,y) ⇒ p = −Re·α²(x²+y²)/2，
-      整条管线（RBF→read→投影→LS→打印）须恢复到去均值相对误差 ≤1e-2；
+      整条管线（插值→解析导数→按 dof 序传数组→梯度匹配 LS→打印）须恢复到去均值相对误差 ≤1e-2；
       并配一条必红：把对流项系数符号翻掉，误差必须跳大到 >0.2。
   C11 输入只允许 (x,y,u,v)——观测表里出现任何有限压力值即拒绝运行。
 """
@@ -24,7 +26,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-RBF_EPS = 1.0          # 写死（预注册 §一），两档 Re、两臂同值，不许按结果调
 C10_TOL = 1.0e-2
 C10_RED_TOL = 0.2
 
@@ -64,30 +65,77 @@ def read_obs_velocity_only(obs: Path) -> list[tuple[float, float, float, float]]
     return out
 
 
-def rbf_complete(pts, vals, targets, eps=RBF_EPS):
-    """多二次 RBF φ(r)=sqrt(r²+ε²) + 一次多项式尾巴（让线性场被精确复现，C10 依赖这一点）。"""
+RBF_KERNEL = "tps"      # 薄板样条 φ(r)=r²ln r；多二次核 ε=1.0 在 1689 点上证伪（条件数 1.1e20）
+RBF_FLOOR = 1.0e-12    # r→0 时 ln 的地板，避免 -inf
+
+
+def _rbf_solve(pts, vals, kernel=RBF_KERNEL):
+    """薄板样条 φ(r)=r²ln r + 一次多项式尾巴（线性场被精确复现，C10 依赖这一点）。"""
     import numpy as np
 
-    P = np.asarray([[p[0], p[1]] for p in pts], dtype=np.float64)
-    T = np.asarray([[t[0], t[1]] for t in targets], dtype=np.float64)
+    P = np.asarray(pts, dtype=np.float64)
     y = np.asarray(vals, dtype=np.float64)
     n = len(P)
-    d = np.sqrt((P[:, None, 0] - P[None, :, 0]) ** 2 + (P[:, None, 1] - P[None, :, 1]) ** 2 + eps * eps)
+    d2 = ((P[:, None, :] - P[None, :, :]) ** 2).sum(axis=2)
+    d2 = np.maximum(d2, RBF_FLOOR)
+    k = 0.5 * d2 * np.log(d2)                     # = r² ln r
     poly = np.hstack([np.ones((n, 1)), P])
     A = np.zeros((n + 3, n + 3), dtype=np.float64)
-    A[:n, :n] = d
+    A[:n, :n] = k
     A[:n, n:] = poly
     A[n:, :n] = poly.T
     b = np.zeros(n + 3, dtype=np.float64)
     b[:n] = y
-    cond = np.linalg.cond(A)
-    if not cond < 1.0e14:
-        raise SystemExit(f"[FAIL] RBF 矩阵条件数 {cond:.3g} 过大（点数 {n}，ε={eps}）——"
+    cond = float(np.linalg.cond(A))
+    if not cond < 1.0e10:
+        raise SystemExit(f"[FAIL] 插值矩阵条件数 {cond:.3g} 过大（点数 {n}，核={kernel}）——"
                          "这是装置问题，别靠正则化糊过去")
     sol = np.linalg.solve(A, b)
-    diff = T[:, None, :] - P[None, :, :]
-    dt = np.sqrt((diff ** 2).sum(axis=2) + eps * eps)
-    return dt @ sol[:n] + np.hstack([np.ones((len(T), 1)), T]) @ sol[n:], cond
+    return sol[:n], sol[n:], cond
+
+
+def rbf_eval(pts, w, polyv, targets, kernel=RBF_KERNEL, want_deriv=False):
+    """在 targets 上求值；want_deriv=True 时给解析的一阶与二阶导数。
+    φ=r²ln r（记 ρ=r²）：φ=½ρlnρ, ∂x=(lnρ+1)dx, ∂²x=lnρ+1+2dx²/ρ。"""
+    import numpy as np
+
+    P = np.asarray(pts, dtype=np.float64)
+    T = np.asarray(targets, dtype=np.float64)
+    dx = T[:, None, 0] - P[None, :, 0]
+    dy = T[:, None, 1] - P[None, :, 1]
+    rho = np.maximum(dx ** 2 + dy ** 2, RBF_FLOOR)
+    lr = np.log(rho)
+    phi = 0.5 * rho * lr
+    val = phi @ w + np.hstack([np.ones((len(T), 1)), T]) @ polyv
+    if not want_deriv:
+        return val
+    dvx = ((lr + 1.0) * dx) @ w + polyv[1]
+    dvy = ((lr + 1.0) * dy) @ w + polyv[2]
+    d2x = (lr + 1.0 + 2.0 * dx ** 2 / rho) @ w
+    d2y = (lr + 1.0 + 2.0 * dy ** 2 / rho) @ w
+    return val, dvx, dvy, d2x, d2y
+
+
+def rbf_complete(pts, vals, targets, kernel=RBF_KERNEL):
+    w, pv, cond = _rbf_solve(pts, vals, kernel)
+    return rbf_eval(pts, w, pv, targets, kernel), cond
+
+
+def pressure_rhs(pts, obs_u, obs_v, targets, reynolds, convection, kernel=RBF_KERNEL):
+    """经典臂的右端 f = ∇²u − Re·(u·∇)u，**导数取自插值的解析式**。
+    为什么不在有限元里算 ∇²u：观测补全后的速度场用 P1 表示，逐元素二阶导恒为 0，
+    弱式拉普拉斯投影出来的是单元边界的跳变测度（C9 实测：喂精确稠密真值也恢复不出压力，
+    去均值误差 0.91–1.0）。那是要修的装置错，不是方法的性质。"""
+    wu = _rbf_solve(pts, obs_u, kernel)
+    wv = _rbf_solve(pts, obs_v, kernel)
+    u, ux, uy, uxx, uyy = rbf_eval(pts, wu[0], wu[1], targets, kernel, want_deriv=True)
+    v, vx, vy, vxx, vyy = rbf_eval(pts, wv[0], wv[1], targets, kernel, want_deriv=True)
+    lap_u, lap_v = uxx + uyy, vxx + vyy
+    conv_u = u * ux + v * uy
+    conv_v = u * vx + v * vy
+    f1 = lap_u - convection * reynolds * conv_u
+    f2 = lap_v - convection * reynolds * conv_v
+    return f1, f2, max(wu[2], wv[2])
 
 
 def mesh_preamble(cfd_edp: Path) -> str:
@@ -155,28 +203,17 @@ def _literal(name: str, values) -> str:
 EDP_TEMPLATE = """// 经典压力重建（Stage 5 基线）——由 assim_pressure_baseline.py 生成，不要手改
 {preamble}
 fespace Qh(Th, P1);
-Qh uh, vh, lapU, lapV, convU, convV, f1, f2, p, q;
+Qh p, q;
 int NOD = Th.nv;
 if (NOD != {n_nodes}) {{
   cout << "NODE-MISMATCH nv=" << NOD << " want={n_nodes}" << endl;
   exit(1);
 }}
-real[int] au(NOD);
-real[int] av(NOD);
-{au_lit}
-{av_lit}
-uh[] = au;
-vh[] = av;
-real Reff = {reynolds};
-real cf = {convection};
-
-solve lapP(lapU, q) = int2d(Th)(lapU*q) + int2d(Th)(dx(uh)*dx(q) + dy(uh)*dy(q));
-solve lapP2(lapV, q) = int2d(Th)(lapV*q) + int2d(Th)(dx(vh)*dx(q) + dy(vh)*dy(q));
-solve convP(convU, q) = int2d(Th)(convU*q) - int2d(Th)((uh*dx(uh) + vh*dy(uh))*q);
-solve convP2(convV, q) = int2d(Th)(convV*q) - int2d(Th)((uh*dx(vh) + vh*dy(vh))*q);
-f1 = lapU - cf*Reff*convU;
-f2 = lapV - cf*Reff*convV;
-solve pP(p, q) = int2d(Th)(dx(p)*dx(q) + dy(p)*dy(q) + 1.0e-10*p*q) - int2d(Th)(f1*dx(q) + f2*dy(q));
+real[int] fv1(NOD);
+real[int] fv2(NOD);
+{f1_lit}
+{f2_lit}
+solve pP(p, q) = int2d(Th)(dx(p)*dx(q) + dy(p)*dy(q) + 1.0e-10*p*q) - int2d(Th)(fv1*dx(q) + fv2*dy(q));
 
 int[int] vTag(Th.nv);
 for (int i = 0; i < Th.nv; ++i) vTag[i] = 0;
@@ -194,15 +231,15 @@ for (int i = 0; i < Th.nv; ++i) {{
   real yy = Th(i).y;
   fo << xx << "," << yy << "," << p(xx,yy) << "," << vTag[i] << endl;
 }}
-cout << "ASSIM-OK nv=" << Th.nv << " re=" << Reff << " cf=" << cf << endl;
+cout << "ASSIM-OK nv=" << Th.nv << " tag={stem_tag}" << endl;
 """
 
 
-def build_edp(workdir: Path, case: str, preamble: str, reynolds: float, convection: float,
-              u_vals, v_vals, pred: Path) -> Path:
-    text = EDP_TEMPLATE.format(preamble=preamble, reynolds=reynolds, convection=convection,
-                               n_nodes=len(u_vals), au_lit=_literal("au", u_vals),
-                               av_lit=_literal("av", v_vals), pred=str(pred))
+def build_edp(workdir: Path, case: str, preamble: str, f1_vals, f2_vals, pred: Path,
+              stem_tag: str = "") -> Path:
+    text = EDP_TEMPLATE.format(preamble=preamble, n_nodes=len(f1_vals),
+                               f1_lit=_literal("fv1", f1_vals), f2_lit=_literal("fv2", f2_vals),
+                               pred=str(pred), stem_tag=stem_tag)
     edp = workdir / ("assim_%s.edp" % case)
     edp.write_text(text, encoding="utf-8", newline="\n")
     return edp
@@ -314,10 +351,9 @@ def rbf_selftest() -> int:
     return 0
 
 
-def solve_chain(workdir: Path, stem: str, preamble: str, reynolds: float, convection: float,
-                cu, cv, pred: Path) -> list[dict]:
-    edp = build_edp(workdir, stem, preamble=preamble, reynolds=reynolds, convection=convection,
-                    u_vals=cu, v_vals=cv, pred=pred)
+def solve_chain(workdir: Path, stem: str, preamble: str, f1, f2, pred: Path, tag: str = "") -> list[dict]:
+    edp = build_edp(workdir, stem, preamble=preamble, f1_vals=f1, f2_vals=f2, pred=pred,
+                    stem_tag=tag or stem)
     run_freefem(edp, workdir / (stem + ".log"))
     return read_pred(pred)
 
@@ -336,11 +372,12 @@ def c10(workdir: Path, mesh_xy, preamble: str, reynolds=10.0, alpha=1.0) -> int:
     p_true = p_true - p_true.mean()
     fails = []
     for convection, tag, want_pass in ((1.0, "正对照", True), (-1.0, "必红", False)):
-        cu, _ = rbf_complete(obs, [alpha * x for x, _ in obs], mesh_xy)
-        cv, _ = rbf_complete(obs, [-alpha * y for _, y in obs], mesh_xy)
+        pts = obs
+        f1, f2, cond = pressure_rhs(pts, [alpha * x for x, _ in pts], [-alpha * y for _, y in pts],
+                                    mesh_xy, reynolds, convection)
         pred = workdir / ("c10_pred_%s.csv" % ("ok" if want_pass else "red"))
-        rows = solve_chain(workdir, "c10" + tag, preamble=preamble, reynolds=reynolds,
-                           convection=convection, cu=cu, cv=cv, pred=pred)
+        rows = solve_chain(workdir, "c10" + tag, preamble=preamble, f1=f1, f2=f2, pred=pred,
+                            tag="%s conv=%+g cond=%.3g" % (tag, convection, cond))
         pm = np.array([float(r["p_star"]) for r in rows])
         pm = pm - pm.mean()
         rel = float(np.linalg.norm(pm - p_true) / (np.linalg.norm(p_true) + 1e-12))
@@ -360,30 +397,16 @@ def run_case(args, truth_rows, obs, outdir: Path, workdir: Path, mesh_xy, preamb
     stem = "assim_%s_%s_%s" % (args.case, args.quota, args.equation)
     pred = outdir / (stem + "_pred.csv")
     convection = 1.0 if args.equation == "ns" else 0.0
-    if args.quota == "full":
-        # C9：观测集就是全部顶点 ⇒ **不需要补全**，直接按坐标把真值速度搬到 dof 序上
-        # （拿 1689 个点去做多二次 RBF 会得到条件数 1e20 的矩阵，我的条件数闸当场拒了——那是装置体检，
-        #  不是方法失败；RBF 这条路本身由 C10 用 63 点的已知答案核）。
-        tmap = {_coord_key(r["x_star"], r["y_star"]): (float(r["u_star"]), float(r["v_star"]))
-                for r in truth_rows}
-        miss = [c for c in mesh_xy if _coord_key(c[0], c[1]) not in tmap]
-        if miss:
-            raise SystemExit(f"[FAIL] C9：{len(miss)} 个网格顶点在真值场里没有对应点（例 {miss[0]}）")
-        pairs = [tmap[_coord_key(c[0], c[1])] for c in mesh_xy]
-        cu = [a for a, _ in pairs]
-        cv = [b for _, b in pairs]
-        cond = 1.0
-        print("C9-RBF-SKIP 全部顶点直接搬 dof 序（%d 点）" % len(pairs), flush=True)
-    else:
-        pts = [(o[0], o[1]) for o in obs]
-        cu, cond_u = rbf_complete(pts, [o[2] for o in obs], mesh_xy)
-        cv, cond_v = rbf_complete(pts, [o[3] for o in obs], mesh_xy)
-        cond = max(cond_u, cond_v)
-    rows = solve_chain(workdir, stem, preamble=preamble, reynolds=args.reynolds,
-                       convection=convection, cu=cu, cv=cv, pred=pred)
+    # 常规档与 C9(full) 走同一条路：观测集 = 该档那批点（full 就是全部顶点），
+    # 插值核是薄板样条（多二次核在 1689 点条件数 1.1e20，被闸拒；换核后 C10 重新核过）
+    pts = [(o[0], o[1]) for o in obs]
+    f1, f2, cond = pressure_rhs(pts, [o[2] for o in obs], [o[3] for o in obs], mesh_xy,
+                                args.reynolds, convection)
+    rows = solve_chain(workdir, stem, preamble=preamble, f1=f1, f2=f2, pred=pred,
+                       tag="%s/%s/%s cond=%.3g" % (args.case, args.quota, args.equation, cond))
     res = score(rows, truth_rows, mesh_xy)
     res.update(case=args.case, quota=args.quota, equation=args.equation, reynolds=args.reynolds,
-               n_obs=len(obs), rbf_cond=cond, pred_csv=str(pred))
+               n_obs=len(obs), interp_cond=cond, pred_csv=str(pred))
     return res
 
 
