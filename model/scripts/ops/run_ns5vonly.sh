@@ -256,19 +256,49 @@ phase_sens() {
 }
 
 phase_matrixfix() {
-  log "PHASE=matrixfix（对流项符号修正后重跑的 NS 臂：Re{10,50}×3 种子，5pct）"
-  local L sd TC
+  log "PHASE=matrixfix（对流项符号修正后重跑的 NS 臂：3 配额 × Re{10,50} × 3 种子 + 单工况块）"
+  local L Q sd TC
   for L in $LEVELS; do
     TC=$(join_cases "$L" $TRAIN_BASES)
-    for sd in $SEEDS; do
-      local name="ns5fix_${L}_5pct_ns_s${sd}"
-      [ -f "$RES/$name/metrics.json" ] && { log "CELL $name [skip]"; continue; }
-      step "cell_${name}" nonfatal python3 "$S/train_velocity_pressure_independent_ns_vonly.py" \
-        --base-script strict-sparse --reynolds "$L" --family contraction_2d \
-        --train-cases "$TC" --val-cases "$(join_cases "$L" $VAL_BASE)" \
-        --run-name "$name" --seed "$sd" $SP_ARGS $(src_flags 5pct)
-      check_sources "$name" 5pct >>"$LOGD/cell_${name}.log" 2>&1 || log "FATAL SOURCE-MISMATCH $name"
+    for Q in $QUOTAS; do
+      for sd in $SEEDS; do
+        local name="ns5fix_${L}_${Q}_ns_s${sd}"
+        [ -f "$RES/$name/metrics.json" ] && { log "CELL $name [skip]"; continue; }
+        step "cell_${name}" nonfatal python3 "$S/train_velocity_pressure_independent_ns_vonly.py" \
+          --base-script strict-sparse --reynolds "$L" --family contraction_2d \
+          --train-cases "$TC" --val-cases "$(join_cases "$L" $VAL_BASE)" \
+          --run-name "$name" --seed "$sd" $SP_ARGS $(src_flags "$Q")
+        check_sources "$name" "$Q" >>"$LOGD/cell_${name}.log" 2>&1 || log "FATAL SOURCE-MISMATCH $name"
+      done
     done
+    local SOLO; SOLO=$(join_cases "$L" $VAL_BASE)
+    for sd in $SEEDS; do
+      local n2="ns5fixsolo_${L}_5pct_ns_s${sd}"
+      [ -f "$RES/$n2/metrics.json" ] && { log "CELL $n2 [skip]"; continue; }
+      step "cell_${n2}" nonfatal python3 "$S/train_velocity_pressure_independent_ns_vonly.py" \
+        --base-script strict-sparse --reynolds "$L" --family contraction_2d \
+        --train-cases "$SOLO" --val-cases "$(join_cases "$L" $VAL_BASE)" \
+        --run-name "$n2" --seed "$sd" $SP_ARGS $(src_flags 5pct)
+      check_sources "$n2" 5pct >>"$LOGD/cell_${n2}.log" 2>&1 || log "FATAL SOURCE-MISMATCH $n2"
+    done
+  done
+}
+
+phase_lrfix() {
+  # 诊断档（不是登记臂）：压力幅度学不上去，最直接的怀疑是耦合阶段压力侧 lr=1e-4 太慢
+  # （要把输出量级抬 ~100 倍）。这一档只动那一条 lr，其余逐项与 fix 档相同；跑完就弃、不进判决。
+  log "PHASE=lrfix（压力侧学习率 1e-2 + 尺度=1.0 的诊断格：Re{10,50} × seed 42）"
+  local L TC
+  for L in $LEVELS; do
+    TC=$(join_cases "$L" $TRAIN_BASES)
+    local name="ns5lr_${L}_5pct_ns_s42"
+    [ -f "$RES/$name/metrics.json" ] && { log "CELL $name [skip]"; continue; }
+    step "cell_${name}" nonfatal python3 "$S/train_velocity_pressure_independent_ns_vonly.py" \
+      --base-script strict-sparse --reynolds "$L" --family contraction_2d \
+      --train-cases "$TC" --val-cases "$(join_cases "$L" $VAL_BASE)" \
+      --run-name "$name" --seed 42 --vonly-pressure-scale one --coupling-pressure-lr 1e-2 \
+      $SP_ARGS $(src_flags 5pct)
+    check_sources "$name" 5pct >>"$LOGD/cell_${name}.log" 2>&1 || log "FATAL SOURCE-MISMATCH $name"
   done
 }
 
@@ -292,6 +322,7 @@ case "${1:-}" in
   baseline) phase_baseline;;
   sens) phase_sens;;
   matrixfix) phase_matrixfix;;
+  lrfix) phase_lrfix;;
   score) phase_score;;
   judge) phase_judge;;
   all) phase_preflight; phase_selftests; phase_obs; phase_c6; phase_smoke; phase_matrix;
