@@ -198,15 +198,13 @@ vh[] = av;
 real Reff = {reynolds};
 real cf = {convection};
 
-varproblem lapP(lapU, q) = int2d(Th)(lapU*q + dx(uh)*dx(q) + dy(uh)*dy(q));
-varproblem lapP2(lapV, q) = int2d(Th)(lapV*q + dx(vh)*dx(q) + dy(vh)*dy(q));
-varproblem convP(convU, q) = int2d(Th)(convU*q - (uh*dx(uh) + vh*dy(uh))*q);
-varproblem convP2(convV, q) = int2d(Th)(convV*q - (uh*dx(vh) + vh*dy(vh))*q);
-lapP; lapP2; convP; convP2;
+solve lapP(lapU, q) = int2d(Th)(lapU*q) + int2d(Th)(dx(uh)*dx(q) + dy(uh)*dy(q));
+solve lapP2(lapV, q) = int2d(Th)(lapV*q) + int2d(Th)(dx(vh)*dx(q) + dy(vh)*dy(q));
+solve convP(convU, q) = int2d(Th)(convU*q) - int2d(Th)((uh*dx(uh) + vh*dy(uh))*q);
+solve convP2(convV, q) = int2d(Th)(convV*q) - int2d(Th)((uh*dx(vh) + vh*dy(vh))*q);
 f1 = lapU - cf*Reff*convU;
 f2 = lapV - cf*Reff*convV;
-varproblem pP(p, q) = int2d(Th)(dx(p)*dx(q) + dy(p)*dy(q) + 1.0e-10*p*q + f1*dx(q) + f2*dy(q));
-pP;
+solve pP(p, q) = int2d(Th)(dx(p)*dx(q) + dy(p)*dy(q) + 1.0e-10*p*q) + int2d(Th)(f1*dx(q) + f2*dy(q));
 
 int[int] vTag(Th.nv);
 for (int i = 0; i < Th.nv; ++i) vTag[i] = 0;
