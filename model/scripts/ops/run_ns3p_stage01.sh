@@ -121,7 +121,9 @@ phase_probe() {
   t1=$(date +%s%N)
   log "PROBE rc=$rc wall_ms=$(( (t1 - t0) / 1000000 ))"
   tail -4 "$out" | sed "s/^/    P| /"
-  if [ "$rc" != 0 ] || ! grep -q "PROBE OK" "$out"; then
+  # The success line is anchored: with -nw this build echoes the numbered source listing,
+  # so an unanchored match on 'PROBE OK' also hits the cout statement inside the file.
+  if [ "$rc" != 0 ] || ! grep -q "^PROBE OK" "$out"; then
     log "PROBE did not print its success line -> solve would be guessing at syntax"; exit 1
   fi
 }
@@ -129,7 +131,7 @@ phase_probe() {
 phase_solve() {
   command -v FreeFem++ >/dev/null 2>&1 || { log "INDETERMINATE: no FreeFem++"; exit 90; }
   local tsv="$LOGD/solve.tsv"
-  [ -f "$tsv" ] || printf 'level\trc\twall_ms\tnot_converged\tsha_raw16\tsha_pair16\trows_raw\n' > "$tsv"
+  [ -f "$tsv" ] || printf 'level\trc\twall_ms\tnot_converged\tpicard_iters\tlast_du2\tsha_raw+pair\trows_raw\n' > "$tsv"
   for L in $LEVELS; do
     local d="$CFD/C-base_ns_re$L" lg="$LOGD/run_${L}.log" t0 rc t1
     for f in "$d/C-base_ns_re${L}_raw.csv" "$d/C-base_ns_re${L}_raw_pair.csv"; do
@@ -139,16 +141,22 @@ phase_solve() {
     ( cd "$d" && FreeFem++ -nw "C-base_ns_re$L.edp" ) >"$lg" 2>&1
     rc=$?
     t1=$(date +%s%N)
-    local nc rows sha1 sha2
-    nc=$(grep -c "NS NOT CONVERGED" "$lg")
+    local nc iters last rows sha1 sha2
+    # Anchored at column 0 on purpose: `FreeFem++ -nw` echoes the numbered source listing,
+    # so an unanchored match counts the code line and the header comment (measured: the
+    # unanchored version reported not_converged=2 for a level that converged in 3).
+    nc=$(grep -c "^NS NOT CONVERGED" "$lg")
+    iters=$(grep -c "^NS it=" "$lg")
+    last=$(grep "^NS it=" "$lg" | tail -1 | sed 's/.*du2=\([^ ]*\).*/\1/')
     rows=$(( $(wc -l < "$d/C-base_ns_re${L}_raw.csv") - 1 ))
     sha1=$(sha256sum "$d/C-base_ns_re${L}_raw.csv" 2>/dev/null | cut -c1-16)
     sha2=$(sha256sum "$d/C-base_ns_re${L}_raw_pair.csv" 2>/dev/null | cut -c1-16)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$L" "$rc" "$(( (t1 - t0) / 1000000 ))" "$nc" "$sha1" "$sha2" "$rows" >> "$tsv"
-    log "SOLVE Re=$L rc=$rc wall_ms=$(( (t1 - t0) / 1000000 )) not_converged=$nc rows=$rows"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$L" "$rc" \
+      "$(( (t1 - t0) / 1000000 ))" "$nc" "$iters" "$last" "$sha1$sha2" "$rows" >> "$tsv"
+    log "SOLVE Re=$L rc=$rc wall_ms=$(( (t1 - t0) / 1000000 )) not_converged=$nc iters=$iters last_du2=$last rows=$rows"
     [ "$rc" != 0 ] && tail -6 "$lg" | sed "s/^/      E| /"
   done
-  column -t "$tsv" | sed "s/^/    T| /"
+  [ -f "$tsv" ] && cat "$tsv" | sed "s/^/    T| /"
 }
 
 phase_merge() {
