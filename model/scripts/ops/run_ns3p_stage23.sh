@@ -85,7 +85,8 @@ phase_solveall() {
       log "SOLVE $b Re=$L rc=$rc wall_ms=$(( (t1 - t0) / 1000000 )) iters=$iters notconv=$nc rows=$rows"
     done
   done
-  awk -F'\t' 'NR>1{n++;s+=$4;if($3!=0)bad++;if($5!=0)nc++}END{printf "SUMMARY solves=%d sum_wall_ms=%d mean_ms=%.0f rc!=0=%d not_converged_levels=%d\n",n,s,s/n,bad,nc+0}' "$tsv" | tee -a "$LOGD/solve_all.tsv"
+  awk -F'\t' 'NR>1{n++;s+=$4;if($3!=0)bad++;if($5!=0)nc++}END{printf "SUMMARY solves=%d sum_wall_ms=%d mean_ms=%.0f rc!=0=%d not_converged_levels=%d\n",n,s,s/n,bad,nc+0}' "$tsv" > "$LOGD/solve_all.summary"
+  sed "s/^/    A| /" "$LOGD/solve_all.summary"
 }
 
 phase_cases() {
