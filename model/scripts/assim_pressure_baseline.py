@@ -5,7 +5,7 @@ paper-route2/速度推压力-经典基线同框-预注册设计-20261003.md §�
     ∇p = ∇²u − Re·(u·∇)u          （star 单位，ν=1，对流系数取 Re——与真值 .edp 同一约定，R2-7 已否掉除法版）
   1) 用观测点上的速度做多二次 RBF 补全（ε=1.0 写死，带一次多项式尾巴）到网格全部顶点；
   2) 顶点值交给 FreeFEM 的 P1 空间，弱式拉普拉斯投影得 ∇²u、弱式投影得 (u·∇)u；
-  3) 梯度匹配最小二乘解压力：∫∇p·∇q = −∫f·∇q（自然边界条件 ⇒ 定到常数为止，去均值后评分）；
+  3) 梯度匹配最小二乘解压力：∫∇p·∇q = +∫f·∇q（自然边界条件 ⇒ 定到常数为止，去均值后评分）；
   4) 按真值 .edp 那个打印循环逐顶点输出 x,y,p,bc_tag ⇒ 与 field_dense.csv 逐点同序，用同一把尺评。
 
 C 档：
@@ -204,7 +204,7 @@ solve convP(convU, q) = int2d(Th)(convU*q) - int2d(Th)((uh*dx(uh) + vh*dy(uh))*q
 solve convP2(convV, q) = int2d(Th)(convV*q) - int2d(Th)((uh*dx(vh) + vh*dy(vh))*q);
 f1 = lapU - cf*Reff*convU;
 f2 = lapV - cf*Reff*convV;
-solve pP(p, q) = int2d(Th)(dx(p)*dx(q) + dy(p)*dy(q) + 1.0e-10*p*q) + int2d(Th)(f1*dx(q) + f2*dy(q));
+solve pP(p, q) = int2d(Th)(dx(p)*dx(q) + dy(p)*dy(q) + 1.0e-10*p*q) - int2d(Th)(f1*dx(q) + f2*dy(q));
 
 int[int] vTag(Th.nv);
 for (int i = 0; i < Th.nv; ++i) vTag[i] = 0;
